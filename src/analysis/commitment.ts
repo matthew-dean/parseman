@@ -178,8 +178,7 @@ export function alwaysConsumes(p: Combinator<unknown>, seen: Set<Combinator<unkn
  *
  * Sound over-approximation: the ONLY constructs that capture-then-fail are
  *   - a sequence whose non-final term captures before a later term can fail
- *   - a sepBy/oneOrMore item-then-separator partial (handled by their own
- *     dedicated rollback, so still covered conservatively here)
+ *   - a sepBy/oneOrMore with a minimum above one, failing after the items it kept
  * Atomic terminals (literal/regex/keywords/charClass/guard/not) fail without
  * having captured. node() buffers into a private sub-scope and discards it on
  * failure, so it never leaks. choice/firstMatch roll back each failed arm
@@ -247,14 +246,15 @@ export function mayLeavePartialCapture(
         (d.otherwise ? mayLeavePartialCapture(d.otherwise, new Set(seen), triviaActive, throughNodes) || capturesLeaf(d.otherwise, new Set(seen)) : false)
     case 'attempt':
       return false
-    // optional never fails; many/oneOrMore only "fail" with zero captured items.
+    // optional and many never fail.
     case 'optional':
     case 'many':
+      return false
+    // A list restores the item it failed on and keeps the ones before it, so a
+    // list short of a minimum above one fails with those still captured.
     case 'oneOrMore':
-      return false
-    // sepBy emits its own per-iteration rollback in emitSepBy.
     case 'sepBy':
-      return false
+      return d.min > 1
     // A sequence is the real case: an earlier capturing term followed by a term
     // that can fail leaves the earlier captures buffered.
     //
@@ -676,7 +676,9 @@ export function classifyRuleMap(
       let resolved: Combinator<unknown> | undefined
       try { resolved = def.thunk() } catch { resolved = undefined }
       if (resolved === undefined) {
-        if ((p as unknown as { _ruleName?: string })._ruleName) externalRefs.add(p)
+        // A `prior.X` placeholder is a hole too: the composition fills it by name.
+        const hole = p as unknown as { _ruleName?: string; _priorOf?: string }
+        if (hole._ruleName !== undefined || hole._priorOf !== undefined) externalRefs.add(p)
         return
       }
       scanExternal(resolved)

@@ -60,9 +60,9 @@
  * label licenses at a leaf is dropping the TEST — never the capture.
  */
 import {
-  OP_ATTEMPT, OP_CHOICE, OP_DISPATCH, OP_EXPECT, OP_FIELD, OP_GATE, OP_LABEL, OP_LEAF, OP_LIT, OP_SOURCE_LEAF,
+  OP_CONT, OP_SEED, OP_ATTEMPT, OP_CHOICE, OP_DISPATCH, OP_EXPECT, OP_FIELD, OP_GATE, OP_LABEL, OP_LEAF, OP_LIT, OP_SOURCE_LEAF,
   OP_NODE, OP_NODE_TRACK, OP_NOT, OP_OPT, OP_PEEK, OP_REP, OP_REPV, OP_ROUTED, OP_RULE,
-  OP_SCAN, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_SEQ, OP_SEQV, OP_SEQX, OP_TOKEN, OP_XFORM,
+  OP_SCAN, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, SCOPE_INHERIT, OP_SEQ, OP_SEQV, OP_SEQX, OP_TOKEN, OP_XFORM,
 } from './ops.ts'
 import { childSlots } from './child-slots.ts'
 import { leadRanges } from '../lead-ranges.ts'
@@ -161,7 +161,7 @@ export function passCollapse(code: Int32Array, ip: number, hostCst: boolean): bo
     else if (op === OP_RULE) at = code[at + 1]!
     else break
   }
-  return code[at] === OP_NODE
+  return code[at] === OP_NODE || code[at] === OP_CONT
 }
 
 /**
@@ -206,7 +206,7 @@ function transfer(code: Int32Array, ip: number, at: SiteLabel, hostCst: boolean)
   const op = code[ip]
   if (op === OP_SCOPE || op === OP_SCOPE_CAP || op === OP_SCOPE_PLAIN) {
     const ki = code[ip + 1]!
-    const tri = ki < 0 ? TRI_NONE : ki
+    const tri = ki === SCOPE_INHERIT ? at.tri : ki < 0 ? TRI_NONE : ki
     // `OP_SCOPE_CAP` is an OR with the inherited context, never a switch-off
     // (`encode.ts:1153-1158`), so it can only ever raise `cap` to `CAP_ON`.
     const cap = op === OP_SCOPE_CAP ? CAP_ON : at.cap
@@ -266,7 +266,11 @@ function transfer(code: Int32Array, ip: number, at: SiteLabel, hostCst: boolean)
 }
 
 /** A site's label, or `TOP` for anything the walk did not reach. */
-export type SiteLabels = { at: (ip: number) => SiteLabel }
+export type SiteLabels = {
+  at: (ip: number) => SiteLabel
+  /** The `OP_CONT` sites whose corner runs in the parent's collector in every engine. */
+  late: ReadonlySet<number>
+}
 
 /**
  * Compute a label for every site reachable from `roots`.
@@ -284,10 +288,11 @@ export function computeSiteLabels(
   code: Int32Array,
   roots: Iterable<number>,
   hostCst: boolean,
+  /** Does this assembly run this `OP_CONT` late, in EVERY engine it holds? Absent: none. */
+  late?: (ip: number, tri: number) => boolean,
 ): SiteLabels {
   const labels = new Map<number, SiteLabel>()
   const work: number[] = []
-
   const push = (ip: number, l: SiteLabel): void => {
     const cur = labels.get(ip)
     if (cur === undefined) {
@@ -300,19 +305,38 @@ export function computeSiteLabels(
     labels.set(ip, next)
     work.push(ip)
   }
-
-  for (const r of roots) push(r, TOP)
-
+  // A corner a late frame never runs takes no label from that frame. So every frame is
+  // late until a site proves undecidable, when its seed's edge joins the same fixpoint: a
+  // frame does not change the trivia in force, so no other site's answer moves.
+  const opened = new Set<number>()
   const kids: number[] = []
-  while (work.length > 0) {
-    const ip = work.pop()!
-    const down = transfer(code, ip, labels.get(ip)!, hostCst)
-    kids.length = 0
-    childSlots(code, ip, kids)
-    for (const c of kids) push(c, down)
+  const lateIps = new Set<number>()
+  for (const r of roots) push(r, TOP)
+  for (let pass = 0; pass < 2; pass++) {
+    while (work.length > 0) {
+      const ip = work.pop()!
+      const down = transfer(code, ip, labels.get(ip)!, hostCst)
+      kids.length = 0
+      if (late === undefined || code[ip] !== OP_SEED || opened.has(ip)) childSlots(code, ip, kids)
+      for (const c of kids) push(c, down)
+    }
+    if (late === undefined || pass === 1) break
+    for (const [ip, l] of [...labels]) {
+      if (code[ip] !== OP_CONT) continue
+      if (late(ip, l.tri)) lateIps.add(ip)
+      else {
+        const seed = seedOf(code, ip)
+        opened.add(seed)
+        work.push(seed)
+      }
+    }
   }
+  return { at: (ip: number): SiteLabel => labels.get(ip) ?? TOP, late: lateIps }
+}
 
-  return { at: (ip: number): SiteLabel => labels.get(ip) ?? TOP }
+/** `CONT corner wrapper tail`, `NODE … body`, `SEQ n seed tail`. */
+function seedOf(code: ArrayLike<number>, cont: number): number {
+  return code[code[code[cont + 2]! + 2]! + 2]!
 }
 
 /**
@@ -358,7 +382,7 @@ export function scanHandoffNeeded(code: Int32Array, ip: number, labels: SiteLabe
     const op = code[at]
     // A scan runs interpreted combinators that reach pieces through `prog.scans`.
     if (op === OP_SCAN) return true
-    if (op === OP_TOKEN || op === OP_SCOPE_CAP) continue
+    if (op === OP_TOKEN || (op === OP_SCOPE_CAP && code[at + 1] !== SCOPE_INHERIT)) continue
     if ((op === OP_SCOPE_PLAIN || op === OP_SCOPE) && !(code[at + 1]! >= 0 && l.tri === code[at + 1]!
       && (op === OP_SCOPE_PLAIN || code[at + 3]! === 0))) continue
     kids.length = 0

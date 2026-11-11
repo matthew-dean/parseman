@@ -7,7 +7,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import { union, intersects, fromChar, fromRange, any, empty, sequenceFirstSet, firstSetOf, isZeroWidthAssertion, matchesEmpty } from '../../src/combinators/first-set.ts'
-import { attempt, sequence, not, optional, many, oneOrMore, literal, regex, choice, rules } from '../../src/index.ts'
+import { attempt, expect as expectOr, sequence, not, optional, many, oneOrMore, literal, regex, choice, rules } from '../../src/index.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import type { Combinator, FirstSet } from '../../src/types.ts'
 
@@ -222,6 +222,18 @@ describe('first-set — soundness fuzz (superset over randomized grammars)', () 
  * compiled choice then entered that arm at every position, including the `}`
  * that ends each block a `many(choice(…))` reads.
  */
+describe('first-set — expect() recovers at zero width', () => {
+  const x = () => expectOr(literal('a'), 'want')
+  it('matches empty and runs on any character', () => {
+    expect(matchesEmpty(x())).toBe(true)
+    expect(firstSetOf(x()).kind).toBe('any')
+    expect(sequenceFirstSet([x(), literal('b')]).kind).toBe('any')
+  })
+  it('still gives a resync sentinel what its child can start with', () => {
+    expect(firstSetOf(x(), new Set(), undefined, undefined, false, true)).toEqual(firstSetOf(literal('a')))
+  })
+})
+
 describe('first-set — attempt() forwards its inner first set', () => {
   // The transaction's inner is built while `g.Sel` is still an unresolved
   // reference, so its construction-time first set is `any`.

@@ -23,6 +23,7 @@ export type { AttemptOptions } from './combinators/attempt.ts'
 export { many, oneOrMore, optional, sepBy, oneOrMoreSep, keepSeparator } from './combinators/repeat.ts'
 export type { RepeatOptions, SepByOptions, TrailingSeparator, KeptSeparator } from './combinators/repeat.ts'
 export { rules } from './combinators/parser.ts'
+export type { PriorRules } from './combinators/parser.ts'
 export { ref } from './combinators/ref.ts'
 export { not } from './combinators/not.ts'
 export { peek } from './combinators/peek.ts'
@@ -140,7 +141,7 @@ export type {
 // back to `FusedRule`, `isInterpretedFuse` would have to be re-exported in the same
 // change — a dual shape with no way to detect it is the worse of the two.
 export { compose, composeLeaf, cstBuildHost } from './compiler/linker.ts'
-export type { CstBuildHostOptions, FusedRule } from './compiler/linker.ts'
+export type { ComposedRules, CstBuildHostOptions, FusedRule } from './compiler/linker.ts'
 
 export { buildLineIndex, createLineIndex, recordLineRange, normalizeLineIndex, offsetToLineCol, annotateSpan, annotateTreeSpans } from './line-index.ts'
 export type { LineIndex } from './line-index.ts'

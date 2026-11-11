@@ -4,7 +4,7 @@ import {
   OP_LIT_CI_TRACK, OP_LIT_TRACK, OP_LIVE, OP_NODE, OP_NODE_TRACK, OP_NOT, OP_OPT,
   OP_PEEK, OP_REJECT, OP_REP, OP_REPV, OP_ROUTED, OP_RULE, OP_RX, OP_RX_TRACK, OP_SCAN,
   OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_SEQ, OP_SEQV, OP_SEQX, OP_TOKEN, OP_WITHCTX, OP_XFORM,
-  OP_LEX_BODY, OP_LEX_PROGRAM, OP_GAPGATE, OP_RGATE2, OP_STRICT,
+  OP_LEX_BODY, OP_LEX_PROGRAM, OP_GAPGATE, OP_RGATE2, OP_STRICT, OP_CONT, OP_SEED,
 } from './ops.ts'
 
 /**
@@ -33,7 +33,23 @@ import {
  * report), `site-labels.ts` ignores it (an unwalked site resolves to `TOP` via
  * `labelAt`, and the enclosing assembly is unemittable anyway).
  */
+/**
+ * The child instructions of the row at `ip`, read through `childSlotOffsets` below:
+ * one edge table, two views of it.
+ */
 export function childSlots(code: ArrayLike<number>, ip: number, out: number[]): boolean {
+  const from = out.length
+  if (!childSlotOffsets(code, ip, out)) return false
+  for (let i = from; i < out.length; i++) out[i] = code[out[i]!]!
+  return true
+}
+
+/**
+ * The OPERAND OFFSETS that hold child instructions — the edge table itself. A caller
+ * that rewrites a program's edges (`backtrack-probe.ts`) needs where an edge is
+ * stored, not only where it points.
+ */
+export function childSlotOffsets(code: ArrayLike<number>, ip: number, out: number[]): boolean {
   switch (code[ip]) {
     // ZERO-WIDTH / TERMINAL ROWS — no successor. `OP_GUARD` and `OP_ADJ` are both
     // childless tests. `OP_LIVE` holds a hand-written combinator in `prog.fns`; its
@@ -48,67 +64,75 @@ export function childSlots(code: ArrayLike<number>, ip: number, out: number[]): 
     // `opHistogram` throw on every table the coverage build produces.
     case OP_RULE: case OP_OPT: case OP_NOT: case OP_PEEK: case OP_EXPECT:
     case OP_TOKEN: case OP_ATTEMPT: case OP_LABEL: case OP_COV: case OP_REJECT: case OP_GAPGATE:
-      out.push(code[ip + 1]!)
+      out.push(ip + 1)
       return true
 
     // Single child at `ip + 2`.
     case OP_GATE: case OP_SCOPE: case OP_SCOPE_CAP: case OP_SCOPE_PLAIN: case OP_WITHCTX: case OP_XFORM:
     case OP_NODE: case OP_NODE_TRACK: case OP_FIELD: case OP_LEAF: case OP_SOURCE_LEAF: case OP_ARMGATE: case OP_RGATE: case OP_RGATE2:
-      out.push(code[ip + 2]!)
+      out.push(ip + 2)
+      return true
+
+    // `CONT corner wrapper tail`: `tail` is reached through `wrapper`.
+    case OP_CONT:
+      out.push(ip + 1, ip + 2)
+      return true
+    case OP_SEED:
+      out.push(ip + 1)
       return true
 
     // `STRICT strict tolerant` — both encodings are reachable; an assembly keeps one.
     case OP_STRICT:
-      out.push(code[ip + 1]!, code[ip + 2]!)
+      out.push(ip + 1, ip + 2)
       return true
 
     // `ROUTED fallback` — the operand is an offset or −1. The routed token itself is
     // data the enclosing `dispatch()` already consumed, so the only edge is the
     // fallback.
     case OP_ROUTED:
-      if (code[ip + 1]! >= 0) out.push(code[ip + 1]!)
+      if (code[ip + 1]! >= 0) out.push(ip + 1)
       return true
 
     // `DISPATCH sel d other otherRouted n a1 … an` — the SELECTOR is a child on
     // exactly the same footing as the arms: it runs inside whatever node and scope
     // this site sits in.
     case OP_DISPATCH: {
-      out.push(code[ip + 1]!)
-      if (code[ip + 3]! >= 0) out.push(code[ip + 3]!)
+      out.push(ip + 1)
+      if (code[ip + 3]! >= 0) out.push(ip + 3)
       const n = code[ip + 5]!
-      for (let i = 0; i < n; i++) out.push(code[ip + 6 + i]!)
+      for (let i = 0; i < n; i++) out.push(ip + 6 + i)
       return true
     }
 
     case OP_SEQ: case OP_SEQV: {
       const n = code[ip + 1]!
-      for (let i = 0; i < n; i++) out.push(code[ip + 2 + i]!)
+      for (let i = 0; i < n; i++) out.push(ip + 2 + i)
       return true
     }
 
     case OP_SEQX: {
       const n = code[ip + 2]!
-      for (let i = 0; i < n; i++) out.push(code[ip + 3 + i]!)
+      for (let i = 0; i < n; i++) out.push(ip + 3 + i)
       return true
     }
 
     case OP_CHOICE: {
       const n = code[ip + 2]!
-      for (let i = 0; i < n; i++) out.push(code[ip + 4 + i]!)
+      for (let i = 0; i < n; i++) out.push(ip + 4 + i)
       return true
     }
 
     // Arms are stride-2 from `ip + 4` — the gate word sits beside each arm offset.
     case OP_GREEDY: {
-      out.push(code[ip + 1]!)
+      out.push(ip + 1)
       const n = code[ip + 2]!
-      for (let i = 0; i < n; i++) out.push(code[ip + 4 + 2 * i]!)
+      for (let i = 0; i < n; i++) out.push(ip + 4 + 2 * i)
       return true
     }
 
     case OP_REP: case OP_REPV:
-      out.push(code[ip + 1]!)
-      if (code[ip + 4]! >= 0) out.push(code[ip + 4]!)
+      out.push(ip + 1)
+      if (code[ip + 4]! >= 0) out.push(ip + 4)
       return true
 
     default:

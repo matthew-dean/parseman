@@ -380,12 +380,258 @@ export const DEFECTS = {
     }],
   },
 
+  /**
+   * A corner the encoder proved in error. Its publication is not its value, so the
+   * frame's first child is not what the corner published.
+   */
+  'late-corner-through-transform': {
+    why: 'encoder: a transform corner lowers to a late frame, so the frame holds the mapped value and the parent loses the node',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: "    case 'node': return true\n    case 'lazy': {",
+      replace: "    case 'node': return true\n    case 'transform': return publishesOneNode(d.parser, rr, seen)\n    case 'lazy': {",
+    }],
+  },
+
+  'late-corner-through-dispatch': {
+    why: 'encoder: a dispatch corner lowers to a late frame, so a selector that publishes leaves a second child behind',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: "    case 'node': return true\n    case 'lazy': {",
+      replace: "    case 'node': return true\n    case 'dispatch': return true\n    case 'lazy': {",
+    }],
+  },
+
+  /** Unproved corners: `expect` publishes nothing when its child fails, and a ref not defined yet has no target. */
+  'late-corner-through-expect': {
+    why: 'encoder: an expect corner lowers to a late frame, though it publishes nothing when its child fails',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: "case 'grammar': case 'withCtx': case 'label': return publishesOneNode(d.parser, rr, seen)",
+      replace: "case 'grammar': case 'withCtx': case 'label': case 'expect': return publishesOneNode(d.parser, rr, seen)",
+    }],
+  },
+
+  'late-corner-undefined-ref-throws': {
+    why: 'encoder: the proof calls the thunk of a ref not defined yet uncaught, so a grammar that encoded before no longer does',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: 'if (target === undefined) { try { target = d.thunk() } catch { return false } }\n      return publishesOneNode',
+      replace: 'if (target === undefined) target = d.thunk()\n      return publishesOneNode',
+    }],
+  },
+
+  /** A node publishes to a parent frame and never to a leaf list the caller installed. */
+  'cont-take-back-caller-sink-closure': {
+    why: 'OP_CONT, closure: a hit under only a caller-installed leaf list pops a leaf the corner never pushed',
+    edits: [{
+      file: 'src/table/assemble.ts',
+      find: 'ctx._cstChildren !== undefined) heldRaw = popCstChild(ctx)',
+      replace: 'ctx._cstChildren !== undefined || ctx._cstLeaves !== undefined) heldRaw = popCstChild(ctx)',
+    }],
+  },
+
+  'cont-take-back-caller-sink-emitted': {
+    why: 'OP_CONT, emitted: a hit under only a caller-installed leaf list pops a leaf the corner never pushed',
+    edits: [{
+      file: 'src/table/emit-assembly.ts',
+      find: 'sCh!==undefined)c0Raw=popCstChild(ctx)',
+      replace: 'sCh!==undefined||sLv!==undefined)c0Raw=popCstChild(ctx)',
+    }],
+  },
+
+  /** The lean frame has no line tracking, so a tracked wrapper has to go through the node's own closure. */
+  'cont-lean-frame-takes-tracked-wrapper': {
+    why: 'OP_CONT, closure: a tracked wrapper gets a lean frame, which throws at the tail',
+    edits: [{
+      file: 'src/table/assemble.ts',
+      find: 'code[wrapper] === OP_NODE && ',
+      replace: '',
+    }],
+  },
+
+  /** With no raw children kept, the seed still counts as one or the log's insert indexes move. */
+  'cont-seed-raw-len-closure': {
+    why: 'OP_CONT, closure: the seed does not count as a raw child, so a reducer reading the log gets insert indexes one short',
+    edits: [{
+      file: 'src/table/assemble.ts',
+      find: '                b.single = held\n                b.rawLen = 1\n',
+      replace: '                b.single = held\n',
+    }],
+  },
+
+  'cont-seed-raw-len-emitted': {
+    why: 'OP_CONT, emitted: the seed does not count as a raw child, so a reducer reading the log gets insert indexes one short',
+    edits: [{
+      file: 'src/table/emit-assembly.ts',
+      find: "'buf.single=c0\\nbuf.rawLen=1\\n'",
+      replace: "'buf.single=c0\\n'",
+    }],
+  },
+
+  /** The corner's publication stays in the parent after the frame opens: two children. */
+  'cont-take-back-dropped-closure': {
+    why: 'OP_CONT, closure: a hit keeps the corner in the parent as well as in the frame',
+    edits: [{
+      file: 'src/table/assemble.ts',
+      find: 'ctx._cstChildren !== undefined) heldRaw = popCstChild(ctx)',
+      replace: 'ctx._cstChildren !== undefined) heldRaw = undefined',
+    }],
+  },
+
+  'cont-take-back-dropped-emitted': {
+    why: 'OP_CONT, emitted: a hit keeps the corner in the parent as well as in the frame',
+    edits: [{
+      file: 'src/table/emit-assembly.ts',
+      find: 'sCh!==undefined)c0Raw=popCstChild(ctx)',
+      replace: 'sCh!==undefined)c0Raw=undefined',
+    }],
+  },
+
+  /** The test says miss where the tail would have started: a shorter parse. */
+  'cont-gate-always-misses-closure': {
+    why: 'OP_CONT, closure: the tail test answers no, so a node that continues never opens',
+    edits: [{
+      file: 'src/table/assemble.ts',
+      find: 'return c < 128 ? cls.ascii[c] === 1 : classHas(cls, lead(input, at))',
+      replace: 'return c < 128 ? false : classHas(cls, lead(input, at))',
+    }],
+  },
+
+  'cont-gate-always-misses-emitted': {
+    why: 'OP_CONT, emitted: the tail test answers no, so a node that continues never opens',
+    edits: [{
+      file: 'src/table/emit-assembly.ts',
+      find: 'if (g.gapRow < 0) test = `if(c0!==undefined&&${missAt(g.cls, at)})return c0\\n`',
+      replace: 'if (g.gapRow < 0) test = `if(c0!==undefined)return c0\\n`',
+    }],
+  },
+
+  /** A tail that took nothing keeps the gap the test read past. */
+  'cont-empty-tail-keeps-gap-closure': {
+    why: 'OP_CONT, closure: a tail that passes its test and takes nothing leaves the gap consumed',
+    edits: [{
+      file: 'src/table/assemble.ts',
+      find: 'if (v !== FAIL && EC.e <= at) EC.e = end\n',
+      replace: '',
+    }],
+  },
+
+  'cont-empty-tail-keeps-gap-emitted': {
+    why: 'OP_CONT, emitted: a tail that passes its test and takes nothing leaves the gap consumed',
+    edits: [{
+      file: 'src/table/emit-assembly.ts',
+      find: 'if(v!==FAIL&&EC.e<=${at})EC.e=c1`',
+      replace: '`',
+    }],
+  },
+
+  'cont-no-scanner-check-dropped': {
+    why: 'OP_CONT: a named trivia with no scanner runs late, so the decision calls a scanner that is not there',
+    edits: [{
+      file: 'src/table/late-frame.ts',
+      find: '(tri < 0 || triviaScan[tri] == null)',
+      replace: 'tri < 0',
+    }],
+  },
+
+  'cont-unknown-scope-check-dropped': {
+    why: 'OP_CONT: a scope the labels cannot name runs late, so the decision sees no gap at all',
+    edits: [{
+      file: 'src/table/late-frame.ts',
+      find: '(tri < 0 || triviaScan[tri] == null)',
+      replace: '(tri >= 0 && triviaScan[tri] == null)',
+    }],
+  },
+
+  /** A corner that returned undefined published nothing: its node has no child and builds. */
+  'cont-undefined-corner-closure': {
+    why: 'OP_CONT, closure: an undefined corner misses and returns undefined, so its node never builds',
+    edits: [{
+      file: 'src/table/assemble.ts',
+      find: 'if (v !== undefined && !(gapRe === undefined ? startsTail(cls, input, at)',
+      replace: 'if (!(gapRe === undefined ? startsTail(cls, input, at)',
+    }],
+  },
+
+  'cont-undefined-corner-emitted': {
+    why: 'OP_CONT, emitted: an undefined corner misses and returns undefined, so its node never builds',
+    edits: [{
+      file: 'src/table/emit-assembly.ts',
+      find: 'if (g.gapRow < 0) test = `if(c0!==undefined&&${missAt(g.cls, at)})return c0\\n`',
+      replace: 'if (g.gapRow < 0) test = `if(${missAt(g.cls, at)})return c0\\n`',
+    }],
+  },
+
+  'cont-gate-reads-separated-list': {
+    why: 'OP_CONT: the row of a separated list holds its recovery sentinel, so the test reads the separator as the first token',
+    edits: [{
+      file: 'src/table/late-frame.ts',
+      find: 'if (code[at + 2] !== 0 || code[at + 4]! >= 0 || code[at + 7]! < 0) return undefined',
+      replace: 'if (code[at + 2] !== 0 || code[at + 7]! < 0) return undefined',
+    }],
+  },
+
+  'cont-recovery-late-closure': {
+    why: 'OP_CONT, closure: recovery runs the late path, so a tail that would have resynced never opens',
+    edits: [{
+      file: 'src/table/assemble.ts',
+      find: 'cfg.tolerant || cfg.probe ? undefined : (ip, tri) => canDecide(code, ip, tri, t.triviaScan)',
+      replace: 'cfg.probe ? undefined : (ip, tri) => canDecide(code, ip, tri, t.triviaScan)',
+    }],
+  },
+
+  'cont-quiet-while-recording-closure': {
+    why: 'OP_CONT, closure: the tail skips the rescan while trivia records, so the gap is never recorded',
+    edits: [{
+      file: 'src/table/assemble.ts',
+      find: 'if (ctx._triviaLog === undefined && ctx._rootTriviaLog === undefined\n      && (frame.cap === CAP_OFF || !((frame.cap === CAP_ON || ctx.captureTrivia === true)\n        && (frame.buf || ctx._cstBuf !== undefined || ctx._cstTriviaLog !== undefined)))) {',
+      replace: 'if (frame.cap !== 99) {',
+    }],
+  },
+
+  'cont-quiet-while-recording-emitted': {
+    why: 'OP_CONT, emitted: the tail skips the rescan while trivia records, so the gap is never recorded',
+    edits: [{
+      file: 'src/table/emit-assembly.ts',
+      find: 'else ${capture === \'true\' ? `{\\n${recorded}\\n}`\n  : `if(ctx._triviaLog===undefined&&ctx._rootTriviaLog===undefined${capture === \'false\' ? \'\' : `&&!${capture}`}){',
+      replace: 'else ${`if(true){',
+    }],
+  },
+
+  'cont-rollback-dropped-closure': {
+    why: 'OP_CONT, closure: a tail that took nothing keeps the gap it recorded',
+    edits: [{
+      file: 'src/table/assemble.ts',
+      find: 'if (need) rollbackScannedTriviaAt(ctx, mTl, scanTl, mLog, scanLog, mRoot, scanRoot)\n      EC.e = end\n',
+      replace: 'EC.e = end\n',
+    }],
+  },
+
+  'cont-rollback-dropped-emitted': {
+    why: 'OP_CONT, emitted: a tail that took nothing keeps the gap it recorded',
+    edits: [{
+      file: 'src/table/emit-assembly.ts',
+      find: 'if(v!==FAIL&&EC.e<=s0){rollbackScannedTriviaAt(ctx,tl0,tl1,lg0,lg1,rt0,rt1);EC.e=c1}',
+      replace: 'if(v!==FAIL&&EC.e<=s0){EC.e=c1}',
+    }],
+  },
+
+  'late-frame-ignores-collapse': {
+    why: 'encoder: a node without collapse lowers, so a one-child node returns the child and never builds',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: 'if (this.plan !== undefined || d.collapse !== true || d.build === undefined',
+      replace: 'if (this.plan !== undefined || d.build === undefined',
+    }],
+  },
+
   'node-gate-narrowed': {
     why: 'encoder: a node gate reads its body through a nullable pad, so a miss reports a static set where entering the body reports its own',
     edits: [{
       file: 'src/table/encode.ts',
-      find: 'const fs = this.gateFirstSet(d.parser, d.guarded === true, false)\n        if (fs.kind === \'any\') return body',
-      replace: 'const fs = this.gateFirstSet(d.parser, d.guarded === true, true)\n        if (fs.kind === \'any\') return body',
+      find: 'const fs = this.gateFirstSet(d.parser, d.guarded === true, false)\n        if (fs.kind === \'any\') return run',
+      replace: 'const fs = this.gateFirstSet(d.parser, d.guarded === true, true)\n        if (fs.kind === \'any\') return run',
     }],
   },
 
@@ -465,8 +711,8 @@ export const DEFECTS = {
     why: 'encoder: a recovery follow class takes the live trivia, which the interpreter\'s follow sentinels do not',
     edits: [{
       file: 'src/table/encode.ts',
-      find: 'fs = union(fs, firstSetOf(parsers[j]!, new Set(), rr, undefined, false))',
-      replace: 'fs = union(fs, firstSetOf(parsers[j]!, new Set(), rr, this.activeTrivia, false))',
+      find: 'fs = union(fs, firstSetOf(parsers[j]!, new Set(), rr, undefined, false, true))',
+      replace: 'fs = union(fs, firstSetOf(parsers[j]!, new Set(), rr, this.activeTrivia, false, true))',
     }],
   },
 
@@ -492,8 +738,8 @@ export const DEFECTS = {
     why: 'first sets: a reference from a cleared region is read under the caller\'s scope, not the trivia it installs',
     edits: [{
       file: 'src/combinators/first-set.ts',
-      find: 'through ? triviaThroughRef(p, target, null) : activeTrivia, consuming)',
-      replace: 'activeTrivia, consuming)',
+      find: 'through ? triviaThroughRef(p, target, null) : activeTrivia, consuming, follow)',
+      replace: 'activeTrivia, consuming, follow)',
     }],
   },
 
@@ -705,6 +951,29 @@ export const DEFECTS = {
       file: 'src/table/scan-shapes.ts',
       find: 'if (/[msuv]/.test(flags)) return null',
       replace: 'if (/[msu]/.test(flags)) return null',
+    }],
+  },
+
+  /**
+   * The first merge of same-reading functions compared and renamed with a regex over
+   * the source, so a grammar's string reading `_pf5` became another site's name.
+   */
+  'merge-renames-by-regex': {
+    why: 'merge of same-reading functions: renames site-like text in strings too',
+    edits: [{
+      file: 'src/plugin/entry-supercompiler.ts',
+      find: 'return render(source, 0, source.length, edits)\n}',
+      replace: "return render(source, 0, source.length, edits).replace(/\\b_(?:pf|sk)\\d+\\b/g, name => merged.has(name) ? current(name) : name)\n}",
+    }],
+  },
+
+  /** The same mistake on the comparing side: two functions differ only in such a string. */
+  'merge-compares-site-like-text': {
+    why: 'merge of same-reading functions: compares site-like strings as equal',
+    edits: [{
+      file: 'src/plugin/entry-supercompiler.ts',
+      find: 'const key = render(source, body.start, body.end, edits)',
+      replace: "const key = render(source, body.start, body.end, edits).replace(/\"_pf\\d+\"/g, '\"#\"')",
     }],
   },
 

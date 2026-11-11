@@ -21,10 +21,11 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { createUnplugin } from 'unplugin'
+import type { UnpluginBuildContext } from 'unplugin'
 import { parseSync } from 'oxc-parser'
 import { ResolverFactory } from 'oxc-resolver'
 import MagicString from 'magic-string'
-import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, evaluateStaticValue, evaluateWordFactory, evaluateWhenFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, setReducerResolver, setBuilderImportResolver, propName, ModuleScope, type FreeNameResolution, type Scope, type ScopeEntry } from './evaluator.ts'
+import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, externalAccesses, ruleMapRecipes, evaluateStaticValue, evaluateWordFactory, evaluateWhenFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, setReducerResolver, setBuilderImportResolver, propName, ModuleScope, type FreeNameResolution, type Scope, type ScopeEntry } from './evaluator.ts'
 import { classifyRuleMap } from '../analysis/commitment.ts'
 import { compile } from '../table/compile.ts'
 import { compileRuleMap, type CompiledRuleMapTable } from '../table/compile-rule-map.ts'
@@ -37,7 +38,7 @@ import {
   resolveDegradationLevel, recordDegradation, degradationCaptureDepth, unwindDegradationCapture,
 } from '../compiler/degradation.ts'
 import type { HostMode } from '../cst/host-mode.ts'
-import { COMPOSED_PIECES, type IRPiece } from '../compiler/linker.ts'
+import { COMPOSED_PIECES, danglingReference, type IRPiece } from '../compiler/linker.ts'
 import { serializeCombinator, serializeRuleMap } from '../compiler/ir-serialize.ts'
 import { evalCombinatorIR, evalRulesIR, INERT_BUILDER } from './ir-eval.ts'
 import { countSiteVisits } from '../table/assemble.ts'
@@ -170,22 +171,42 @@ export type ParsecraftPluginOptions = {
    */
   assemblyProfile?: AssemblyProfile
   /**
-   * Generated assembly bytes each module may spend, as a multiple of its own source
-   * length. **Default `0.25`.** `0` ships no assembly. The right number is
+   * Generated assembly bytes each module may spend, as a multiple of its own code,
+   * comments and whitespace aside. **Default `0.5`.** `0` ships no assembly. The right number is
    * per grammar: a larger one parses faster in steady state and costs import and
    * first-parse time, so measure both, and keep the artifact within 5× its source
-   * (docs/design/runtime-and-size-contract.md, rules 4 and 6).
+   * (docs/design/runtime-and-size-contract.md, rules 4 and 6). A larger budget never
+   * loses a site, with one limit: a module with two AST grammars spends it in order, so
+   * a larger budget can buy the first a big site and leave the second fewer.
    */
   assemblyBudget?: number
 }
 
 /** A corpus a build parses to rank selective-assembly sites — see `assemblyProfile`. */
 export type AssemblyProfile = {
-  /** The rule each corpus file is parsed from, e.g. `'Stylesheet'`. A grammar
-   * without this rule keeps the static ranking. */
+  /** The rule each corpus file is parsed from, e.g. `'Stylesheet'`. A grammar without
+   * this rule keeps the static ranking. A build fails when grammars were profiled and
+   * none has the rule. A direct `transformMacro` caller gets `assemblyProfile:
+   * 'no-entry'` on the result instead, and has to read it. */
   readonly entry: string
-  /** Paths of representative inputs. */
+  /** Paths of representative inputs. At least one must have content, and each that
+   * does has to parse in full without recovery, or the build fails. A file with only
+   * whitespace counts as empty. A callback the corpus doesn't reach is never run, so
+   * nothing checks it. */
   readonly files: readonly string[]
+  /**
+   * The values of names a grammar's reducers and gates import, for the corpus run.
+   * Their source runs at build time with no module around it, so a grammar whose
+   * callbacks read imported helpers passes those helpers here. See
+   * `docs/guide/macro-mode.md` for what this does and doesn't cover.
+   *
+   * It's one flat namespace, so two modules can't bind one name to different helpers.
+   * A name that's already a global fails the build. A helper named like a global and
+   * left out of `scope` silently uses the global. A direct `node()` builder doesn't
+   * run in the corpus run: a plain node stands in for it, so a helper only a builder
+   * reads is neither needed here nor checked.
+   */
+  readonly scope?: Readonly<Record<string, unknown>>
 }
 
 /** Corpus file contents, re-read when a file's mtime moves, so a watch build that
@@ -206,11 +227,26 @@ const PARSEMAN_MODULE = 'parseman'
 
 /**
  * The default `assemblyBudget`: generated assembly bytes a module may spend, as a
- * multiple of its own source length. A quarter of the source keeps every jess
- * grammar far under the 5x ceiling (contract rule 4); the 0.57.0 CHANGELOG has the
- * measured curve.
+ * multiple of its own code (`codeBytes`). Half keeps every jess grammar far under the
+ * 5x ceiling (contract rule 4). A grammar that wants a different trade passes its own.
  */
-const DEFAULT_ASSEMBLY_BUDGET = 0.25
+const DEFAULT_ASSEMBLY_BUDGET = 0.5
+
+/**
+ * A module's code in bytes, without its comments and whitespace. It is what a budget
+ * is a share of, so editing a comment or reflowing a line cannot move a site in or
+ * out of the assembly, and with it the module's size and parse speed.
+ */
+function codeBytes(code: string, comments: readonly { start: number; end: number }[], end = code.length): number {
+  let bytes = 0
+  let at = 0
+  for (const c of comments) {
+    if (c.start >= end) break
+    bytes += code.slice(at, c.start).replace(/\s+/g, '').length
+    at = c.end
+  }
+  return bytes + code.slice(at, end).replace(/\s+/g, '').length
+}
 
 /**
  * The REASON a lowering refused, appended to the warning that reports it.
@@ -220,6 +256,9 @@ const DEFAULT_ASSEMBLY_BUDGET = 0.25
  * ~79 ms against ~14 ms on `benchmark.less`. "Couldn't be inlined" alone does not
  * tell an author which construct to change; the compiler knows, so it says.
  */
+/** A build failure the lowering must not soften into a warning and a fallback. */
+class LinkRefusal extends Error {}
+
 function reasonSuffix(runtimeOnly: readonly string[] | undefined): string {
   return runtimeOnly === undefined || runtimeOnly.length === 0
     ? ''
@@ -536,6 +575,9 @@ export default createUnplugin((opts: ParsecraftPluginOptions = {}, meta) => {
   // Module id → its carried lists, under a bundler that writes them beside the chunk.
   // Any other bundler gets them inline, as before.
   const sinks = SIDECAR_FRAMEWORKS.has(meta.framework) ? new Map<string, CarriedSink>() : undefined
+  // Module id → whether its grammars ran the corpus. A module without the entry rule is
+  // fine on its own, because one plugin sees many modules, so only the build can tell.
+  const profiled = new Map<string, NonNullable<TransformMacroResult['assemblyProfile']>>()
   // `order: 'post'`: the sidecar records a digest of each chunk's code, so it is
   // taken after every other plugin's `generateBundle` has rewritten that code (Vite
   // rewrites a dynamic `import()` through its preload helper there).
@@ -557,10 +599,19 @@ export default createUnplugin((opts: ParsecraftPluginOptions = {}, meta) => {
       return /\.[jt]sx?$/.test(id) && !id.includes('node_modules')
     },
 
+    buildEnd(this: UnpluginBuildContext & { getModuleIds?: () => Iterable<string> }, error?: unknown) {
+      if (error) return
+      // esbuild, webpack and rspack can't list a build's modules, so there every module seen counts.
+      const ids = [...this.getModuleIds?.() ?? profiled.keys()].filter(id => profiled.has(id))
+      if (ids.length === 0 || ids.some(id => profiled.get(id) === 'ran')) return
+      throw new Error(`assemblyProfile: no grammar has rule "${opts.assemblyProfile?.entry}", so the corpus never ran (${ids.join(', ')})`)
+    },
+
     transform(this: { warn?: (msg: string) => void; addWatchFile?: (file: string) => void }, code: string, id: string) {
       // What this module recorded on an earlier build of a watch session is stale
       // from here: it records again below, or it no longer lowers anything.
       sinks?.delete(id)
+      profiled.delete(id)
       if (!code.includes('parseman')) return null
       if (!code.includes('macro')) return null
       // A corpus edit changes which sites a profiled build generates, so a watch
@@ -570,6 +621,7 @@ export default createUnplugin((opts: ParsecraftPluginOptions = {}, meta) => {
       const sink: CarriedSink | undefined = sinks && new Map()
       const result = transformMacro(code, id, moduleAliases, opts.warnUnloweredRegex === true, opts.recovery === true, opts.grammarCoverage === true, opts.assemblyProfile, opts.assemblyBudget, sink)
       if (sinks && sink && sink.size > 0) sinks.set(id, sink)
+      if (result?.assemblyProfile !== undefined) profiled.set(id, result.assemblyProfile)
       if (result?.warnings.length) {
         for (const w of result.warnings) {
           if (typeof this?.warn === 'function') this.warn(`[parseman] ${w}`)
@@ -764,6 +816,11 @@ export type TransformMacroResult = {
   map: ReturnType<MagicString['generateMap']>
   /** Diagnostics for macro-referencing shapes that fell back to the interpreter. */
   warnings: string[]
+  /** With an `assemblyProfile`: `'ran'` when a grammar here parsed the corpus,
+   * `'no-entry'` when the grammars that could have don't have its `entry` rule. */
+  assemblyProfile?: 'ran' | 'no-entry'
+  /** The sites the module's `assemblyBudget` bought, by program offset, in rank order. */
+  assemblySites: number[]
 }
 
 /**
@@ -1746,7 +1803,9 @@ function transformMacroImpl(
 
   // Stable, reproducible per-artifact namespace: hash of module id + a label
   // (binding name / arg position) — never a counter, so rebuilds are byte-stable
-  // and two artifacts never collide when fused.
+  // and two artifacts never collide when fused. A call is labelled by where it sits
+  // in the module's code (`codeBytes`), so a comment above it leaves the name alone.
+  const callLabel = (fn: string, start: number): string => `${fn}${codeBytes(code, result.comments, start)}`
   const nsFor = (label: string): string =>
     `_${createHash('sha1').update(`${id}#${label}`).digest('hex').slice(0, 8)}_`
 
@@ -2052,7 +2111,7 @@ function transformMacroImpl(
   /**
    * Evaluate a carried list back to combinators, one entry per piece: its rule map
    * and the `rules()` recipe it was built from. `compose()` links the recipes into
-   * one namespace (`mergedCarriedRules`); `composeLeaf()` merges the maps by name.
+   * one namespace (`mergedCarriedRules`), and `composeLeaf()` does the same.
    * Either way the merged grammar is encoded ONCE by `compileRuleMap` — no relocation
    * of code offsets and no merging of const / fn / expected pools between two
    * already-encoded programs.
@@ -2089,38 +2148,6 @@ function transformMacroImpl(
   }
 
   /**
-   * Fold ordered rule maps into the composed map: a later piece's name WINS, and
-   * `Map` keeps each name at its first-sighting position so the encoded rule order
-   * tracks the source lowering's rather than drifting per compose.
-   *
-   * A REFERENCE IS NOT A DEFINITION. A `rules(g => …)` cache also holds every `g.X`
-   * that was merely ACCESSED, so a delta that calls `g.Pair` carries a `Pair` entry
-   * that is an unresolved named lazy. Merged in name order that entry lands LAST and
-   * shadows the base piece which actually defines `Pair` — the encoder then finds a
-   * hole where the winner should be and refuses the whole grammar with "ref() used
-   * before .define()". The same filter guards `compileLinkableTable`'s `isLocal`
-   * (`compile-linkable-table.ts`) and `recoverComposedRules`; this site needs it
-   * for the same reason, and skipping it is why cross-piece composition looked blocked.
-   *
-   * The reference itself is not lost: it stays inside the delta's own rule bodies and
-   * `enc.winners` binds it BY NAME to whichever piece supplies the definition.
-   */
-  const mergeRuleMaps = (
-    maps: ReadonlyArray<ReadonlyArray<readonly [string, Combinator<unknown>]>>,
-  ): Array<[string, Combinator<unknown>]> => {
-    const winners = new Map<string, Combinator<unknown>>()
-    for (const map of maps) {
-      for (const [name, rule] of map) {
-        if (rule._def.tag === 'lazy') {
-          try { rule._def.thunk() } catch { continue }
-        }
-        winners.set(name, rule)
-      }
-    }
-    return [...winners]
-  }
-
-  /**
    * LINK a carried list into the composed map, exactly as runtime `compose()` does:
    * every piece's carried `rules()` recipe runs again against ONE namespace
    * (`linkRules`), a later piece's rule winning by name, and the composing trivia and
@@ -2136,36 +2163,15 @@ function transformMacroImpl(
   const mergedCarriedRules = (
     items: CarriedItem[],
     link: LinkOptions,
-  ): { rules: Array<[string, Combinator<unknown>]>; trackLines: boolean } | null => {
+  ): { rules: Array<[string, Combinator<unknown>]>; trackLines: boolean; dangling: string | undefined } | null => {
     const carriedMaps = carriedRuleMaps(items)
     if (carriedMaps === null) return null
     const linked = linkRules(carriedMaps.pieces.flatMap(p => p.recipes), link)
     // A name some piece only REFERENCES and none defines stays an undefined slot in
-    // the namespace. It is not a rule, so it is not handed to the encoder as one.
-    const rules = Object.entries(linked).filter(([, rule]) => {
-      if (rule._def.tag !== 'lazy') return true
-      try { rule._def.thunk(); return true } catch { return false }
-    })
-    return { rules, trackLines: carriedMaps.trackLines }
-  }
-
-  /**
-   * COMPOSING-WINS for `composeLeaf()`'s carried pieces, as an OVERRIDE rather than
-   * a gap-fill: `compileRuleMap`'s `applyAmbient` only fills a rule that carries no
-   * trivia of its own. (`compose()` gets the same override from `linkRules`.)
-   *
-   * Safe to mutate: every rule here came from `evalRuleMapIR`, which constructs FRESH
-   * combinators per piece per compose, so this cannot leak into another compose of the
-   * same base grammar.
-   */
-  const applyComposingTrivia = (
-    ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>,
-    composing: Combinator<unknown>,
-  ): void => {
-    for (const [, rule] of ruleMap) {
-      if (rule._meta.isTrivia) continue
-      ;(rule._meta as { grammarTrivia?: Combinator<unknown> }).grammarTrivia = composing
-    }
+    // the namespace. Runtime `compose()` refuses that grammar at link, so the build
+    // refuses it too (the caller throws `dangling`) rather than encode around the hole.
+    const dangling = danglingReference(linked)
+    return { rules: Object.entries(linked), trackLines: carriedMaps.trackLines, dangling }
   }
 
   /** Resolve one `compose([...])` argument to its RE-LOWERABLE carried items (IR
@@ -2183,7 +2189,7 @@ function transformMacroImpl(
     // `rules({ scanSkip }, …)` options, which stamps `_meta.grammarScanSkip` when the IR
     // is re-lowered (materializePiece → compileLinkable picks it up), and survives to a
     // downstream re-compose. The full-pieces fallback bakes it via the compile option.
-    const ir = serializeRuleMap(entries as never, scanSkip)
+    const ir = serializeRuleMap(entries as never, scanSkip, rm instanceof Map ? externalAccesses.get(rm) : undefined)
     if (ir) return { carried: [{ ns, ir, ...(trackLines ? { trackLines: true as const } : {}) }] }
     // NO FULL-PIECES FALLBACK. It used to bake the grammar to lowered source when the IR
     // would not serialize; with one lowering there is nothing to bake to, and IR is not
@@ -2303,7 +2309,7 @@ function transformMacroImpl(
     const carried: CarriedItem[] = []       // re-lowerable; also SERIALIZED onto the value
     const importedFactories: string[] = []
     for (let i = 0; i < elements.length; i++) {
-      const r = argPieces(elements[i]!, `compose${init.start}_${i}`, composing)
+      const r = argPieces(elements[i]!, `${callLabel('compose', init.start)}_${i}`, composing)
       if (!r) {
         // A build-compiled argument cannot fall back: runtime `compose()` links live
         // `rules()` grammars only and would throw at import. Fail here instead.
@@ -2333,10 +2339,18 @@ function transformMacroImpl(
     // does — one encode, one `tableRules(…)` expression, no linker. `carried` is
     // unchanged either way: it is the re-lowerable IR list, not a lowering artifact,
     // so a downstream re-compose behaves identically whichever engine emitted here.
-    const merged = mergedCarriedRules(carried, {
-      trivia: composing,
-      ...(cHostMode ? { hostMode: cHostMode as HostMode } : {}),
-    })
+    let merged: ReturnType<typeof mergedCarriedRules>
+    try {
+      merged = mergedCarriedRules(carried, {
+        trivia: composing,
+        ...(cHostMode ? { hostMode: cHostMode as HostMode } : {}),
+      })
+    } catch (e) {
+      // Linking refuses the composition (a `prior.X` no earlier piece defines): a
+      // runtime `compose()` would refuse it the same way, so the build fails, here.
+      throw new Error(`${id}:${lineOf(init.start)} — ${(e as Error).message}`, { cause: e })
+    }
+    if (merged?.dangling !== undefined) throw new Error(`${id}:${lineOf(init.start)} — compose: ${merged.dangling}`)
     if (merged !== null) {
       // Harvest the direct-builder import provenance carried on the merged graph so
       // the re-lower pass at the end of this transform re-emits those imports.
@@ -2384,14 +2398,15 @@ function transformMacroImpl(
    * SELECTIVE ASSEMBLY, BUDGETED PER MODULE. A fused grammar's default AST/no-lines
    * table carries generated code for its hottest sites only (`select-hot.ts`); the
    * closure engine runs the rest. The site bodies of every fused grammar in this
-   * module together may not exceed `assemblyBudget` times the module's own source.
+   * module together may not exceed `assemblyBudget` times the module's own code (`codeBytes`).
    *
    * A module that declares a `composeLeaf` has named its terminal parser, so its
    * `compose()` results are composable PIECES: another build re-lowers them and
    * never parses through their table, so they spend nothing. Without a
    * `composeLeaf`, a `compose()` result is the module's parser.
    */
-  let assemblyBudget = Math.floor(code.length * assemblyBudgetShare)
+  let assemblyBudget = Math.floor(codeBytes(code, result.comments) * assemblyBudgetShare)
+  const assemblySites: number[] = []
   let leafDeclared: boolean | undefined
   const declaresLeaf = (): boolean => leafDeclared ??= (body as Statement[]).some(stmt => {
     const vd = unwrapVd(stmt)
@@ -2415,32 +2430,67 @@ function transformMacroImpl(
       warnings.push(`${id}:${lineOf(pos)} — ${label}: its precompiled assembly cannot emit ${refusal}; the artifact runs on the closure engine`)
     }
     assemblyBudget -= bytes
+    assemblySites.push(...sites)
     return sites
   }
   /** Measured site calls over the optional corpus, or `undefined` for the static
-   * ranking. A file whose parse throws still contributes the calls it made. */
+   * ranking. A corpus that cannot run fails the build: a static ranking standing in
+   * for the measured one configured is a slower parser that nothing reports. */
+  let profileOutcome: TransformMacroResult['assemblyProfile']
   const profileOf = (compiled: CompiledRuleMapTable): Int32Array | undefined => {
     // Only the default AST/no-lines table carries an assembly, so only it is profiled.
-    if (assemblyProfile === undefined || compiled.hostMode !== 'ast' || compiled.prog.lines === 1
-      || !(assemblyProfile.entry in compiled.prog.rules)) return undefined
-    let parsed = 0
+    if (assemblyProfile === undefined || compiled.hostMode !== 'ast' || compiled.prog.lines === 1) return undefined
+    if (!(assemblyProfile.entry in compiled.prog.rules)) {
+      profileOutcome ??= 'no-entry'
+      return undefined
+    }
+    profileOutcome = 'ran'
+    const refuse = (why: string): never => { throw new Error(`${id} — assemblyProfile: ${why}`) }
+    if (corpusTexts(assemblyProfile).every(text => text.trim() === '')) refuse('`files` has no non-empty file')
+    let thrower: unknown
     // A builder re-lowered from carried IR is inert at build time; for COUNTING
     // only, a plain node stands in for it, so the corpus can run past it.
     const fns = compiled.prog.fns.map(fn => {
       const type = (fn as { [INERT_BUILDER]?: string } | null)?.[INERT_BUILDER]
-      return type === undefined ? fn
-        : (children: unknown, _fields: unknown, span: unknown) => ({ type, span, children })
+      if (type !== undefined) return (children: unknown, _fields: unknown, span: unknown) => ({ type, span, children })
+      return typeof fn !== 'function' ? fn : new Proxy(fn, {
+        apply(target, self, args) {
+          try { return Reflect.apply(target, self, args) as unknown } catch (e) { thrower ??= target; throw e }
+        },
+      })
     })
-    const counts = countSiteVisits(compiled.prog, rules => {
-      const entry = rules[assemblyProfile.entry]!
-      for (const text of corpusTexts(assemblyProfile)) {
-        try { if (run(entry, text).ok) parsed++ } catch { /* the calls it made still count */ }
-      }
-    }, fns)
-    if (parsed > 0) return counts
-    // Not `warn()`: nothing fell back to the interpreter — the build is only untuned.
-    warnings.push(`${id} — assemblyProfile: no corpus file parsed from rule "${assemblyProfile.entry}"; using the static ranking`)
-    return undefined
+    // ponytail: callback source is evaluated in global scope, so the corpus run sees
+    // `scope` as globals for this one synchronous call, and nothing can interleave with
+    // it. Async work a callback starts that outlives the call no longer sees them;
+    // rebind each callback instead if a helper ever needs that.
+    const scope = assemblyProfile.scope ?? {}
+    const names = Object.keys(scope)
+    for (const name of names) {
+      if (name in globalThis) refuse(`\`scope\` name "${name}" is already a global; a callback couldn't tell which one it reads`)
+    }
+    try {
+      for (const name of names) Object.defineProperty(globalThis, name, { value: scope[name], configurable: true })
+      return countSiteVisits(compiled.prog, rules => {
+        const entry = rules[assemblyProfile.entry]!
+        corpusTexts(assemblyProfile).forEach((text, i) => {
+          const file = assemblyProfile.files[i]!
+          if (text.trim() === '') return
+          let result
+          try { result = run(entry, text) } catch (e) {
+            const source = String(thrower).replace(/\s+/g, ' ').slice(0, 200)
+            throw new Error(`${id} — assemblyProfile: ${thrower === undefined ? 'the parse' : `gate or reducer \`${source}\``} threw on ${file}: ${String(e)}`, { cause: e })
+          }
+          if (!result.ok || result.unconsumedFrom !== null) {
+            refuse(`${file} does not parse from rule "${assemblyProfile.entry}": it stops at offset ${result.ok ? result.unconsumedFrom : result.span.end}`)
+          }
+          if (result.errors.length > 0) {
+            refuse(`${file} parses only by recovering from ${result.errors.length} error(s), first at offset ${result.errors[0]!.span.start}`)
+          }
+        })
+      }, fns)
+    } finally {
+      for (const name of names) Reflect.deleteProperty(globalThis, name)
+    }
   }
   /** The fused table's replacement, with its selective default assembly if any. */
   const assembledReplacement = (compiled: CompiledRuleMapTable, metadata: string, select: ReadonlySet<number>): string =>
@@ -2467,22 +2517,15 @@ function transformMacroImpl(
       return null
     }
     const localArg = elements[elements.length - 1]!
-    let localRules: Iterable<readonly [string, unknown]> | null = null
-    // The LOCAL leaf grammar's own ambient scanSkip (from its `rules({ scanSkip })`)
-    // governs the scanTo/balanced sites IT defines — unlike trivia (composing-wins),
-    // opaque units are dialect-specific, so the local declaration is threaded to the
-    // local piece's compile.
-    let localScanSkip: Combinator<unknown>[] | undefined
+    let localRules: ReadonlyMap<string, Combinator<unknown>> | null = null
     const importedFactories: string[] = []
     if (isRulesCall(localArg)) {
-      const evaluated = evaluateRulesFactory(localArg, `composeLeaf${init.start}`)
+      const evaluated = evaluateRulesFactory(localArg, callLabel('composeLeaf', init.start))
       localRules = evaluated?.ruleMap ?? null
-      localScanSkip = evaluated?.scanSkip
       if (evaluated?.importedFactory) importedFactories.push(evaluated.importedFactory)
     } else if (localArg.type === 'Identifier') {
       const name = (localArg as unknown as { name: string }).name
       localRules = localRuleMaps.get(name) ?? null
-      localScanSkip = localGrammarScanSkip.get(name)
     }
     if (!localRules) {
       // Distinguish "the argument is the wrong SHAPE" from "the argument is the right
@@ -2504,7 +2547,7 @@ function transformMacroImpl(
     const composing = composingTrivia(elements)
     const carried: CarriedItem[] = []
     for (let i = 0; i < elements.length - 1; i++) {
-      const r = argPieces(elements[i]!, `composeLeaf${init.start}_${i}`, composing)
+      const r = argPieces(elements[i]!, `${callLabel('composeLeaf', init.start)}_${i}`, composing)
       if (!r) {
         warn(init.start, `composeLeaf(): argument ${i} isn't a build-resolvable recognition grammar`)
         return null
@@ -2517,13 +2560,6 @@ function transformMacroImpl(
       // may place one beneath a direct node(). Re-lower their terminals with
       // capture enabled so that node receives the imported token values in its
       // normal child collector; the pieces still contain no semantic callback.
-      const localNs = nsFor(`composeLeaf${init.start}`)
-      const localEntries = [...localRules] as Array<[string, Combinator<unknown>]>
-
-      // TABLE FIRST — same merge as `compose()`, with the local leaf map appended LAST
-      // so it wins every name and binds the imported shapes' holes (`enc.winners`
-      // resolves those by name; see `mergedCarriedRules`).
-      //
       // The recognition-only gate is preserved EXACTLY, and is the reason this path
       // needs no `compileLinkable`: `hasDirectBuilders` / `isRecognitionOnly` are
       // predicates over the combinator graph, not products of lowering it, so
@@ -2546,27 +2582,23 @@ function transformMacroImpl(
           warn(init.start, 'composeLeaf(): every pre-final grammar must explicitly prove recognition-only')
           return null
         }
-        // The local grammar's OWN ambient scanSkip is stamped onto the LOCAL entries
-        // only. Passing it as a merged-map option instead would let `applyAmbient`
-        // hand it to every imported rule that happens to carry no stamp of its own —
-        // opaque units are dialect-specific, and that is precisely the leak the
-        // per-piece threading in the source path exists to avoid.
-        if (localScanSkip) {
-          for (const [, rule] of localEntries) {
-            if (rule._meta.isTrivia) continue
-            const meta = rule._meta as { grammarScanSkip?: Combinator<unknown>[] }
-            if (meta.grammarScanSkip === undefined) meta.grammarScanSkip = localScanSkip
-          }
+        // The same link as `compose()` and runtime `composeLeaf()`: the leaf is the last
+        // recipe, so it wins every name, binds the imported shapes' holes and fills its
+        // `prior.X`. Each recipe keeps its own scanSkip; the composing trivia governs all.
+        let linked: Record<string, Combinator<unknown>>
+        try {
+          linked = linkRules(
+            [...carriedMaps.pieces.flatMap(p => p.recipes), ...ruleMapRecipes.get(localRules)!],
+            { trivia: composing },
+          )
+        } catch (e) {
+          throw new LinkRefusal(`${id}:${lineOf(init.start)} — composeLeaf: ${(e as Error).message.replace(/^compose: /, '')}`, { cause: e })
         }
-        const leafMerged = mergeRuleMaps([...carriedMaps.pieces.map(p => p.rules), localEntries])
-        // Composing-wins governs the leaf fuse too. The local entries are NOT freshly
-        // evaluated (they come from this module's own `rules()` factory), so they are
-        // excluded from the override — their declared trivia IS the composing candidate,
-        // and rewriting `_meta` on them would mutate the module-level grammar object.
-        if (composing) applyComposingTrivia(carriedMaps.pieces.flatMap(p => p.rules), composing)
+        const dangling = danglingReference(linked)
+        if (dangling !== undefined) throw new LinkRefusal(`${id}:${lineOf(init.start)} — composeLeaf: ${dangling}`)
         const refusals: string[] = []
         const compiled = compileRuleMap(
-          leafMerged,
+          Object.entries(linked),
           {
             ...(composing ? { trivia: composing } : {}),
             ...(carriedMaps.trackLines ? { trackLines: true } : {}),
@@ -2595,6 +2627,7 @@ function transformMacroImpl(
       warn(init.start, 'composeLeaf(): a recognition piece has no re-lowerable IR')
       return null
     } catch (e) {
+      if (e instanceof LinkRefusal) throw e
       warn(init.start, `composeLeaf(): ${(e as Error).message}`)
       return null
     }
@@ -2796,7 +2829,7 @@ function transformMacroImpl(
             // lowering there is no such artifact, and a grammar that cannot serialize
             // simply is not carried: an absent carried list makes the downstream compose
             // say so, where a frozen one did not.
-            const ir = serializeRuleMap([...compiledRules.ruleMap] as never, compiledRules.scanSkip)
+            const ir = serializeRuleMap([...compiledRules.ruleMap] as never, compiledRules.scanSkip, externalAccesses.get(compiledRules.ruleMap))
             if (ir) carriedMetadata = [{ ns, ir, ...(compiledRules.trackLines ? { trackLines: true as const } : {}) }]
             // NOT SILENT. An export with no carried IR cannot be composed downstream at
             // all — the consumer's `compose()` will fall back to runtime and say so, but
@@ -3336,8 +3369,10 @@ function transformMacroImpl(
   }
 
   return {
+    assemblySites: applied.length > 0 ? assemblySites : [],
     code: ms.toString(),
     map: ms.generateMap({ hires: true }),
     warnings,
+    ...(profileOutcome === undefined ? {} : { assemblyProfile: profileOutcome }),
   }
 }

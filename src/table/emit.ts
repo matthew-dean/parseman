@@ -300,12 +300,16 @@ function assertPrintable(prog: TableProgram, who: string): void {
  * for its ONE base table.
  */
 function programFields(prog: TableProgram, fns: readonly string[], opts: EmitOptions = {}): string[] {
+  // Expected sets overlap heavily, so each one lists indices into one pool of tokens.
+  const tokens = [...new Set(prog.fx.flat())]
+  const tokenAt = new Map(tokens.map((token, i) => [token, i]))
   return [
     ...emitAssemblies(prog, opts.assemblies ?? []),
     `c:[${prog.code.join(',')}],`,
     `k:[${prog.k.map(emitConst).join(',')}],`,
     `x:${emitClassPool(prog.cc)},`,
-    `e:[${prog.fx.map(f => `[${f.map(jsString).join(',')}]`).join(',')}],`,
+    `e:[${prog.fx.map(f => `[${f.map(token => tokenAt.get(token)).join(',')}]`).join(',')}],`,
+    `es:[${tokens.map(jsString).join(',')}],`,
     `d:[${prog.disp.map(a => `[${a.join(',')}]`).join(',')}],`,
     `r:${JSON.stringify(prog.rules)},`,
     ...(prog.lines === 1 ? ['l:1,'] : []),

@@ -24,7 +24,7 @@ import {
   OP_ATTEMPT, OP_CHOICE, OP_COV, OP_DISPATCH, OP_EMPTY, OP_EXPECT, OP_FIELD, OP_GATE, OP_GUARD, OP_LABEL,
   OP_LEAF, OP_LIT, OP_LIT_CI, OP_LIT_CI_TRACK, OP_LIT_TRACK, OP_NODE, OP_NODE_TRACK, OP_NOT, OP_OPT, OP_PEEK,
   OP_REP, OP_REPV, OP_ROUTED, OP_RULE, OP_RX, OP_RX_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_SEQ,
-  OP_SEQV, OP_SEQX, OP_SOURCE_LEAF, OP_TOKEN, OP_WITHCTX, OP_XFORM, OP_GAPGATE,
+  OP_SEQV, OP_SEQX, OP_SOURCE_LEAF, OP_TOKEN, OP_WITHCTX, OP_XFORM, OP_GAPGATE, OP_CONT, OP_SEED,
 } from './ops.ts'
 
 export type FailClean = (ip: number) => boolean
@@ -113,11 +113,22 @@ export function failCleanAnalysis(code: ArrayLike<number>): FailClean {
       case OP_ROUTED:
         out = code[ip + 1]! < 0 || clean(code[ip + 1]!)
         break
-      // An arm's failure and the fallback's are committed; only the selector's is
-      // not, and without a fallback an unknown key fails after the selector wrote.
-      case OP_DISPATCH:
-        out = code[ip + 3]! >= 0 && clean(code[ip + 1]!)
+      case OP_SEED:
+        out = clean(code[ip + 1]!)
         break
+      // The corner may fail; the wrapper fails only through a tail that can.
+      case OP_CONT:
+        out = clean(code[ip + 1]!) && neverFails(code[ip + 3]!)
+        break
+      // An arm's failure and a committing fallback's are committed; only the
+      // selector's is not. An uncommitted fallback's failure leaves the selector's
+      // capture, unless the fallback reads it through `routed()`, which rolls that
+      // capture back first. With no fallback, the dispatch fails after the selector wrote.
+      case OP_DISPATCH: {
+        const flags = code[ip + 4]!
+        out = code[ip + 3]! >= 0 && ((flags & 2) === 0 || (flags & 1) === 1) && clean(code[ip + 1]!)
+        break
+      }
       default: {
         const c = passChild(code, ip)
         out = c >= 0 && clean(c)

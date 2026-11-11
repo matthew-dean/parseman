@@ -2,6 +2,7 @@
   "repository": "https://github.com/jesscss/jess",
   "commit": "4dc689087c14e970c1e4b34c7c03e8554700d173",
   "files": {
+    "core/core.js": "packages/core/src/ast.ts, packages/core/src/diagnostics.ts (bundled)",
     "css/grammar.ts": "packages/syntax/css/css-parser/src/grammar.ts",
     "jess/curly-list.ts": "packages/syntax/jess/jess-parser/src/curly-list.ts",
     "jess/grammar-helpers.ts": "packages/syntax/jess/jess-parser/src/grammar-helpers.ts",

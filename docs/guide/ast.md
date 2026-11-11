@@ -10,8 +10,7 @@ tree out:
   from the captured children. Covered first.
 
 Either way, Parséman captures the rule's terminals into `children` / `rawChildren`. When
-that node owns trivia capture, it also records trivia as flat `[start, end, insertIdx, …]`
-entries in `triviaLog`. **Capture is the library's job** — you don't wrap terminals to
+that node owns trivia capture, it also records trivia as flat entries in `triviaLog`. **Capture is the library's job** — you don't wrap terminals to
 recover their spans, and you don't reconstruct trivia by hand. It's collected as the
 parser runs, in both the interpreter and the compiled build.
 
@@ -52,9 +51,10 @@ Expr.parse('1 + 2 + 3', 0, { trackLines: false })
 - **`span`** — the full source span matched by this node.
 - **`rawChildren`** — structural children only (same items as `children`, without trivia
   tokens).
-- **`triviaLog`** — flat `[start, end, insertIdx, …]` entries for whitespace/comments
-  consumed between terms. `insertIdx` is the `rawChildren` index before which the trivia
-  was consumed. Pass the tree to `buildTriviaIndex(tree, input)` for a `before`/`after`
+- **`triviaLog`** — flat entries for whitespace/comments consumed between terms: three
+  numbers each, `[start, end, insertIdx, …]`, or four, `[start, end, insertIdx, kind, …]`,
+  when the trivia has kind labels. `insertIdx` is the `rawChildren` index before which the
+  trivia was consumed, and `kind` indexes the labels. Pass the tree to `buildTriviaIndex(tree, input)` for a `before`/`after`
   map — useful for whitespace-sensitive syntax, like telling CSS's `div p` apart from
   `div.p`.
 - **`state`** — the `ctx.state` active at parse time, the object itself, not a copy
@@ -357,6 +357,14 @@ paying a `build` call per transparent layer, and without hand-writing
 and the macro build**: the compiled output emits a
 `children.length === 1 ? <single-child> : build(…)` ternary, and the plugin reads static
 `{ unwrap: true }` / `{ collapse: true }` literals as the 4th argument.
+
+`compile()` and the macro also skip the frame for the common ladder level, a `collapse`
+node of the form `sequence(corner, tail)` where `corner` always publishes exactly one
+node and `tail` is a `many()` or `optional()`. The corner runs first, and the frame opens
+only if the tail can start at the next token. The tree, spans, errors and expected sets
+are the ones the node as written produces, so there is nothing to mark. A shape the encoder
+can't prove this for runs as written: a `transform()` or `dispatch()` corner, a corner
+that isn't always a node, a tail with no first-token test, or a trivia with no scanner.
 
 ## Projecting one semantic child
 

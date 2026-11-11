@@ -50,8 +50,8 @@ import {
   OP_ADJ, OP_ARMGATE, OP_RGATE, OP_RGATE2, OP_ATTEMPT, OP_CHOICE, OP_DISPATCH, OP_EMPTY, OP_EXPECT, OP_FIELD, OP_GATE,
   OP_LABEL, OP_LEAF, OP_SOURCE_LEAF, OP_LIT, OP_LIT_CI, OP_LIT_CI_TRACK, OP_LIT_TRACK, OP_NAMES,
   OP_NODE, OP_NODE_TRACK, OP_NOT, OP_OPT, OP_PEEK, OP_REP, OP_REPV, OP_ROUTED, OP_RULE, OP_RX,
-  OP_RX_TRACK, OP_SCAN, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_SEQ, OP_SEQV, OP_SEQX, OP_TOKEN, OP_WITHCTX, OP_XFORM,
-  OP_LEX_BODY, OP_LEX_PROGRAM, OP_GAPGATE, OP_STRICT,
+  OP_RX_TRACK, OP_SCAN, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, SCOPE_INHERIT, OP_SEQ, OP_SEQV, OP_SEQX, OP_TOKEN, OP_WITHCTX, OP_XFORM,
+  OP_LEX_BODY, OP_LEX_PROGRAM, OP_GAPGATE, OP_STRICT, OP_CONT, OP_SEED,
 } from './ops.ts'
 import {
   choiceCannotCommit, choiceLogRollbackMask, choiceRollbackMask, failureLogRollback, failureRollbackClean, validateDispatchSpec,
@@ -67,6 +67,7 @@ import {
   scalarTerminalNodeChild, scalarTerminalNotChild, scalarTerminalPeekChild, type LeadingScalarSequence,
 } from './scalar-terminal.ts'
 import { childSlots } from './child-slots.ts'
+import { canDecide, continuationGate } from './late-frame.ts'
 import { holdsGap, rowNullable } from './hold-gap.ts'
 import { gapRows } from './gap-gate.ts'
 import { fieldSpec, leadingTriviaFieldAt } from './field-spec.ts'
@@ -139,7 +140,7 @@ export const EMITTED_PARAMS = [
   // The deferred-commit trivia skip (`trivia-gap.ts`).
   'skipDeferredTrivia',
   // The pass-through collapse (`run-support.ts`).
-  'collapseEmpty',
+  'collapseEmpty', 'popCstChild',
   // Constructor-built tree objects (`cst/plain.d.ts`): a `new` call has no
   // allocation site, so V8 cannot pretenure them.
   '_SP', '_LF', '_ND', '_FC', '_BUF',
@@ -466,16 +467,40 @@ ${scanned}
 }`
 }
 
+const TRIVIA_LOG_LENGTH = 'ctx._cstBuf!==undefined?(ctx._cstBuf.tl!==undefined?ctx._cstBuf.tl.length:0):(ctx._cstTriviaLog!==undefined?ctx._cstTriviaLog.length:0)'
+
 /**
  * A lookahead term that HOLDS its gap (`hold-gap.ts`): the gap is scanned and
  * kept, the lookahead runs at its end, and the cursor stays there for the next
- * term, which cannot match empty.
+ * term, which cannot match empty unless it `recovers`. Then the marks stay in
+ * scope for `emitHeldGapUndo`, which follows the next term.
  */
-function emitHoldTerm(callee: string, dst: string, t: string, l: SiteLabel, skip: string): string {
+function emitHoldTerm(callee: string, dst: string, t: string, l: SiteLabel, skip: string, recovers: boolean): string {
   const fast = `const ${t}v=${callee}(input,cur,ctx)
 if(${t}v===FAIL)return FAIL
 ${dst}=${t}v
 cur=EC.e`
+  if (recovers) {
+    const marked = `let ${t}c=cur,${t}s=cur,${t}tl=0,${t}stl=0,${t}lg=0,${t}slg=0,${t}rt=0,${t}srt=0`
+    if (l.tri === TRI_NONE) return `${marked}\n${fast}`
+    const held = `${t}tl=${TRIVIA_LOG_LENGTH}
+${t}lg=ctx._triviaLog!==undefined?ctx._triviaLog.length:0
+${t}rt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0
+${t}s=${skip}(input,cur,ctx)
+${t}stl=${TRIVIA_LOG_LENGTH}
+${t}slg=ctx._triviaLog!==undefined?ctx._triviaLog.length:0
+${t}srt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0
+const ${t}v=${callee}(input,${t}s,ctx)
+if(${t}v===FAIL)return FAIL
+${dst}=${t}v
+cur=${t}s`
+    return l.tri !== TRI_UNKNOWN ? `${marked}\n${held}` : `${marked}
+if(ctx.trivia===undefined){
+${fast}
+}else{
+${held}
+}`
+  }
   if (l.tri === TRI_NONE) return fast
   const held = `const ${t}s=${skip}(input,cur,ctx)
 const ${t}v=${callee}(input,${t}s,ctx)
@@ -488,6 +513,11 @@ ${fast}
 }else{
 ${held}
 }`
+}
+
+/** The next term recovered at zero width, so the gap held for it was never consumed. */
+function emitHeldGapUndo(t: string): string {
+  return `if(cur===${t}s&&${t}s!==${t}c){rollbackScannedTriviaAt(ctx,${t}tl,${t}stl,${t}lg,${t}slg,${t}rt,${t}srt);cur=${t}c}`
 }
 
 /**
@@ -674,7 +704,8 @@ export function emitAssemblySource(
   // less than reading the slot costs; only a gap matched by its RegExp takes the
   // slot (`gapRegexLowers`).
   const GAP_ROWS = gapNeutral ? new Set<number>() : new Set([...gapRows(code, roots)].filter(row => !gapRegexLowers(k[code[row + 1]!])))
-  const labels = computeSiteLabels(code, roots, hostCst)
+  const labels = computeSiteLabels(code, roots, hostCst,
+    cfg.tolerant || cfg.probe ? undefined : (ip, tri) => canDecide(code, ip, tri, t.triviaScan))
   // Eligibility is pooled by the terminal's existing constant operand, matching
   // the closure recognizer pool: distinct terminal rows sharing one spec share
   // both the recognizer and the ordinary-terminal lowering.
@@ -1037,6 +1068,17 @@ return 1
     return c => `${c}<55296&&!(${leads.map(r => r.lo === r.hi ? `${c}===${r.lo}` : `(${c}>=${r.lo}&&${c}<=${r.hi})`).join('||')})`
   }
 
+  /** `ctx.captureTrivia === true && (a sink is open)`, as far as the label resolves it. */
+  function skipCapturing(l: SiteLabel): string {
+    if (l.tri < 0 || !swapLegal || triviaLabelled[l.tri]! || t.triviaScan[l.tri] == null) return 'true'
+    return capturesHere(l)
+  }
+
+  function capturesHere(l: SiteLabel): string {
+    const sink = l.buf ? 'true' : '(ctx._cstBuf!==undefined||ctx._cstTriviaLog!==undefined)'
+    return l.cap === CAP_OFF ? 'false' : l.cap === CAP_ON ? sink : `(ctx.captureTrivia===true&&${sink})`
+  }
+
   function skipFor(l: SiteLabel): string {
     if (l.tri < 0) return '_skipTrivia'
     const ki = l.tri
@@ -1205,6 +1247,8 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
     if (op === OP_GATE && (cfg.tolerant || cfg.probe)) return code[ip + 2]!
     if (op === OP_RULE || op === OP_GAPGATE) return code[ip + 1]!
     if (op === OP_STRICT) return code[cfg.tolerant || cfg.probe ? ip + 2 : ip + 1]!
+    if (op === OP_CONT && !labels.late.has(ip)) return code[ip + 2]!
+    if (op === OP_SEED) return code[ip + 1]!
     // A SCOPE THAT INSTALLS WHAT IS ALREADY INSTALLED. `encode.ts:520` wraps
     // EVERY rule of a `rules({ trivia }, …)` map in its own `OP_SCOPE_PLAIN`, so a
     // grammar with one ambient trivia re-installs the same slot at every rule
@@ -1219,6 +1263,9 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
     if (scopeIsIdentity(code, ip, labels.at(ip))) return code[ip + 2]!
     return undefined
   }
+
+  /** Set by `OP_CONT` for the `OP_NODE` it lowers in its own function. */
+  let LATE: { prefix: string; body: string } | undefined
 
   function lower(ip: number, fname: string): string {
     const op = code[ip]
@@ -1428,6 +1475,70 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
         // hand-built-program idiom this file's driver tests use.
         return `${head}EC.e=pos;return ''}`
 
+      case OP_CONT: {
+        const tri = L.tri
+        const g = continuationGate(code, code[ip + 3]!)!
+        const missAt = (idx: number, at: string): string => {
+          const resolved = t.cc[idx]!
+          const ci = classes.push([resolved]) - 1
+          classPlan.push([idx])
+          const ref = hoist('cg', `CLS[${ci}][0]`)
+          return isAsciiOnlyClass(resolved) ? `${ref}.ascii[input.charCodeAt(${at})]!==1` : `!classHas(${ref},lead(input,${at}))`
+        }
+        // The gap the tail would start past, read without recording anything: no scan
+        // at a character no trivia can start.
+        let scanned = ''
+        if (tri >= 0) {
+          const scan = hoist('cs', `TRIVIASCAN[${tri}]`)
+          const miss = triviaMiss(tri)
+          scanned = miss === undefined
+            ? `const q0=${scan}(input,c1)\n`
+            : `const cc=input.charCodeAt(c1)\nconst q0=${miss('cc')}?c1:${scan}(input,c1)\n`
+        }
+        const at = tri >= 0 ? 'q0' : 'c1'
+        let test: string
+        if (g.gapRow < 0) test = `if(c0!==undefined&&${missAt(g.cls, at)})return c0\n`
+        else {
+          const re = hoist('cr', `K[${code[g.gapRow + 1]!}]`)
+          const other = g.other >= 0 ? missAt(g.other, at) : 'true'
+          test = `${re}.lastIndex=${at}\nconst gq=${re}.test(input)?${re}.lastIndex:-1\nif(c0!==undefined&&(gq<0||${missAt(g.follow, 'gq')})&&${other})return c0\n`
+        }
+        const seq = code[code[ip + 2]! + 2]!
+        const seqLabel = labels.at(seq)
+        const tail = link(code[ip + 3]!)
+        const recorded = tri === TRI_NONE ? '' : `const tl0=ctx._cstBuf!==undefined?(ctx._cstBuf.tl!==undefined?ctx._cstBuf.tl.length:0):(ctx._cstTriviaLog!==undefined?ctx._cstTriviaLog.length:0)
+const lg0=ctx._triviaLog!==undefined?ctx._triviaLog.length:0
+const rt0=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0
+const s0=${skipFor(seqLabel)}(input,c1,ctx)
+const tl1=ctx._cstBuf!==undefined?(ctx._cstBuf.tl!==undefined?ctx._cstBuf.tl.length:0):(ctx._cstTriviaLog!==undefined?ctx._cstTriviaLog.length:0)
+const lg1=ctx._triviaLog!==undefined?ctx._triviaLog.length:0
+const rt1=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0
+v=${tail}(input,s0,ctx)
+if(v!==FAIL&&EC.e<=s0){rollbackScannedTriviaAt(ctx,tl0,tl1,lg0,lg1,rt0,rt1);EC.e=c1}`
+        const quiet = `v=${tail}(input,${at},ctx)
+if(v!==FAIL&&EC.e<=${at})EC.e=c1`
+        const capture = capturesHere(seqLabel)
+        // No gap: nothing to record, keep or take back. Nothing recording: not scanned again.
+        const body = `let v
+${tri === TRI_NONE ? `v=${tail}(input,c1,ctx)`
+  : `if(q0===c1)v=${tail}(input,c1,ctx)
+else ${capture === 'true' ? `{\n${recorded}\n}`
+  : `if(ctx._triviaLog===undefined&&ctx._rootTriviaLog===undefined${capture === 'false' ? '' : `&&!${capture}`}){
+${quiet}
+}else{
+${recorded}
+}`}`}`
+        const wrapperIp = code[ip + 2]!
+        LATE = {
+          prefix: `const c0=${link(code[ip + 1]!)}(input,pos,ctx)
+if(c0===FAIL)return FAIL
+const c1=EC.e
+${scanned}${test}`,
+          body,
+        }
+        return lower(wrapperIp, fname)
+      }
+
       case OP_GATE: {
         const child = link(code[ip + 2]!)
         const xf = fxRef(code[ip + 3]!)
@@ -1625,6 +1736,15 @@ return r.value
         const cap = op === OP_SCOPE_CAP
         const flags = op === OP_SCOPE_PLAIN ? 0 : code[ip + 3]!
         const child = link(code[ip + 2]!)
+        if (ki === SCOPE_INHERIT) {
+          return `${head}
+const sC=ctx.captureTrivia
+ctx.captureTrivia=true
+const v=${child}(input,pos,ctx)
+ctx.captureTrivia=sC
+return v
+}`
+        }
         // THE SWAP, RESOLVED AT EMIT. `swapLegal` is `!trackLines`, an option;
         // the other two are table data. All three are known here, so the body
         // holds the scanner it installs as a hoisted const.
@@ -1928,6 +2048,7 @@ return v
         }
         parts.push('let cur=EC.e')
         const names: string[] = ['v0']
+        let heldUndo: string | undefined
         for (let i = 1; i < n; i++) {
           const vn = `v${i}`
           parts.push(`let ${vn}`)
@@ -1947,9 +2068,16 @@ return v
             // The callee expression hands it over AFTER the scan statement, right
             // before the call, so a field inside the trivia grammar cannot take it.
             const callee = leadingTriviaFieldAt(code, k, childIp) ? `(LEAD.at=cur,${kids[i]!})` : kids[i]!
-            parts.push(holdsGap(code, k, base, n, i, nullable)
-              ? emitHoldTerm(callee, vn, tmp(), L, skipFor(L))
-              : emitTerm(callee, vn, tmp(), L, skipFor(L), L.tri >= 0 ? triviaMiss(L.tri) : undefined))
+            if (holdsGap(code, k, base, n, i, nullable)) {
+              const t = tmp()
+              const recovers = rowNullable(code, k, code[base + i + 1]!, nullable)
+              parts.push(emitHoldTerm(callee, vn, t, L, skipFor(L), recovers))
+              heldUndo = recovers ? t : undefined
+            } else {
+              parts.push(emitTerm(callee, vn, tmp(), L, skipFor(L), L.tri >= 0 ? triviaMiss(L.tri) : undefined))
+              if (heldUndo !== undefined) parts.push(emitHeldGapUndo(heldUndo))
+              heldUndo = undefined
+            }
           }
           names.push(vn)
         }
@@ -2652,7 +2780,9 @@ return out
       case OP_NODE:
       case OP_NODE_TRACK: {
         const flags = code[ip + 3]!
-        const scalarChild = scalarTerminalNodeChild(code, ip)
+        const late = LATE
+        LATE = undefined
+        const scalarChild = late === undefined ? scalarTerminalNodeChild(code, ip) : -1
         if (scalarChild >= 0 && scalarSpecs.has(code[scalarChild + 1]!)) {
           const recognize = recognizerRef(code[scalarChild + 1]!)
           const spec = code[scalarChild] === OP_RX ? null : k[code[scalarChild + 1]!] as string
@@ -2678,7 +2808,9 @@ EC.e=end
 return nd
 }`
         }
-        const child = link(code[ip + 2]!)
+        const child = late === undefined ? link(code[ip + 2]!) : ''
+        const runBody = late === undefined ? `const v=${child}(input,pos,ctx)` : late.body
+        const takeBack = late === undefined ? '' : 'let c0Raw\nif(sBuf===undefined&&sRaw===undefined&&sCh!==undefined)sCh.pop()\nelse if(sBuf!==undefined||sCh!==undefined)c0Raw=popCstChild(ctx)\n'
         const proj = code[ip + 4]!
         const buildIdx = code[ip + 1]!
         const type = k[code[ip + 5]!] as string
@@ -2705,7 +2837,7 @@ return nd
         // THE PASS-THROUGH COLLAPSE (`run-support.ts` `collapseEmpty`): a
         // collapse over one node is that node. `passCollapse` is the closure
         // engine's test too.
-        if (build !== undefined && passCollapse(code, ip, hostCst)) {
+        if (late === undefined && build !== undefined && passCollapse(code, ip, hostCst)) {
           return `${head}
 const v=${child}(input,pos,ctx)
 if(v!==undefined)return v
@@ -2716,7 +2848,7 @@ return collapseEmpty(ctx,${build},input,pos,EC.e,${flags === 32})
         // character at `pos` opens none of the body's optional terms and no
         // trivia, the body is its node term, run as a pass-through collapse.
         // Not under recovery or a probe: there a gated-out term still runs.
-        const gated = build !== undefined && !cfg.tolerant && !cfg.probe ? gatedPassCollapse(code, ip, hostCst) : undefined
+        const gated = late === undefined && build !== undefined && !cfg.tolerant && !cfg.probe ? gatedPassCollapse(code, ip, hostCst) : undefined
         const triviaLead = gated === undefined ? undefined : triviaLeadRanges(labels.at(code[ip + 2]!).tri, t.trivia)
         const gp = gated !== undefined && triviaLead !== undefined && triviaLead.length <= 16
           ? `const gc=lead(input,pos)
@@ -2768,9 +2900,9 @@ sCh.push(nd)
 if(sRaw!==undefined)sRaw.push(rawEntry(nd,input,pos,end))
 }`
           return `${head}
-${gp}const sCh=ctx._cstChildren,sLv=ctx._cstLeaves,sRaw=ctx._cstRawChildren,sTl=ctx._cstTriviaLog
+${late?.prefix ?? ''}${gp}const sCh=ctx._cstChildren,sLv=ctx._cstLeaves,sRaw=ctx._cstRawChildren,sTl=ctx._cstTriviaLog
 const sCap=ctx.captureTrivia,sBuf=ctx._cstBuf,sFields=ctx._fields
-const flat=[]
+${takeBack}const flat=${late === undefined ? '[]' : '[c0]'}
 ctx._cstBuf=undefined
 ctx._cstChildren=flat
 ctx._cstLeaves=flat
@@ -2778,7 +2910,7 @@ ctx._cstRawChildren=undefined
 ctx._cstTriviaLog=undefined
 ctx.captureTrivia=false
 ctx._fields=${fields ? '[]' : 'undefined'}
-const v=${child}(input,pos,ctx)
+${runBody}
 ${trailingTrivia && L.tri !== TRI_NONE
   ? `if(v!==FAIL${L.tri === TRI_UNKNOWN ? '&&ctx.trivia!==undefined' : ''})EC.e=consumeTrivia(input,EC.e,ctx)\n`
   : ''}const captured=_capturedFlatChildren(flat)
@@ -2862,16 +2994,17 @@ const tlog=buf.tl??EMPTY_TLOG`
 const hostKids=kids
 const rawKids=buf.raw??(buf.rawSingle!==undefined?[buf.rawSingle]:EMPTY_CH)
 const tlog=buf.tl??EMPTY_TLOG`
+        const seedCapture = late === undefined ? '' : omitsRaw ? 'buf.single=c0\nbuf.rawLen=1\n' : 'buf.single=c0\nbuf.rawSingle=c0Raw!==undefined?c0Raw:rawEntry(c0,input,pos,c1)\n'
         return `${head}
-${!hostCst && !tracked ? gp : ''}const sCh=ctx._cstChildren,sLv=ctx._cstLeaves,sRaw=ctx._cstRawChildren,sTl=ctx._cstTriviaLog
+${late?.prefix ?? ''}${!hostCst && !tracked ? gp : ''}const sCh=ctx._cstChildren,sLv=ctx._cstLeaves,sRaw=ctx._cstRawChildren,sTl=ctx._cstTriviaLog
 const sCap=ctx.captureTrivia,sBuf=ctx._cstBuf
-${openCapture}
-ctx.captureTrivia=${captureWide}
+${takeBack}${openCapture}
+${seedCapture}ctx.captureTrivia=${captureWide}
 const savedFields=ctx._fields
 ctx._fields=${wantFields ? '[]' : 'undefined'}
 ${structural ? `const savedMask=ctx._triviaCaptureMask
 if(_pfHost!==undefined&&_pfHost._parsemanTriviaKinds!==undefined)ctx._triviaCaptureMask=_pfHost._parsemanTriviaKinds(${ty})
-` : ''}const v=${child}(input,pos,ctx)
+` : ''}${runBody}
 ${trailingTrivia && L.tri !== TRI_NONE
   ? `if(v!==FAIL${L.tri === TRI_UNKNOWN ? '&&ctx.trivia!==undefined' : ''})EC.e=consumeTrivia(input,EC.e,ctx)\n`
   : ''}const fieldMap=${wantFields ? 'buildFieldMap(ctx._fields)' : 'undefined'}

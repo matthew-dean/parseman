@@ -122,26 +122,35 @@ export function pushCstChild(ctx: ParseContext, built: unknown, rawEntry: unknow
 /**
  * Undo the LAST `pushCstChild` into the active collector, whichever form it took:
  * a child the lazy buffer's empty sentinel dropped (`undefined` first) leaves no
- * semantic entry to remove, only its raw one.
+ * semantic entry to remove, only its raw one. Returns that raw entry, or `undefined`
+ * when this collector keeps none.
  */
-export function popCstChild(ctx: ParseContext): void {
+export function popCstChild(ctx: ParseContext): unknown {
   const b = ctx._cstBuf
   if (b) {
     const ch = b.ch
-    if (b.rawOnly !== true && ch) {
-      ch.pop()
-      if (ch.length === 1) { b.single = ch[0]; b.ch = undefined }
+    if (b.rawOnly !== true) {
+      if (ch) {
+        ch.pop()
+        if (ch.length === 1) { b.single = ch[0]; b.ch = undefined }
+      } else b.single = undefined
     }
-    if (b.noRaw === true) b.rawLen = (b.rawLen ?? 1) - 1
-    else if (b.raw) {
-      b.raw.pop()
+    if (b.noRaw === true) {
+      b.rawLen = (b.rawLen ?? 1) - 1
+      return undefined
+    }
+    if (b.raw) {
+      const entry = b.raw.pop()
       if (b.raw.length === 1) { b.rawSingle = b.raw[0]; b.raw = undefined }
-    } else b.rawSingle = undefined
-    return
+      return entry
+    }
+    const entry = b.rawSingle
+    b.rawSingle = undefined
+    return entry
   }
   if (ctx._cstChildren) ctx._cstChildren.pop()
   else if (ctx._cstLeaves) ctx._cstLeaves.pop()
-  if (ctx._cstRawChildren) ctx._cstRawChildren.pop()
+  return ctx._cstRawChildren?.pop()
 }
 
 export function cstRawLen(ctx: ParseContext): number {

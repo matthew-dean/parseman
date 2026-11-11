@@ -1,7 +1,7 @@
 import type { Combinator, ParseContext, ParseResult, ParserMeta, ParseError } from '../types.ts'
 import { captureError } from '../recovery/scan.ts'
 import { annotateSpanFromLineContext } from '../line-index.ts'
-import { matchesEmpty, isZeroWidthAssertion } from './first-set.ts'
+import { any, matchesEmpty, isZeroWidthAssertion } from './first-set.ts'
 
 export type { ParseError }
 export { assertionFailureExpected, directTerminalFailureExpected } from './expected.ts'
@@ -81,6 +81,7 @@ function derive(c: Combinator<unknown>, seen: Set<Combinator<unknown>>): string[
     case 'optional':
     case 'many':
     case 'oneOrMore':
+    case 'sepBy':
     case 'transform':
     case 'not':
     case 'peek':     return deriveExpected(def.parser)
@@ -132,7 +133,8 @@ function derive(c: Combinator<unknown>, seen: Set<Combinator<unknown>>): string[
 export function expect<T>(combinator: Combinator<T>, label?: string): Combinator<T | ParseError> {
   const expected = label !== undefined ? [label] : deriveExpected(combinator)
   const meta: ParserMeta = {
-    firstSet: combinator._meta.firstSet,
+    // It runs on any character: on one its child can't start, it reports the error.
+    firstSet: any(),
     canMatchNewline: combinator._meta.canMatchNewline,
     isTrivia: false,
   }

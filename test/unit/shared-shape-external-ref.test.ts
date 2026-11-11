@@ -155,7 +155,7 @@ import { ratioShape } from './shape.js'
 export const parser = composeLeaf([ratioShape, rules(g => ({
   Document: node('Document', g.Ratio, (_children, _fields, span) => ({ type: 'Ratio', span })),
 }))])
-`, path.join(dir, 'leaf.ts'), new Set(['parseman']))).toThrow(/composeLeaf\(\) must macro-fuse/)
+`, path.join(dir, 'leaf.ts'), new Set(['parseman']))).toThrow(/leaf\.ts:4 — composeLeaf: rule "Ratio" references missing rule "Value"/)
     })
   })
 })

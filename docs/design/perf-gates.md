@@ -36,7 +36,8 @@ design, its layout randomisation and its round count are in
 [perf-harness-interleaving.md](./perf-harness-interleaving.md#the-cross-process-gate--pnpm-perfxprocgate).
 
 Of the four tools below, `perf:guard` runs in the pre-commit hook, and the macro
-gate runs on every code PR as an advisory job outside the required `test` check.
+gate runs on every code PR as a required result of `test`. Its identity check and a
+failed measurement fail the job; its timing rows stay advisory.
 Since #175 the grammar and workload A/B tools are local diagnostics, and the
 cross-process gate covers their cases in CI. The first three are self-contained in
 this repository. The macro gate also uses the pinned Jess commit
@@ -891,6 +892,68 @@ A missing reference is a **hard failure**, never a skip: CI checks out with
 reachable, the gate says so and exits non-zero. "The gate did not run" must never render as green —
 and the `test` aggregate treats a SKIPPED perf job as a failure for the same
 reason, unless `changes` said the PR was documentation-only.
+
+## The bars an engine change has to meet
+
+A refactor of the engines (`src/table/assemble.ts`, `src/table/emit-assembly.ts`, and what they call) that calls itself reuse has to meet all of these. A "reuse" refactor of the left-corner routes moved decisions known at compile time into parse-time checks and added calls on the hot path. On the closure engine the routed path ran up to 25.9% more instructions. An earlier local run had read "neutral", because two of its legs ran one source tree through a symlink.
+
+| bar | gate | command |
+| --- | --- | --- |
+| 1. One definition in source; no parallel copy of a piece | INV-13, plus the review item below | `pnpm check:invariants` |
+| 2. No duplicated function in the emitted or printed output | duplicate-function gate, in `size-gate` | `pnpm dupfn:guard` |
+| 3. No more function calls per parse than the previous release | call-count gate, `calls` | `pnpm callcount:guard` |
+| 4. Nothing known at compile time becomes a parse-time check | call-count gate, `branches`, plus the review item below | `pnpm callcount:guard` |
+| Speed is confirmed on real, independent builds | `assertIndependentLegs` in every A/B harness, then `xproc-perf` | `pnpm perf:xproc:gate` |
+
+### Review checklist
+
+- **Bar 4.** For every test the change adds or moves inside a piece or an emitted function, ask: can this value change during a parse? If it cannot (an option, the host mode, a grammar shape, anything fixed when the table is encoded or assembled), decide it at assembly by selecting a different piece. Name each such test in the PR.
+- **Bar 1.** Look for a piece that was copied and then edited. INV-13 only sees exact copies.
+
+### Call-count gate
+
+An instrumentation build (`bench/engine-guards/instrument.ts`) adds a counter to every function entry and every branch test in a copy of each side's bundle, and to every `new Function` body as it is compiled. `src/` is not edited, so published code pays nothing. One parse is counted until two in a row agree. The counts are identical across processes and on Node 22, 24 and 26, so a single extra call per parse fails.
+
+It counts 25 rows: the five workloads under `emitted/` and under `closure/` (`Function` refusing, as under a CSP), and jess's vendored grammars under `macro/`. The `macro/*/ast` rows are the path jess ships: the variants its `parse` and `/positions` entries use, called with the options they pass, with reducers building real nodes through a vendored bundle of `@jesscss/core` (`fixtures/jess-grammars/core/core.js`). That bundle's calls and tests are counted too, and it only changes when the snapshot is refreshed. A row fails when HEAD counts more than the previous release, the reference `perf:xproc:gate` uses. `bench/call-count-baseline.json` must equal what HEAD counts, so a change in counts is a reviewed line in the diff. Bank a drop with `pnpm callcount:baseline`.
+
+An increase that is the price of a change needs `bench/call-count-reasons.json`: `{ "against": "<previous release tag>", "rows": { "<row> <metric>": { "why": "<why>", "limit": <most it may add per parse> } } }`. An entry must say why and state a limit, and an increase above the limit fails. An entry that excuses no increase fails, so it cannot wait for a later one. An entry only applies against the release it names, so it stops excusing anything once that change ships; a file left over from an earlier release prints a notice rather than failing, so a release does not turn every open PR red.
+
+A count only means something over a whole parse. Every parse counted must succeed and consume its input (`assertWorkloadFullyConsumed`), and a jess parse must also build a `Stylesheet` with no recovered error or diagnostic; anything else stops the gate rather than reading as fewer calls. An empty input fails, and so does a run that counted no rows for a family. Over these rows, `bench/call-count-baseline.json` can still rise with no reason entry while HEAD is at or below the release, so giving back an unreleased win is seen only in review. A row in the baseline at the merge base with `origin/main` may not leave it: both sides count the rows the gate lists, so cutting one from the gate and the baseline would otherwise pass. Removing or renaming a row needs an owner's bypass; adding one is allowed.
+
+Run on that refactor's two reuse commits against their parents, with `macro/css/ast` then the only AST row and its reducers stubbed, it fails both: `ce6b3fbf` (+1,527 calls on `macro/css/ast/site.css`) and `fb769bac` (up to +22,029 calls and +128,922 branch tests per parse on the closure rows; +1.1–2.1% on the `macro/` rows).
+
+**What `branches` catches:** a test added to a piece, including one that is always false and adds no call, which is the common form of bar 4. **What it cannot see:**
+
+- whether a test could have been decided at compile time. It sees more tests, not why. A test added for a correct reason fails too and needs a reason entry;
+- a new test that replaces an old one, or an increase cancelled by a drop elsewhere in the same row;
+- work that is not a call or a test: allocation, property reads, a call site turned megamorphic, a builtin such as `charCodeAt`. `?.` is not counted;
+- anything the fixtures do not reach. `site.css` and `app.less` hold no SCSS-only or `.jess`-only syntax, so those dialects' own productions are not counted.
+
+- compile time and the first parses. Only the settled per-parse cost is counted, so 200,000 extra calls while compiling or on the first parse can show as +1 branch test, or nothing.
+
+**What `calls` cannot see:** what V8 does with a call. An inlined call costs nothing and still counts, and a call that blocks inlining costs far more than one. A count says the work moved; `xproc-perf` says what it cost.
+
+**A trap in the reference build.** The reference side runs HEAD's copy of `bench/jess/real-grammars.ts` and `bench/workloads` over the release's `src/`. A PR that moves a module they name (such as `src/compiler/linker.ts` or `src/plugin/index.ts`) leaves the reference side unable to build. The gate fails, no reason entry can argue it, and it stays red until a release contains the new path. Keep a re-export at the old path until that release.
+
+**A race at release.** A PR with a reason entry against vN that merges after vN+1 publishes leaves that entry stale on `main`: it excuses nothing, the increase fails against vN+1, and publishing pauses until a follow-up updates `against`.
+
+### Duplicate-function gate
+
+`bench/dup-function-guard.ts` normalises every function in 20 artifacts: the emitted code of the workload grammars and jess's macro-built bundles (`scripts/function-shapes.mjs`: comments, whitespace and the function's own binding names dropped; free names and property names kept). A shape that occurs n times is n−1 duplicates. `bench/dup-function-baseline.json` holds each artifact's count: more fails, and fewer fails until it is banked with `pnpm dupfn:baseline`. It runs in `size-gate` and prints the function count beside the duplicate count.
+
+In CI the committed baseline is also compared with the merge base with `origin/main`, and any artifact's count rising fails, so a new copy cannot be written into the baseline with it. There is no reason file. An artifact at the merge base may not leave the baseline either, so renaming a row cannot hide a rise. A rise that is right, such as a grammar snapshot refresh that brings in new reducers, and a real removal or rename both need an owner's bypass. Adding an artifact is allowed. Every count in the baseline must be an integer. The gates check a row's key, not what it measures, so pointing a row at another grammar or shrinking a fixture is left to review.
+
+The count is per artifact, so it can net out: when assembly selection shifts, sites that stop being printed can hide new copies elsewhere in the same artifact.
+
+It starts from a backlog: 21 duplicated functions in the emitted CSS and 56 in the emitted Less grammar, for example. It cannot see a copy that differs in one constant or a free name (which may be correct), a copy in another artifact, or a body under 60 characters. It can over-report a pair that differs only in `var` against `let`, which share a shape. Those bundles also carry jess's own reducers, so a duplicate there can be the grammar author's.
+
+### INV-13
+
+See [the invariant gate](./invariant-gate.md). It is the structural half of bar 1, and it starts from three findings, entered as `DEBT`: `rollbackNeeded` and `needsTriviaRollback`, `bindRunners` twice, and `runAdjTerms` and `runDirectTerms`. [Issue #252](https://github.com/matthew-dean/parseman/issues/252) tracks removing them.
+
+### Independent legs
+
+`assertIndependentLegs` (`bench/ab-harness.ts`) prints each leg's real path and refuses to run when two legs are one directory, by device and inode, so a symlink, a case variant and a bind mount are all caught. `perf:xproc:gate`, `perf:xproc`, `perf:guard:grammars`, `perf:workloads`, `callcount:guard` and `bench/jess/ab.ts` (which `bench:macro-optimize` drives) call it, and `test/bench/engine-guards.test.ts` fails if a harness that materialises a second side does not. A declared `--self` run is the one exception. `bench/jess/fixture.ts` compares engines with every leg at HEAD by design, so it is not covered. Two separate checkouts of one commit pass this check; `sameSource` is what reports those as A/A.
 
 ## The pretenuring check — `pnpm perf:pretenure`
 

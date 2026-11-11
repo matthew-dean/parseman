@@ -11,22 +11,31 @@
 import { describe, expect, it } from 'vitest'
 import { encodeTable } from '../../src/table/encode.ts'
 import { AssemblyCache, cfgKey, countSiteVisits, tableRules } from '../../src/table/assemble.ts'
-import { mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { transformMacro } from '../../src/plugin/index.ts'
+import { build as esbuild } from 'esbuild'
+import { rolldown } from 'rolldown'
+import { createServer } from 'vite'
+import parseman, { CARRIED_SIDECAR_SUFFIX, transformMacro, type CarriedSink } from '../../src/plugin/index.ts'
+import { PARSEMAN_VERSION } from '../../src/version.ts'
 import { supercompileRuleMapReplacement } from '../../src/plugin/entry-supercompiler.ts'
 import { compileRuleMap } from '../../src/table/compile-rule-map.ts'
 import { evalMacroModule } from '../helpers/eval-macro-module.ts'
 import { defaultAssemblyCfgs } from '../../src/table/emit.ts'
 import { EMITTED_PARAMS, emitAssemblySource, type EmittedFactory } from '../../src/table/emit-assembly.ts'
 import { assemblyExtraIps, resolveTable, type TableProgram } from '../../src/table/program.ts'
-import { selectHotSites } from '../../src/table/select-hot.ts'
+import { edgesAsLowered, fitHotSites, selectHotSites } from '../../src/table/select-hot.ts'
+import { childSlots } from '../../src/table/child-slots.ts'
+import { continuationGate } from '../../src/table/late-frame.ts'
+import { OP_CONT, OP_GAPGATE } from '../../src/table/ops.ts'
+import { mergeSameBodies } from '../../src/plugin/entry-supercompiler.ts'
+import { reachableIps } from '../../src/table/inspect.ts'
 import { run } from '../../src/functional/run.ts'
 import { cssRules } from '../../examples/css/parser.ts'
 import { jsonRules, jsonWs } from '../../bench/table-grammars.ts'
 import type { Combinator } from '../../src/types.ts'
-import { choice, literal, many, noTrivia, parser, regex, rules, sequence, trivia } from '../../src/index.ts'
+import { choice, literal, many, node, noTrivia, parser, regex, rules, sequence, trivia } from '../../src/index.ts'
 import { seeded } from '../helpers/table-readers.ts'
 
 /**
@@ -205,14 +214,22 @@ describe('a selective assembly parses exactly as the closure engine', () => {
       expect(spent).toBeLessThanOrEqual(budget)
       expect(picked.size).toBeGreaterThan(0)
     }
+    // A larger budget keeps every site: a big site it now admits does not crowd out
+    // the small ones a smaller budget took after it.
+    let last = new Set<number>()
+    for (let budget = total / 100; budget < total; budget += total / 100) {
+      const picked = selectHotSites(prog.code, entries, siteBytes, budget)
+      expect([...last].filter(ip => !picked.has(ip)), `budget ${budget}`).toEqual([])
+      last = picked
+    }
     // Deterministic: the same inputs select the same sites.
     expect([...selectHotSites(prog.code, entries, siteBytes, total / 2)])
       .toEqual([...selectHotSites(prog.code, entries, siteBytes, total / 2)])
   })
 })
 
-/** A module long enough (the budget is the module's own length) to pay for an assembly's prelude. */
-const PADDING = '// padding\n'.repeat(12000)
+/** A module with enough code (a budget is a share of it, comments aside) to pay for an assembly's prelude. */
+const PADDING = `export const padding = '${'x'.repeat(132_000)}'\n`
 const factoryBytes = (code: string): number[] =>
   [...code.matchAll(/factory:function\([^)]*\)\{([\s\S]*?)\n\},plan:/g)].map(m => m[1]!.length)
 
@@ -236,10 +253,8 @@ describe('the macro build ships a selective assembly within its module budget', 
   })
 
   it('never comes back empty from a budget that a smaller budget already filled', () => {
-    // The narrowing loop scales its target by ceiling/bytes. Near the ceiling a
-    // whole site is the step, so that ratio can stall a few bytes over it; the
-    // loop must still land on a fitting selection rather than give up and ship
-    // no assembly at all.
+    // Near the ceiling a whole site is the step, so a walk down the ranking must
+    // still land on a fitting selection rather than give up and ship no assembly.
     const words = Array.from({ length: 120 }, (_, i) => [`W${i}`, sequence(literal(`w${i}`), regex(/[0-9]*/))] as const)
     const compiled = compileRuleMap([
       ['Doc', many(choice(...words.map(([, w]) => w) as [Combinator<unknown>, ...Combinator<unknown>[]]))],
@@ -254,6 +269,58 @@ describe('the macro build ships a selective assembly within its module budget', 
       if (sites.size > 0) { filled = true; expect(bytes).toBeLessThanOrEqual(budget) }
     }
     expect(filled).toBe(true)
+  }, 60_000)
+
+  it('each budget\'s selection is a prefix of every larger budget\'s, when the estimate overshoots', () => {
+    // The real source is not the sum of the estimates: a site can pull in a shared
+    // helper, and can also remove the wrapper another site needed to call it.
+    const count = 80
+    const bytesOf = (ip: number): number => 40 + (ip * 2_654_435_761 >>> 0) % 400
+    const siteBytes = new Map(Array.from({ length: count }, (_, ip) => [ip, bytesOf(ip)]))
+    const calls = Array.from({ length: count }, (_, ip) => 1 + (ip * 40_503 >>> 0) % 997)
+    const fixed = 500
+    const sourceBytes = (sites: ReadonlySet<number>): number => {
+      let bytes = fixed
+      for (const ip of sites) {
+        bytes += bytesOf(ip) + (ip % 11 === 0 ? 1_500 : 0) + (sites.has(ip + 1) ? -30 : 60)
+      }
+      return bytes
+    }
+    const fitted = (ceiling: number): number[] =>
+      [...fitHotSites([], [], siteBytes, fixed, ceiling, sourceBytes, calls)?.sites ?? []]
+
+    const total = sourceBytes(new Set(siteBytes.keys()))
+    let last: number[] = []
+    let lastEstimated: number[] = []
+    let overshoots = 0
+    for (let ceiling = fixed; ceiling <= total; ceiling += 7) {
+      const sites = fitted(ceiling)
+      expect(sites.slice(0, last.length), `ceiling ${ceiling}`).toEqual(last)
+      expect(sourceBytes(new Set(sites)), `ceiling ${ceiling}`).toBeLessThanOrEqual(Math.max(ceiling, fixed))
+      const estimated = [...selectHotSites([], [], siteBytes, ceiling - fixed, calls)]
+      expect(estimated.slice(0, lastEstimated.length), `ceiling ${ceiling}`).toEqual(lastEstimated)
+      if (sites.length < estimated.length) overshoots++
+      last = sites
+      lastEstimated = estimated
+    }
+    expect(fitted(total).length).toBe(count)
+    expect(overshoots).toBeGreaterThan(100)
+  }, 60_000)
+
+  it('a larger budget keeps every site a smaller one selected', () => {
+    const words = Array.from({ length: 120 }, (_, i) => [`W${i}`, sequence(literal(`w${i}`), regex(i % 7 === 0 ? /[0-9]*(?:a|b|c|d|e|f)*/ : /[0-9]*/))] as const)
+    const compiled = compileRuleMap([
+      ['Doc', many(choice(...words.map(([, w]) => w) as [Combinator<unknown>, ...Combinator<unknown>[]]))],
+      ...words,
+    ])!
+    const full = compiled.selectAssembly(Infinity).bytes
+    let last = new Set<number>()
+    for (let share = 0.02; share < 1; share += 0.02) {
+      const { sites } = compiled.selectAssembly(Math.floor(full * share))
+      expect([...last].filter(ip => !sites.has(ip)), `share ${share}`).toEqual([])
+      last = new Set(sites)
+    }
+    expect(last.size).toBeGreaterThan(0)
   }, 60_000)
 
   it('a terminal composeLeaf carries generated code for some sites, the closure engine for the rest', () => {
@@ -341,13 +408,637 @@ describe('an optional corpus profile ranks sites by measured calls', () => {
     for (const input of CASES[0]!.inputs) expect(run(entry as never, input)).toEqual(run(closure as never, input))
   })
 
+  describe('functions that read the same', () => {
+    const fn = (name: string, body: string): string => `function ${name}(input,pos,ctx){${body}}`
+    const merged = (...lines: string[]): string => mergeSameBodies(lines.join('\n'))
+
+    it('are one function, and every call reaches it', () => {
+      const out = merged(fn('_pf1', 'return _pf9(input,pos,ctx)'), fn('_pf2', 'return _pf9(input,pos,ctx)'), fn('_pf9', 'return 9;'), 'const t={1:_pf1,2:_pf2}')
+      expect(out).toContain('function _pf1(')
+      expect(out).not.toMatch(/\b_pf2\b/)
+      expect(out).toContain('const t={1:_pf1,2:_pf1}')
+    })
+
+    it('stay apart when they call different functions', () => {
+      const out = merged(fn('_pf1', 'return _pf8(input,pos,ctx)'), fn('_pf2', 'return _pf9(input,pos,ctx)'))
+      expect(out).toContain('function _pf1(')
+      expect(out).toContain('function _pf2(')
+    })
+
+    it('merge callers that read alike once what they call has merged', () => {
+      const out = merged(fn('_pf1', 'return _pf3(input,pos,ctx)'), fn('_pf2', 'return _pf4(input,pos,ctx)'), fn('_pf3', 'return 1;'), fn('_pf4', 'return 1;'), 'const t=_pf2')
+      expect(out).not.toMatch(/\b_pf[24]\b/)
+      expect(out).toContain('const t=_pf1')
+    })
+
+    it('merge a site that calls itself with its twin', () => {
+      const out = merged(fn('_pf1', 'return _pf1(input,pos,ctx)'), fn('_pf2', 'return _pf2(input,pos,ctx)'), 'const t=_pf2')
+      expect(out).toContain('const t=_pf1')
+      expect(out).not.toMatch(/\b_pf2\b/)
+    })
+
+    it('compare temporaries in order of use, whatever follows the prefix', () => {
+      const out = merged(fn('_pf1', 'const _t1_v0=2;return _t1_v0;'), fn('_pf2', 'const _t7_v0=2;return _t7_v0;'), fn('_pf3', 'const _t8_=2;const _t9_=3;return _t8_;'), fn('_pf4', 'const _t5_=2;const _t6_=3;return _t6_;'), fn('_pf5', '_t3_e:do{break _t3_e}while(false)'), fn('_pf6', '_t4_e:do{break _t4_e}while(false)'))
+      expect(out).not.toMatch(/\b_pf2\b/)
+      expect(out).toContain('function _pf3(')
+      expect(out).toContain('function _pf4(')
+      expect(out).not.toMatch(/\b_pf6\b/)
+    })
+
+    it.each([
+      ['a string', 'return "a"', 'return "b"'],
+      ['a string that reads like a site', 'return "_pf8"', 'return "_pf9"'],
+      ['a string that reads like a temporary', 'return "_t1_"', 'return "_t2_"'],
+      ['a number', 'return 1', 'return 2'],
+      ['a regex', 'return /_pf8/', 'return /_pf9/'],
+      ['a failure set', 'ctx._fx=_fx0', 'ctx._fx=_fx1'],
+      ['a property that reads like a site', 'return ctx._pf8', 'return ctx._pf9'],
+      ['a temporary declared outside them', 'return _t1_v', 'return _t2_v'],
+    ])('stay apart when they differ in %s', (_what, one, two) => {
+      const out = merged(fn('_pf1', one), fn('_pf2', two), 'const t=_pf2')
+      expect(out).toContain('function _pf2(')
+      expect(out).toContain('const t=_pf2')
+    })
+
+    it('stay apart when one holds its own name as a string and the other the word a comparison might use', () => {
+      const out = merged(fn('_pf1', 'return "#self"'), fn('_pf2', 'return "_pf2"'), fn('_pf3', 'return _pf3'), fn('_pf4', 'return "#self"'))
+      expect(out).toContain('function _pf2(')
+      expect(out).toContain('function _pf3(')
+      expect(out).not.toMatch(/function _pf4\(/)
+    })
+
+    it('leave strings, regexes, comments and property names alone when a function goes', () => {
+      const out = merged('const before="é😀𝒳";', fn('_pf1', 'return "é😀"'), fn('_pf2', 'return "é😀"'), 'const k="_pf2";const r=/_pf2/;/* _pf2 */const p=ctx._pf2;const o={_pf2:1};const t=_pf2')
+      expect(out).toContain('const before="é😀𝒳";')
+      expect(out).not.toContain('function _pf2(')
+      expect(out).toContain('const k="_pf2";const r=/_pf2/;/* _pf2 */const p=ctx._pf2;const o={_pf2:1};const t=_pf1')
+    })
+
+    it('follow a merge into a function that merged later', () => {
+      const out = merged(fn('_pf1', 'return _pf8()'), fn('_pf3', 'return _pf9()'), fn('_pf5', 'return _pf9()'), fn('_pf8', 'return 1'), fn('_pf9', 'return 1'), 'const t=_pf5')
+      expect(out).toBe([fn('_pf1', 'return _pf8()'), '', '', fn('_pf8', 'return 1'), '', 'const t=_pf1'].join('\n'))
+    })
+
+    it('leave functions named only partly like a site', () => {
+      for (const [one, two] of [['_pf1x', '_pf2x'], ['x_pf1', 'x_pf2'], ['_sk1_', '_sk2_']] as const) {
+        const source = [fn(one, 'return 1'), fn(two, 'return 1'), `const t=${two}`].join('\n')
+        expect(merged(source)).toBe(source)
+      }
+    })
+
+    it('change nothing when a site name is also bound or abbreviated somewhere', () => {
+      for (const extra of ['const f=function(_pf2){return _pf2}', 'const f=()=>{const _pf2=1;return _pf2}', 'const o={_pf2}']) {
+        const source = [fn('_pf1', 'return 1'), fn('_pf2', 'return 1'), extra].join('\n')
+        expect(merged(source)).toBe(source)
+      }
+    })
+
+    it('include the trivia skips', () => {
+      const skip = (name: string): string => `function ${name}(input,cur,ctx){return skipDeferredTrivia(input,cur,ctx)}`
+      const out = merged(skip('_sk0'), skip('_sk1'), fn('_pf1', 'return _sk1(input,pos,ctx)'))
+      expect(out).not.toMatch(/\b_sk1\b/)
+      expect(out).toContain('return _sk0(input,pos,ctx)')
+    })
+
+    it('stay apart when one name is the start of the other', () => {
+      const out = merged(fn('_pf12', 'return _pf123(input,pos,ctx)'), fn('_pf45', 'return _pf453(input,pos,ctx)'))
+      expect(out).toContain('function _pf12(')
+      expect(out).toContain('function _pf45(')
+    })
+
+    describe('in a macro build, a name a grammar writes', () => {
+      const lower = (body: string, shared = 'sequence(regex(/a/), regex(/b/))') => transformMacro(`import { choice, compose, field, literal, node, optional, regex, rules, sequence } from 'parseman' with { type: 'macro' }\nconst shared = ${shared}\nexport const g = compose([rules(g => ({\n${body}\n}))])\n${PADDING}`, 'merge.ts', new Set(['parseman']))!
+      const twins = (literalText: string): string => `Doc: choice(sequence(g.A, literal('x')), sequence(g.A, literal('y')), sequence(g.B, literal('z')), sequence(g.B, literal('w')), g.K),
+  A: optional(shared),
+  B: optional(shared),
+  K: literal('${literalText}'),`
+
+      it('as a literal survives a merge that removes the function of that name', () => {
+        const first = lower(twins('LITERAL'), 'regex(/a/)')
+        const kept = new Set([...first.code.matchAll(/function (_pf\d+)\(/g)].map(m => m[1]))
+        const gone = first.assemblySites.map(site => `_pf${site}`).filter(name => !kept.has(name))
+        expect(gone.length).toBeGreaterThan(0)
+        for (const name of gone) {
+          const doc = evalMacroModule<Record<string, unknown>>(lower(twins(name), 'regex(/a/)').code, 'g').Doc
+          const result = run(doc as never, name)
+          expect(result.ok && result.unconsumedFrom === null, name).toBe(true)
+        }
+      })
+
+      it('as a field stays that field when the fields read like temporaries', () => {
+        const out = lower(`Doc: node(choice(sequence(literal('1'), g.A), sequence(literal('2'), g.B), sequence(literal('3'), g.A), sequence(literal('4'), g.B)), (children, fields) => Object.keys(fields ?? {})),
+  A: field('_t1_', shared),
+  B: field('_t2_', shared),`)
+        const doc = evalMacroModule<Record<string, unknown>>(out.code, 'g').Doc
+        expect(run(doc as never, '1ab').value).toEqual(['_t1_'])
+        expect(run(doc as never, '2ab').value).toEqual(['_t2_'])
+      })
+    })
+
+    it('in a macro build, leave one body and parse as before', () => {
+      const source = `import { choice, compose, literal, optional, regex, rules, sequence } from 'parseman' with { type: 'macro' }
+const shared = regex(/a/)
+export const g = compose([rules(g => ({
+  Doc: choice(sequence(g.A, literal('x')), sequence(g.A, literal('y')), sequence(g.B, literal('z')), sequence(g.B, literal('w'))),
+  A: optional(shared),
+  B: optional(shared),
+}))])
+${PADDING}`
+      const out = transformMacro(source, 'merge.ts', new Set(['parseman']))!
+      const sites = out.assemblySites.length
+      expect(sites).toBeGreaterThan(0)
+      const bodies = out.code.match(/function _pf\d+\(input,pos,ctx\)\{\s*ctx\._fc=false\s*const v=_pf\d+\(input,pos,ctx\)/g) ?? []
+      expect(bodies.length).toBe(1)
+      const doc = evalMacroModule<Record<string, unknown>>(out.code, 'g').Doc
+      for (const [input, ok] of [['ax', true], ['y', true], ['az', true], ['w', true], ['q', false]] as const) {
+        const result = run(doc as never, input)
+        expect(result.ok && result.unconsumedFrom === null).toBe(ok)
+      }
+    })
+  })
+
+  describe('sites next to each other', () => {
+    const prog = encodeTable({ Pair: sequence(regex(/a/), regex(/b/)), Lone: sequence(regex(/c/), regex(/d/)) } as unknown as RuleMap, {})
+    const pair = prog.rules.Pair!
+    const lone = prog.rules.Lone!
+    const inner: number[] = []
+    childSlots(prog.code, pair, inner)
+    const callee = inner[0]!
+    const sites = new Map([pair, callee, lone].map(ip => [ip, 10]))
+    const calls = (pairCalls: number, calleeCalls: number, loneCalls: number): Int32Array => {
+      const counts = new Int32Array(prog.code.length)
+      counts[pair] = pairCalls
+      counts[callee] = calleeCalls
+      counts[lone] = loneCalls
+      return counts
+    }
+    const picked = (counts: Int32Array, budget = 20): number[] => [...selectHotSites(prog.code, [], sites, budget, counts)]
+
+    it('takes the callee of an emitted site over a lone site with more calls', () => {
+      expect(picked(calls(100, 30, 40))).toEqual([pair, callee])
+    })
+
+    it('takes the caller of an emitted site over a lone site with more calls', () => {
+      expect(picked(calls(30, 100, 40))).toEqual([callee, pair])
+    })
+
+    it('still takes a lone site that outweighs the crossing', () => {
+      expect(picked(calls(100, 1, 40))).toEqual([pair, lone])
+    })
+
+    it('never takes a site the corpus did not run', () => {
+      expect(picked(calls(100, 0, 0), 30)).toEqual([pair])
+    })
+
+    it('counts a crossing by the callee\'s calls, not the caller\'s', () => {
+      expect(picked(calls(1, 100, 50))).toEqual([callee, pair])
+    })
+
+    it('breaks a tie by site, whatever order the sites were listed in', () => {
+      const first = Math.min(pair, lone)
+      const second = Math.max(pair, lone)
+      const counts = calls(10, 0, 10)
+      for (const order of [[first, second], [second, first]]) {
+        expect([...selectHotSites(prog.code, [], new Map(order.map(ip => [ip, 10])), 20, counts)]).toEqual([first, second])
+      }
+    })
+
+    it('sees a callee through a gap gate', () => {
+      const pad = regex(/[ \t]*/)
+      const gated = encodeTable(rules(g => ({
+        Doc: noTrivia(sequence(regex(/[0-9]+/), many(sequence(g.Op!, regex(/[0-9]+/))))),
+        Op: noTrivia(sequence(pad, literal('+'), pad)),
+      })) as unknown as RuleMap, {})
+      const gate = [...reachableIps(gated)].find(ip => gated.code[ip] === OP_GAPGATE)!
+      const item = gated.code[gate + 1]!
+      const repeat = [...reachableIps(gated)].find(ip => { const kids: number[] = []; childSlots(gated.code, ip, kids); return kids.includes(gate) })!
+      const lonely = [...reachableIps(gated)].find(ip => ip !== item && ip !== repeat && ip !== gate)!
+      const counts = new Int32Array(gated.code.length)
+      counts[repeat] = 100
+      counts[item] = 30
+      counts[lonely] = 40
+      const bytes = new Map([repeat, item, lonely].map(ip => [ip, 10]))
+      expect([...selectHotSites(gated.code, [], bytes, 20, counts)]).toEqual([repeat, item])
+    })
+
+    describe.each([
+      ['lowers its frames', regex(/[ ]+/), 2, /[0-9a-z]+/],
+      ['has no trivia, so nothing to decide on', undefined, 0, /[0-9a-z]+/],
+      ['has trivia it can\'t name', choice(regex(/[ ]+/), regex(/\/\*x\*\//)), 0, /[0-9a-z]+/],
+      ['is entered on a frame, with no first set to gate on', undefined, 0, /./s],
+    ] as const)('a ladder that %s', (_name, trivia, late, atom) => {
+      const built = (type: string) => (children: readonly unknown[]) => ({ type, children })
+      const level = (type: string, corner: Combinator<unknown>, tail: Combinator<unknown>): Combinator<unknown> =>
+        node(type, sequence(corner, tail), built(type), { collapse: true })
+      const prog = encodeTable(rules(trivia === undefined ? {} : { trivia }, (g: RuleMap) => ({
+        Sum: level('Sum', g.Product!, many(sequence(regex(/[+-]/), g.Product!))),
+        Product: level('Product', g.Atom!, many(sequence(regex(/[*/]/), g.Atom!))),
+        Atom: node('Atom', regex(atom), built('Atom')),
+      })) as unknown as RuleMap, {})
+      const { siteBytes, source } = emitAssemblySource(resolveTable(prog), prog, defaultAssemblyCfgs(prog)[0]!, assemblyExtraIps(prog), true)
+
+      it('has the late frames it should', () => {
+        expect([...siteBytes.keys()].filter(ip => prog.code[ip] === OP_CONT)).toHaveLength(late)
+      })
+
+      it('reads a frame with no body as its wrapper alone', () => {
+        const kids: number[] = []
+        for (const ip of reachableIps(prog)) {
+          if (prog.code[ip] !== OP_CONT || siteBytes.has(ip)) continue
+          edgesAsLowered(prog.code, siteBytes, ip, kids)
+          expect(kids).toEqual([prog.code[ip + 2]])
+        }
+      })
+
+      it('has every call a function makes among its edges', () => {
+        const kids: number[] = []
+        const functions = source.split(/\n(?=function )/).flatMap(text => {
+          const name = /^function _pf(\d+)\(/.exec(text)
+          return name === null ? [] : [[Number(name[1]), text] as const]
+        })
+        expect(functions.length).toBe(siteBytes.size)
+        let calls = 0
+        for (const [ip, text] of functions) {
+          edgesAsLowered(prog.code, siteBytes, ip, kids)
+          for (const [, callee] of text.matchAll(/\b_pf(\d+)\(/g)) {
+            if (Number(callee) === ip) continue
+            calls++
+            expect(kids).toContain(Number(callee))
+          }
+        }
+        expect(calls).toBeGreaterThan(10)
+      })
+
+      it('leaves no site out of a static selection that can take them all', () => {
+        const picked = selectHotSites(prog.code, Object.values(prog.rules), siteBytes, Infinity)
+        expect([...siteBytes.keys()].filter(ip => !picked.has(ip))).toEqual([])
+      })
+    })
+
+    it('sees a late frame\'s corner and its tail', () => {
+      const built = (type: string) => (children: readonly unknown[]) => ({ type, children })
+      const level = (type: string, corner: Combinator<unknown>, tail: Combinator<unknown>): Combinator<unknown> =>
+        node(type, sequence(corner, tail), built(type), { collapse: true })
+      const ladder = encodeTable(rules({ trivia: regex(/[ ]+/) }, (g: RuleMap) => ({
+        Sum: level('Sum', g.Product!, many(sequence(regex(/[+-]/), g.Product!))),
+        Product: level('Product', g.Atom!, many(sequence(regex(/[*/]/), g.Atom!))),
+        Atom: node('Atom', regex(/[0-9a-z]+/), built('Atom')),
+      })) as unknown as RuleMap, {})
+      const cont = [...reachableIps(ladder)].find(ip => ladder.code[ip] === OP_CONT && continuationGate(ladder.code, ladder.code[ip + 3]!) !== undefined)!
+      expect(cont).toBeDefined()
+      const corner = ladder.code[cont + 1]!
+      const tail = ladder.code[cont + 3]!
+      const lonely = [...reachableIps(ladder)].find(ip => ![cont, corner, tail].includes(ip))!
+      const pick = (one: number, other: number): number[] => {
+        const counts = new Int32Array(ladder.code.length)
+        counts[cont] = 100
+        counts[one] = 30
+        counts[lonely] = 40
+        return [...selectHotSites(ladder.code, [], new Map([cont, one, other, lonely].map(ip => [ip, 10])), 20, counts)]
+      }
+      expect(pick(tail, corner)).toEqual([cont, tail])
+      expect(pick(corner, tail)).toEqual([cont, corner])
+    })
+
+    it('a larger budget only adds to what a smaller one took', () => {
+      const css = encodeTable(cssRules as unknown as RuleMap, {})
+      const { siteBytes } = emitAssemblySource(resolveTable(css), css, defaultAssemblyCfgs(css)[0]!, assemblyExtraIps(css), true)
+      const counts = countSiteVisits(css, rules => { run(rules.Stylesheet as never, 'a { color: red } @media x { b { y: z } }') })
+      const total = [...siteBytes.values()].reduce((a, b) => a + b, 0)
+      let last: number[] = []
+      for (let budget = 0; budget <= total; budget += Math.ceil(total / 40)) {
+        const now = [...selectHotSites(css.code, [], siteBytes, budget, counts)]
+        expect(now.slice(0, last.length)).toEqual(last)
+        last = now
+      }
+      expect(last.length).toBeGreaterThan(1)
+    })
+
+    it('crosses the engine boundary fewer times than ranking by calls per byte alone', () => {
+      const css = encodeTable(cssRules as unknown as RuleMap, {})
+      const { siteBytes } = emitAssemblySource(resolveTable(css), css, defaultAssemblyCfgs(css)[0]!, assemblyExtraIps(css), true)
+      const counts = countSiteVisits(css, rules => {
+        for (const input of CASES[0]!.inputs) { try { run(rules.Stylesheet as never, input) } catch { /* the calls it made still count */ } }
+      })
+      const kept = [...siteBytes.keys()].filter(ip => counts[ip]! > 0)
+      const edges = kept.flatMap(ip => { const kids: number[] = []; childSlots(css.code, ip, kids); return kids.filter(k => siteBytes.has(k)).map(k => [ip, k] as const) })
+      const crossings = (taken: ReadonlySet<number>): number => edges.reduce((sum, [from, to]) => sum + (taken.has(from) !== taken.has(to) ? counts[to]! : 0), 0)
+      const byRatio = (budget: number): Set<number> => {
+        const taken = new Set<number>()
+        let spent = 0
+        for (const ip of [...kept].sort((a, b) => counts[b]! / siteBytes.get(b)! - counts[a]! / siteBytes.get(a)! || a - b)) {
+          spent += siteBytes.get(ip)!
+          if (spent > budget) break
+          taken.add(ip)
+        }
+        return taken
+      }
+      const total = kept.reduce((sum, ip) => sum + siteBytes.get(ip)!, 0)
+      for (const share of [0.25, 0.5, 0.75]) {
+        const budget = total * share
+        expect(crossings(selectHotSites(css.code, [], siteBytes, budget, counts)), `share ${share}`).toBeLessThan(crossings(byRatio(budget)))
+      }
+    })
+  })
+
+  it('reports no sites when a later compose() leaves the module on the runtime compose()', () => {
+    const source = `import { choice, compose, many, regex, rules } from 'parseman' with { type: 'macro' }
+export const g = compose([rules(g => ({ Doc: many(choice(g.A, g.B)), A: regex(/a/), B: regex(/b+/) }))])
+${PADDING}`
+    const lower = (code: string) => transformMacro(code, '/tmp/fallback.ts', new Set(['parseman']), false, false, false, undefined, 2)!
+    expect(lower(source).assemblySites.length).toBeGreaterThan(0)
+    const fellBack = lower(`${source}export const late = compose([imported])\n`)
+    expect(fellBack.code).toContain('compose([rules(')
+    expect(fellBack.assemblySites).toEqual([])
+  })
+
+  describe('a corpus that cannot run fails the build', () => {
+    const lower = (grammar: string, corpus: string): void => {
+      const dir = mkdtempSync(join(tmpdir(), 'parseman-profile-'))
+      try {
+        const file = join(dir, 'corpus.txt')
+        writeFileSync(file, corpus)
+        const source = `import { choice, compose, expect, literal, many, regex, rules, sequence, transform } from 'parseman' with { type: 'macro' }
+${grammar}
+${PADDING}`
+        transformMacro(source, join(dir, 'g.ts'), new Set(['parseman']), false, false, false, { entry: 'Doc', files: [file] })
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    }
+
+    it('names the reducer that threw, the file and the error', () => {
+      expect(() => lower(`export const g = compose([rules(g => ({ Doc: many(transform(regex(/a ?/), v => boom(v))) }))])`, 'a a'))
+        .toThrow(/assemblyProfile: gate or reducer `v => boom\(v\)` threw on .*corpus\.txt: ReferenceError: boom is not defined/)
+    })
+
+    it('names the gate that threw', () => {
+      expect(() => lower(`export const g = compose([rules(g => ({ Doc: choice({ gate: s => boom(s), combinator: regex(/a/) }, regex(/b/)) }))])`, 'a'))
+        .toThrow(/assemblyProfile: gate or reducer `s => boom\(s\)` threw on .*corpus\.txt: ReferenceError: boom is not defined/)
+    })
+
+    it.each([
+      ['gate', `choice({ gate: s => allowed(s), combinator: regex(/a/) }, regex(/b/))`, 's => allowed\\(s\\)'],
+      ['reducer', `transform(regex(/a/), v => allowed(v))`, 'v => allowed\\(v\\)'],
+    ])('fails on a %s that reads an imported helper', (_kind, doc, callback) => {
+      expect(() => lower(`import { allowed } from './helpers.js'
+export const g = compose([rules(g => ({ Doc: ${doc} }))])`, 'a'))
+        .toThrow(new RegExp(`assemblyProfile: gate or reducer \`${callback}\` threw on .*corpus\\.txt: ReferenceError: allowed is not defined`))
+    })
+
+    it('never runs a callback the corpus doesn\'t reach', () => {
+      const unreached = `export const g = compose([rules(g => ({ Doc: choice(regex(/a/), transform(regex(/b/), v => boom(v))) }))])`
+      expect(() => lower(unreached, 'a')).not.toThrow()
+      expect(() => lower(unreached, 'b')).toThrow(/boom/)
+    })
+
+    it('refuses a corpus where every file is empty', () => {
+      expect(() => lower(`export const g = compose([rules(g => ({ Doc: many(regex(/a ?/)) }))])`, ' \n'))
+        .toThrow(/assemblyProfile: `files` has no non-empty file/)
+    })
+
+    it.each([['zero-length', ''], ['whitespace-only', ' \n']])('skips a %s file in a corpus that has content', (_kind, text) => {
+      const dir = mkdtempSync(join(tmpdir(), 'parseman-profile-'))
+      try {
+        const empty = join(dir, 'empty.txt')
+        const full = join(dir, 'full.txt')
+        writeFileSync(empty, text)
+        writeFileSync(full, 'a')
+        const source = `import { compose, regex, rules } from 'parseman' with { type: 'macro' }
+export const g = compose([rules(g => ({ Doc: regex(/a/) }))])
+${PADDING}`
+        expect(() => transformMacro(source, join(dir, 'g.ts'), new Set(['parseman']), false, false, false, { entry: 'Doc', files: [empty, full] })).not.toThrow()
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+
+    it('refuses a file that parses only by recovering', () => {
+      expect(() => lower(`export const g = compose([rules(g => ({ Doc: sequence(regex(/a/), expect(literal(';'))) }))])`, 'a'))
+        .toThrow(/assemblyProfile: .*corpus\.txt parses only by recovering from 1 error/)
+    })
+
+    it('refuses an empty `files`', () => {
+      const source = `import { compose, many, regex, rules } from 'parseman' with { type: 'macro' }
+export const g = compose([rules(g => ({ Doc: many(regex(/a ?/)) }))])
+${PADDING}`
+      expect(() => transformMacro(source, '/tmp/empty-files.ts', new Set(['parseman']), false, false, false, { entry: 'Doc', files: [] }))
+        .toThrow(/assemblyProfile: `files` has no non-empty file/)
+    })
+
+    it('names a file the grammar rejects or stops short of', () => {
+      for (const [doc, corpus, stop] of [['regex(/a ?/)', 'b', 0], ['many(regex(/a ?/))', 'a b', 2]] as const) {
+        expect(() => lower(`export const g = compose([rules(g => ({ Doc: ${doc} }))])`, corpus))
+          .toThrow(new RegExp(`assemblyProfile: .*corpus\\.txt does not parse from rule "Doc": it stops at offset ${stop}`))
+      }
+    })
+
+    it('a grammar without the entry rule keeps the static ranking', () => {
+      expect(() => lower(`export const g = compose([rules(g => ({ Other: many(regex(/a ?/)) }))])`, 'b')).not.toThrow()
+    })
+  })
+
+  it('`scope` gives the corpus run the helpers a gate imports, for that run only', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'parseman-profile-'))
+    try {
+      const corpus = join(dir, 'corpus.txt')
+      writeFileSync(corpus, 'aaaa')
+      const source = `import { choice, compose, many, regex, rules } from 'parseman' with { type: 'macro' }
+import { allowA } from './helper.js'
+export const g = compose([rules(g => ({ Doc: many(choice({ gate: s => allowA(s), combinator: regex(/a/) }, regex(/b/))) }))])
+${PADDING}`
+      let calls = 0
+      const scope = { allowA: () => { calls++; return true } }
+      const out = transformMacro(source, join(dir, 'g.ts'), new Set(['parseman']), false, false, false, { entry: 'Doc', files: [corpus], scope })!
+      expect(calls).toBeGreaterThan(0)
+      expect(out.warnings).toEqual([])
+      expect('allowA' in globalThis).toBe(false)
+      expect(() => transformMacro(source, join(dir, 'g.ts'), new Set(['parseman']), false, false, false, { entry: 'Doc', files: [corpus] }))
+        .toThrow(/allowA is not defined/)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  describe('`scope`', () => {
+    const lower = (grammar: string, scope: Readonly<Record<string, unknown>>, text = 'a'): void => {
+      const dir = mkdtempSync(join(tmpdir(), 'parseman-profile-'))
+      try {
+        const corpus = join(dir, 'corpus.txt')
+        writeFileSync(corpus, text)
+        const source = `import { compose, regex, rules, transform } from 'parseman' with { type: 'macro' }
+${grammar}
+${PADDING}`
+        transformMacro(source, join(dir, 'g.ts'), new Set(['parseman']), false, false, false, { entry: 'Doc', files: [corpus], scope })
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    }
+    const PLAIN = `export const g = compose([rules(g => ({ Doc: regex(/a/) }))])`
+
+    it.each([
+      ['a global', 'process'],
+      ['a built-in the run itself uses', 'Object'],
+      ['a read-only global', 'undefined'],
+      ['an inherited name', 'toString'],
+    ])('refuses a name that is already %s, leaving it alone', (_label, name) => {
+      const was = Object.getOwnPropertyDescriptor(globalThis, name)
+      expect(() => lower(PLAIN, { [name]: 'fake' })).toThrow(new RegExp(`\`scope\` name "${name}" is already a global`))
+      expect(Object.getOwnPropertyDescriptor(globalThis, name)).toEqual(was)
+    })
+
+    it('refuses `__proto__` and leaves the global prototype alone', () => {
+      const proto = Object.getPrototypeOf(globalThis) as unknown
+      expect(() => lower(PLAIN, JSON.parse('{"__proto__": {"leaked": 1}}') as Record<string, unknown>))
+        .toThrow(/`scope` name "__proto__" is already a global/)
+      expect(Object.getPrototypeOf(globalThis)).toBe(proto)
+    })
+
+    it('leaves nothing behind when reading a value throws', () => {
+      const scope = { parsemanScopeFirst: 1, get bad(): number { throw new Error('getter') } }
+      expect(() => lower(PLAIN, scope)).toThrow(/getter/)
+      expect('parsemanScopeFirst' in globalThis).toBe(false)
+    })
+
+    it('installs names, not symbol keys', () => {
+      const key = Symbol.for('parsemanScopeSymbol')
+      lower(`export const g = compose([rules(g => ({ Doc: transform(regex(/a/), v => { if (Symbol.for('parsemanScopeSymbol') in globalThis) throw new Error('installed'); return v }) }))])`, { [key]: 1 })
+      expect(key in globalThis).toBe(false)
+    })
+
+    it('runs the global when a helper named like one is left out of `scope`', () => {
+      const seen: string[] = []
+      const report = (v: string): string => { seen.push(v); return v }
+      lower(`export const g = compose([rules(g => ({ Doc: transform(regex(/é/), v => report(escape(v))) }))])`, { report }, 'é')
+      expect(seen).toEqual(['%E9'])
+    })
+
+    it('leaves nothing behind when a reducer throws or a file does not parse', () => {
+      const THROWS = `export const g = compose([rules(g => ({ Doc: transform(regex(/a/), v => { throw new Error('x') }) }))])`
+      expect(() => lower(THROWS, { parsemanScopeThrow: 1 })).toThrow(/threw/)
+      expect('parsemanScopeThrow' in globalThis).toBe(false)
+      expect(() => lower(PLAIN, { parsemanScopeStop: 1 }, 'b')).toThrow(/does not parse/)
+      expect('parsemanScopeStop' in globalThis).toBe(false)
+    })
+  })
+
+  it('a plain node stands in for a builder carried from another module', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'parseman-profile-'))
+    try {
+      const sink: CarriedSink = new Map()
+      const base = transformMacro(`import { node, regex, rules } from 'parseman' with { type: 'macro' }
+export const base = rules(g => ({ N: node('N', regex(/a+/), c => ({ c })) }))
+`, join(dir, 'base.ts'), new Set(['parseman']), false, false, false, undefined, 0.25, sink)!
+      writeFileSync(join(dir, 'base.js'), base.code)
+      writeFileSync(join(dir, `base.js${CARRIED_SIDECAR_SUFFIX}`), JSON.stringify({ parseman: PARSEMAN_VERSION, exports: Object.fromEntries(sink) }))
+      const corpus = join(dir, 'corpus.txt')
+      writeFileSync(corpus, 'aaaa')
+      const out = transformMacro(`import { compose, rules } from 'parseman' with { type: 'macro' }
+import { base } from './base.js'
+export const g = compose([base, rules(g => ({ Doc: g.N }))])
+${PADDING}`, join(dir, 'g.ts'), new Set(['parseman']), false, false, false, { entry: 'Doc', files: [corpus] })!
+      expect(out.assemblyProfile).toBe('ran')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  describe('a build where no grammar has the entry rule', () => {
+    const grammar = (rule: string): string => `export const ${rule.toLowerCase()} = compose([rules(g => ({ ${rule}: regex(/a/) }))])\n`
+    const IMPORT = `import { compose, regex, rules } from 'parseman' with { type: 'macro' }\n`
+    const withBuild = async (test: (dir: string, build: (plugin: ReturnType<typeof parseman.rolldown>, input?: readonly string[]) => Promise<void>, entry: (name: string) => ReturnType<typeof parseman.rolldown>) => Promise<void>): Promise<void> => {
+      const dir = realpathSync(mkdtempSync(join(tmpdir(), 'parseman-profile-')))
+      writeFileSync(join(dir, 'corpus.txt'), 'a')
+      try {
+        await test(
+          dir,
+          async (plugin, input = ['g.ts', 'other.ts']) => {
+            const bundle = await rolldown({ input: input.map(file => join(dir, file)), external: /^parseman/, plugins: [plugin] })
+            try { await bundle.generate({ format: 'esm' }) } finally { await bundle.close() }
+          },
+          name => parseman.rolldown({ assemblyProfile: { entry: name, files: [join(dir, 'corpus.txt')] } }),
+        )
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    }
+
+    it('fails, and one grammar having it is enough', () => withBuild(async (dir, build, entry) => {
+      writeFileSync(join(dir, 'g.ts'), IMPORT + grammar('Doc'))
+      writeFileSync(join(dir, 'other.ts'), IMPORT + grammar('Other'))
+      await expect(build(entry('Docs'))).rejects.toThrow(/assemblyProfile: no grammar has rule "Docs", so the corpus never ran/)
+      await expect(build(entry('Doc'))).resolves.toBeUndefined()
+    }))
+
+    it('counts a module where only an earlier grammar has it', () => withBuild(async (dir, build, entry) => {
+      writeFileSync(join(dir, 'g.ts'), IMPORT + grammar('Doc') + grammar('Second'))
+      writeFileSync(join(dir, 'other.ts'), IMPORT + grammar('Other'))
+      await expect(build(entry('Doc'))).resolves.toBeUndefined()
+    }))
+
+    it('counts a module where only a later grammar has it', () => withBuild(async (dir, build, entry) => {
+      writeFileSync(join(dir, 'g.ts'), IMPORT + grammar('Second') + grammar('Doc'))
+      writeFileSync(join(dir, 'other.ts'), IMPORT + grammar('Other'))
+      await expect(build(entry('Doc'))).resolves.toBeUndefined()
+    }))
+
+    it('leaves a real error as it was', () => withBuild(async (dir, build, entry) => {
+      writeFileSync(join(dir, 'g.ts'), 'export const = 1\n')
+      writeFileSync(join(dir, 'other.ts'), IMPORT + grammar('Other'))
+      await expect(build(entry('Doc'))).rejects.not.toThrow(/no grammar has rule/)
+    }))
+
+    it('tells a direct caller that no grammar has the entry rule', () => withBuild(async dir => {
+      const out = transformMacro(IMPORT + grammar('Other'), join(dir, 'other.ts'), new Set(['parseman']), false, false, false, { entry: 'Doc', files: [join(dir, 'corpus.txt')] })
+      expect(out?.assemblyProfile).toBe('no-entry')
+    }))
+
+    it('a Vite dev server doesn\'t fail on a mistyped entry', () => withBuild(async dir => {
+      writeFileSync(join(dir, 'g.ts'), IMPORT + grammar('Doc'))
+      const runtime = { name: 'runtime', enforce: 'pre' as const, resolveId: (id: string) => (id.startsWith('parseman') ? '\0parseman' : null), load: (id: string) => (id === '\0parseman' ? 'export const tableRules = 0, compileTable = 0' : null) }
+      const server = await createServer({ configFile: false, root: dir, logLevel: 'silent', server: { middlewareMode: true }, optimizeDeps: { noDiscovery: true, include: [] }, plugins: [runtime, parseman.vite({ assemblyProfile: { entry: 'Docs', files: [join(dir, 'corpus.txt')] } })] })
+      await expect(server.transformRequest('/g.ts')).resolves.not.toBeNull()
+      await expect(server.close()).resolves.toBeUndefined()
+    }))
+
+    it('reads only the modules in this build', () => withBuild(async (dir, build, entry) => {
+      const plugin = entry('Doc')
+      writeFileSync(join(dir, 'g.ts'), IMPORT + grammar('Doc'))
+      writeFileSync(join(dir, 'other.ts'), IMPORT + grammar('Other'))
+      await build(plugin)
+      await expect(build(plugin, ['other.ts'])).rejects.toThrow(/no grammar has rule "Doc".*other\.ts/)
+      writeFileSync(join(dir, 'plain.ts'), 'export const notAGrammar = 1\n')
+      await expect(build(plugin, ['plain.ts'])).resolves.toBeUndefined()
+    }))
+
+    it('reads every module the plugin has seen under esbuild, which can\'t list a build\'s modules', () => withBuild(async dir => {
+      writeFileSync(join(dir, 'g.ts'), IMPORT + grammar('Doc'))
+      writeFileSync(join(dir, 'other.ts'), IMPORT + grammar('Other'))
+      const build = (plugin: ReturnType<typeof parseman.esbuild>, file: string) => esbuild({ entryPoints: [join(dir, file)], bundle: true, write: false, external: ['parseman'], plugins: [plugin], logLevel: 'silent' })
+      const profile = { assemblyProfile: { entry: 'Doc', files: [join(dir, 'corpus.txt')] } }
+      await expect(build(parseman.esbuild(profile), 'other.ts')).rejects.toThrow(/no grammar has rule "Doc"/)
+      const shared = parseman.esbuild(profile)
+      await expect(build(shared, 'g.ts')).resolves.toBeDefined()
+      await expect(build(shared, 'other.ts')).resolves.toBeDefined()
+    }))
+
+    it('sees a module that loses the rule on a later build', () => withBuild(async (dir, build, entry) => {
+      const plugin = entry('Doc')
+      writeFileSync(join(dir, 'g.ts'), IMPORT + grammar('Doc'))
+      writeFileSync(join(dir, 'other.ts'), IMPORT + grammar('Other'))
+      await build(plugin)
+      writeFileSync(join(dir, 'g.ts'), 'export const notAGrammar = 1\n')
+      await expect(build(plugin)).rejects.toThrow(/no grammar has rule "Doc"/)
+    }))
+  })
+
   it('the assemblyProfile option changes only which sites are generated', () => {
     const dir = mkdtempSync(join(tmpdir(), 'parseman-profile-'))
     try {
       const corpus = join(dir, 'corpus.txt')
       writeFileSync(corpus, 'b b b b b b b b b b')
       const source = `import { choice, compose, many, regex, rules, literal } from 'parseman' with { type: 'macro' }
-export const g = compose([rules(g => ({ Doc: many(choice(g.A, g.B, g.C)), A: literal('a'), B: regex(/b ?/), C: regex(/c+/) }))])
+export const g = compose([rules(g => ({ Doc: many(choice(g.A, g.B, g.C)), A: literal('a'), B: regex(/b ?/), C: regex(/c+ ?/) }))])
 ${PADDING}`
       const plain = transformMacro(source, join(dir, 'g.ts'), new Set(['parseman']))!
       const profile = { entry: 'Doc', files: [corpus] }

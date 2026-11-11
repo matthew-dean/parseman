@@ -29,11 +29,11 @@ Run the local CI preflight and report its result before creating or pushing a
 code PR:
 
 ```sh
-pnpm typecheck && pnpm lint && pnpm check:invariants && pnpm check:differentials && pnpm test:coverage && pnpm coverage:guard && pnpm test && pnpm build && npm pack --dry-run && pnpm docs:verify
+pnpm typecheck && pnpm lint && pnpm check:invariants && pnpm check:differentials && pnpm callcount:guard && pnpm dupfn:guard && pnpm test:coverage && pnpm coverage:guard && pnpm test && pnpm build && npm pack --dry-run && pnpm docs:verify
 ```
 
-`check:invariants` decides twelve source-level rules that no type or test can
-see (INV-1 to INV-12, each described in `docs/design/invariant-gate.md`). Among
+`check:invariants` decides thirteen source-level rules that no type or test can
+see (INV-1 to INV-13, each described in `docs/design/invariant-gate.md`). Among
 them: no accessor installed onto an already-built object, no field in a public
 `*Options` type that nothing reads, no module unreachable from a published
 entry point, no declaration body duplicated across modules, no combinator `parse`
@@ -111,7 +111,16 @@ deliberately does not check: `docs/design/differential-gates.md`.
 
 If your change touches the engines (`src/table/assemble.ts`,
 `src/table/emit-assembly.ts`), dispatch, or anything else on the parse
-hot path, also check it against the comparison-chart bar — **"still the fastest
+hot path, it has to meet four bars, each with a gate and a review checklist in
+`docs/design/perf-gates.md`:
+
+1. one definition in source, with no parallel copy of a piece;
+2. no duplicated function in the emitted or printed output;
+3. no more function calls per parse than the previous release;
+4. nothing known at compile time becomes a parse-time check.
+
+Speed is confirmed on real, independent builds: `perf:xproc:gate`, never a local
+A/B whose legs share a source tree. Also check it against the comparison-chart bar — **"still the fastest
 compiled JS parser in the SVG tests"** — before claiming a trade-off is
 acceptable:
 

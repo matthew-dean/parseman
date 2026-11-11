@@ -544,7 +544,7 @@ Every item before the final local map must prove recognition-only. `composeLeaf`
 is terminal: it cannot be fed into another `compose()`/`composeLeaf()` call.
 
 The default AST/no-lines leaf embeds a selective TableProgram assembly at build time:
-generated code for its hottest sites, within the plugin's `assemblyBudget` (a multiple of the module's own source length, `0.25` by default);
+generated code for its hottest sites, within the plugin's `assemblyBudget` (a multiple of the module's own code, comments and whitespace aside, `0.5` by default);
 the closure engine runs the rest. Tracked and CST leaf variants remain compact closure
 tables. It's a static function literal and
 stays CSP-safe: no runtime source generation, no second parser.

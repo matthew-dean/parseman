@@ -4,6 +4,7 @@ import { childrenOf } from '../analysis/gating.ts'
 import { collectGrammarReflection, type GrammarReflection } from '../cst/reflection.ts'
 import { classifyRuleMap } from '../analysis/commitment.ts'
 import { serializeRuleMap } from './ir-serialize.ts'
+import { priorNameOf } from '../combinators/parser.ts'
 import { compileRuleMap, compileRuleMapRunnable, type TableRuleMapOptions } from '../table/compile-rule-map.ts'
 import type { TableProgram, TableRule } from '../table/program.ts'
 import { PARSEMAN_VERSION } from '../version.ts'
@@ -132,7 +133,9 @@ function externalNames(
       let resolved: Combinator<unknown> | undefined
       try { resolved = d.thunk() } catch { resolved = undefined }
       if (resolved === undefined) {
-        const name = (p as unknown as { _ruleName?: string })._ruleName
+        // A `prior.X` the composition fills from an earlier piece is a hole too.
+        const prior = priorNameOf(p)
+        const name = prior === undefined ? (p as unknown as { _ruleName?: string })._ruleName : `prior.${prior}`
         if (name !== undefined && !out.includes(name)) out.push(name)
         return
       }

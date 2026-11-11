@@ -212,6 +212,12 @@ export const OP_TOKEN = 29
  */
 export const OP_SCOPE_CAP = 30
 /**
+ * `k` of a `SCOPE_CAP` row whose `parser({ captureTrivia: true })` names no trivia.
+ * It raises capture and leaves the trivia the scope was entered with in force,
+ * where `k = -1` clears it (`trivia: null`).
+ */
+export const SCOPE_INHERIT = -2
+/**
  * `WITHCTX k c` — `withCtx(extra, c)`. `k >= 0` is `extra` in the const pool
  * (the replace form); `k < 0` is the derive form, `~k` indexing the author's
  * `(state) => state` in `prog.fns`, called once per entry with the outer state.
@@ -504,6 +510,23 @@ export const OP_RGATE2 = 47
  */
 export const OP_STRICT = 48
 /**
+ * `CONT corner wrapper tail` — a `collapse` node that is `sequence(corner, tail)`, with
+ * a tail that can take nothing and a corner that is one node. A strict assembly runs
+ * `corner` in the PARENT's collector and looks at the next token. Where `tail` cannot
+ * start there, the corner is the result: no frame, no children, no builder. Where it
+ * can, the corner's publication is taken back and `wrapper`'s frame opens around it and
+ * `tail`, in this one function. `tail` is read for the decision (`late-frame.ts`). Where
+ * no decision can be made, and under recovery, a probe or the reference driver, this
+ * is `wrapper`, the node as written.
+ */
+export const OP_CONT = 49
+/**
+ * `SEED corner` — marks the first term of `wrapper`'s body. Run, it is `corner`. It
+ * exists so the labels can leave out the edge from a late frame to its corner, which
+ * never runs there.
+ */
+export const OP_SEED = 50
+/**
  * `DISPATCH sel d other otherRouted n a1 … an` — `dispatch()`.
  *
  * `sel` is the selector's offset, `d` indexes a dispatch table in `prog.dsp`,
@@ -542,4 +565,6 @@ export const OP_NAMES: Record<number, string> = {
   [OP_GAPGATE]: 'GAPGATE',
   [OP_RGATE2]: 'RGATE2',
   [OP_STRICT]: 'STRICT',
+  [OP_CONT]: 'CONT',
+  [OP_SEED]: 'SEED',
 }

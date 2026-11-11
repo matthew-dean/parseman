@@ -35,7 +35,7 @@
  *   node scripts/check-differentials.mjs --list     # print the registry, run nothing
  *   node scripts/check-differentials.mjs --only=id[,id]
  *
- * ENVIRONMENT. Four of the twelve registered differentials drive JESS'S grammars
+ * ENVIRONMENT. Four of the registered differentials drive JESS'S grammars
  * over JESS'S corpora, which live in a jess worktree (`JESS_ROOT`) that this repo
  * does not vendor. There is no default: a checkout nobody built (a mirror that
  * tracks `dev` while its packages' `lib/` stay at an older commit) makes every one
@@ -263,6 +263,42 @@ const REGISTRY = [
     ],
   },
   {
+    id: 'late-frame',
+    needs: 'repo',
+    file: 'test/unit/table-late-frame.test.ts',
+    legs: 'a precedence ladder through the interpreter, the reference driver, closures and emitted functions, AST and CST, and against a twin the encoder cannot lower; corners it must not prove (a transform, a dispatch with a publishing selector, a sequence, a leaf, a mixed choice), runtime and macro',
+    cleanExit: 0,
+    run: () => runCmd(['node_modules/vitest/vitest.mjs', 'run', '--reporter=dot', 'test/unit/table-late-frame.test.ts']),
+    plants: [
+      { defect: 'late-corner-through-transform', expect: 'moves' },
+      { defect: 'late-corner-through-dispatch', expect: 'moves' },
+      { defect: 'cont-take-back-dropped-closure', expect: 'moves' },
+      { defect: 'cont-take-back-dropped-emitted', expect: 'moves' },
+      { defect: 'cont-gate-always-misses-closure', expect: 'moves' },
+      { defect: 'cont-gate-always-misses-emitted', expect: 'moves' },
+      { defect: 'cont-empty-tail-keeps-gap-closure', expect: 'moves' },
+      { defect: 'cont-empty-tail-keeps-gap-emitted', expect: 'moves' },
+      { defect: 'cont-no-scanner-check-dropped', expect: 'moves' },
+      { defect: 'cont-unknown-scope-check-dropped', expect: 'moves' },
+      { defect: 'cont-undefined-corner-closure', expect: 'moves' },
+      { defect: 'cont-undefined-corner-emitted', expect: 'moves' },
+      { defect: 'cont-gate-reads-separated-list', expect: 'moves' },
+      { defect: 'cont-recovery-late-closure', expect: 'moves' },
+      { defect: 'cont-quiet-while-recording-closure', expect: 'moves' },
+      { defect: 'cont-quiet-while-recording-emitted', expect: 'moves' },
+      { defect: 'cont-rollback-dropped-closure', expect: 'moves' },
+      { defect: 'cont-rollback-dropped-emitted', expect: 'moves' },
+      { defect: 'late-frame-ignores-collapse', expect: 'moves' },
+      { defect: 'late-corner-through-expect', expect: 'moves' },
+      { defect: 'late-corner-undefined-ref-throws', expect: 'moves' },
+      { defect: 'cont-take-back-caller-sink-closure', expect: 'moves' },
+      { defect: 'cont-take-back-caller-sink-emitted', expect: 'moves' },
+      { defect: 'cont-lean-frame-takes-tracked-wrapper', expect: 'moves' },
+      { defect: 'cont-seed-raw-len-closure', expect: 'moves' },
+      { defect: 'cont-seed-raw-len-emitted', expect: 'moves' },
+    ],
+  },
+  {
     id: 'gap-gate',
     needs: 'repo',
     file: 'test/unit/table-gap-gate.test.ts',
@@ -338,6 +374,18 @@ const REGISTRY = [
     plants: [
       { defect: 'trivia-lead-closure-narrow', expect: 'moves' },
       { defect: 'trivia-lead-emitted-narrow', expect: 'moves' },
+    ],
+  },
+  {
+    id: 'merged-build',
+    needs: 'repo',
+    file: 'test/unit/merged-build-differential.test.ts',
+    legs: 'a build with same-reading functions merged against the closure engine alone (`tableRules` with `asm: []`), both shipped paths, entered through every rule with `expected` compared: the CSS example, and rules that differ only in a failure set, a number or a site-like string, on profiled and static selections at five budget shares',
+    cleanExit: 0,
+    run: () => runCmd(['node_modules/vitest/vitest.mjs', 'run', '--reporter=dot', 'test/unit/merged-build-differential.test.ts']),
+    plants: [
+      { defect: 'merge-renames-by-regex', expect: 'moves' },
+      { defect: 'merge-compares-site-like-text', expect: 'moves' },
     ],
   },
   {

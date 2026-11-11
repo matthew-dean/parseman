@@ -7,6 +7,7 @@ import { choice } from '../combinators/choice.ts'
 import { many } from '../combinators/repeat.ts'
 import type { EmittedFactory, PoolPlan } from './emit-assembly.ts'
 import type { PackedRoutes } from './routes.ts'
+import { PARSEMAN_VERSION } from '../version.ts'
 import { buildLexBodyRecognizer, type LexBodyRecognizer } from './lex-body.ts'
 import { buildLexProgramRunner, type LexProgramRunner } from './lex-program.ts'
 
@@ -335,7 +336,9 @@ export type CompactProgram = {
   readonly c: readonly number[]
   readonly k: readonly unknown[]
   readonly x: readonly string[]
-  readonly e: readonly (readonly string[])[]
+  /** Expected sets, as indices into `es`. */
+  readonly e: readonly (readonly number[])[]
+  readonly es: readonly string[]
   readonly d: readonly (readonly number[])[]
   readonly r: Readonly<Record<string, number>>
   readonly f: readonly unknown[]
@@ -360,8 +363,11 @@ export type CompactProgram = {
 
 export function expandCompact(p: TableProgram | CompactProgram): TableProgram {
   if ('code' in p) return p
+  // A table from before the token pool has no `es`. Refuse it here, at load, instead of
+  // failing on the first expected set read below.
+  if (p.es === undefined) throw new Error(`parseman: this parser was printed by an earlier parseman; reprint it with parseman ${PARSEMAN_VERSION}`)
   return ownTableProgram({
-    code: p.c, k: p.k, cc: p.x, fx: p.e, disp: p.d, rules: p.r, fns: p.f,
+    code: p.c, k: p.k, cc: p.x, fx: p.e.map(set => set.map(i => p.es[i]!)), disp: p.d, rules: p.r, fns: p.f,
     lines: p.l ?? 0, dsp: p.p ?? [],
     ...(p.lx === undefined ? {} : { lex: p.lx }),
     ...(p.lp === undefined ? {} : { lexPrograms: p.lp }),

@@ -64,6 +64,14 @@ shape-at-construction — is syntactic, and every non-accessor
 `Object.defineProperty` in the tree (there are ~25, all `value:` on
 compile-time objects) is untouched.
 
+### INV-13 — no parallel copy of a function in engine source
+
+Decides: two functions, at any nesting depth, under `src/table/`, `src/cst/`, `src/combinators/` or `src/recovery/`, with equal shapes and a body of at least 120 characters once whitespace and comments are gone. A shape is the function's AST with the names it binds itself renamed in order (`scripts/function-shapes.mjs`), so renaming the locals does not hide a copy, and neither does calling itself by a new name. Types and casts, `var`, `let` or `const`, and writing it as a declaration, an expression or an arrow do not change a shape. Free names and property names are kept. A finding's key includes the shape's hash, so an allowlist entry excuses one pair only, and editing that pair makes the entry stale.
+
+INV-4 sees only top-level declarations in different files, byte for byte. The engines are one large function each, so a copy made inside one is nested, in the same file, and often retyped. `src/table/exec.ts` is excluded: the reference driver keeps its own copies on purpose.
+
+False-positive risk: **low**. It compares the whole normalised AST, so there is no similarity threshold. `var` and `let` scope differently but share a shape, so a pair differing only there is reported as a copy; that can only over-report. It misses a copy that was also edited, and a copied block that is not its own function. Those stay a review item ([the bars](./perf-gates.md#the-bars-an-engine-change-has-to-meet)).
+
 ### INV-12 — no descriptor installation or `WeakMap` side cache in table runtime
 
 Decides: any `Object.defineProperty` / `Object.defineProperties` call or
