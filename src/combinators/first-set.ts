@@ -200,9 +200,9 @@ function matchesEmptyBody(
     case 'regex':
       // `exact` also counts a zero-width match at a non-empty cursor (`(?=a)`, `\b`),
       // which an expected set must read past. `regex()` records it with the flags.
-      if (exact && p._meta.zeroWidth === true) return true
+      if (exact) return p._meta.zeroWidth === true
       // Precise: does the pattern admit a zero-length match? (`a*`, `a?`, `a|`, …)
-      try { const m = new RegExp(d.source).exec(''); return m != null && m[0] === '' }
+      try { const m = new RegExp(d.source, d.flags).exec(''); return m != null && m[0] === '' }
       catch { return true }
     case 'many':
     case 'optional':

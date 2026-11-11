@@ -166,6 +166,18 @@ function parseRegex(src: string, unicode = false, sets = false): Node {
     return inner
   }
 
+  // Whether the `\q{…}` members starting at `at` include an empty one.
+  const hasEmptyMember = (at: number): boolean => {
+    let len = 0
+    for (let j = at; j < src.length; j++) {
+      const c = src[j]
+      if (c === '\\') { len++; j++; continue }
+      if (c === '|' || c === '}') { if (len === 0) return true; if (c === '}') return false; len = 0; continue }
+      len++
+    }
+    return true
+  }
+
   const parseClass = (): Node => {
     // Read `[ ... ]`, honoring `\]`; detect leading `^` negation.
     let k = i + 1
@@ -177,16 +189,22 @@ function parseRegex(src: string, unicode = false, sets = false): Node {
       // match one character (or string) of a set this does not compute.
       let depth = 1
       let nested = false
+      let emptyString = false
       while (k < src.length && depth > 0) {
         const c = src[k]!
-        if (c === '\\') { if (src[k + 1] === 'q') nested = true; k += 2; continue }
+        if (c === '\\') {
+          if (src[k + 1] === 'q') { nested = true; if (src[k + 2] === '{' && hasEmptyMember(k + 3)) emptyString = true }
+          k += 2
+          continue
+        }
         if (c === '[') { depth++; nested = true }
         else if (c === ']') { depth--; if (depth === 0) break }
         else if ((c === '-' || c === '&') && src[k + 1] === c) nested = true
         k++
       }
       if (src[k] !== ']') throw BAIL
-      if (nested) { i = k + 1; return charNode(any(), true) }
+      // An empty string member (`\q{}`, `\q{a|}`) lets the class match nothing.
+      if (nested) { i = k + 1; return emptyString ? ANY : charNode(any(), true) }
       k = i + 1 + (negated ? 1 : 0)
     }
     let body = ''

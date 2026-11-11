@@ -470,7 +470,8 @@ export type ParserMeta = {
   consumingFirstSet?: FirstSet
   /**
    * Set only by `regex()`, read with the pattern's flags: it can match zero width
-   * somewhere, a lookahead or `\b` included, not only at the end of input.
+   * somewhere, a lookahead or `\b` included, not only at the end of input. Absent
+   * on a `regex()` combinator, it cannot.
    */
   zeroWidth?: true
   /** Whether this parser can consume a newline character */

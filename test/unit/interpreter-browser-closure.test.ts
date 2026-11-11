@@ -58,8 +58,9 @@ const ENTRY = resolve(ROOT, 'scripts/chevrotain-bench-interpreter-entry.ts')
 // cannot match empty, which `matchesEmpty` answers on request (64,072B at parent a2e8a40f).
 // Bumped +129B to 64,316B: that set also reads past a regex that can match zero width
 // before a character (`(?=a)`, `\b`), which `regex()` records with the pattern's flags
-// (64,187B before).
-const BASELINE_RAW_BYTES = 64_316
+// (64,187B before). Bumped +213B to 64,529B: a `v`-mode class with an empty string
+// member (`[\q{}a]`) can match nothing.
+const BASELINE_RAW_BYTES = 64_529
 const RATCHET_SLACK = 1.001
 const SHARED_RUNTIME_COMPILER_BYTE_CEILING = 1_300
 const SHARED_RUNTIME_COMPILER_MODULES = new Set([
