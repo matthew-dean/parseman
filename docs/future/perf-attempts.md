@@ -539,7 +539,7 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
   and load costs rule it out. The curve is a selection-coverage effect, not a crossing tax.
   Crossings per parse on `benchmark.less` are 48.6k at the default budget, 65.4k at budget
   10 and none when every site is emitted. Their wrappers are 2.1–2.4% of a CPU profile,
-  ≤ ~1 ms a parse. Per parse, the closure engine runs 22.1 ms at the default budget and
+  ≤ ~1 ms a parse. In the same profile the closure engine runs 22.1 ms a parse at the default budget and
   still 11.0 ms at budget 10. The sites the static ranking takes last carry that half and
   gain most from emitting: their 11.0 ms becomes 5.5 ms emitted.
 
