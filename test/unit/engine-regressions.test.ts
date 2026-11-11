@@ -330,6 +330,12 @@ describe('expected sets', () => {
     expect(backref(/(?<x>a)?\k<x>/u)).toEqual([['/(?<x>a)?\\k<x>/', '"b"']])
   })
 
+  it('a `\\k<…>` that names no group leaves the regex around it alone', () => {
+    // Without `u` and named groups, `\k` is a literal `k`, and `|` still splits the pattern.
+    const g = rules({}, () => ({ R: attempt(regex(new RegExp('a\\k<x|b>'))) })) as G
+    expect(agreed(g, 'b>').ok).toBe(true)
+  })
+
   // The tables only: the interpreter's set differs, https://github.com/matthew-dean/parseman/issues/256
   it('a choice failing at its start reports the arm the mask skipped before the last it tried', () => {
     const g = rules({}, () => ({

@@ -16,7 +16,8 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 - **A named backreference such as `\k<x>` can match empty.** The regex reader took the `<x>`
   after `\k` as required characters, so `/(?<x>a)?\k<x>/` read as always consuming. Expected
   sets stopped at it, and the commitment, hold-gap and assembly checks treated it as consuming
-  when it could match nothing.
+  when it could match nothing. Only a group name goes with `\k`, so in `/a\k<x|b>/`, where `\k` is
+  a literal `k`, the `|` still splits the pattern.
 - **A list with a minimum above one takes back its items when it fails in a choice.** Generated
   code and `compile()` treated `sepBy(x, sep, { min: 2 })` and `many(x, { min: 2 })` as leaving
   nothing behind on failure, so a later arm's tree also held the items the list kept.
