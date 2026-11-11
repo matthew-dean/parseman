@@ -13,6 +13,10 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   as `(?=a)` or `\b`, wrapped or not. It reads the regex with its flags, so `/\u{0}/u` and
   `/[a--b]/v` are required characters, and `/[\q{}a]/v`, whose empty string member matches
   nothing, is not. First-character gates and choice dispatch don't change.
+- **A named backreference such as `\k<x>` can match empty.** The regex reader took the `<x>`
+  after `\k` as required characters, so `/(?<x>a)?\k<x>/` read as always consuming. Expected
+  sets stopped at it, and the commitment, hold-gap and assembly checks treated it as consuming
+  when it could match nothing.
 - **A list with a minimum above one takes back its items when it fails in a choice.** Generated
   code and `compile()` treated `sepBy(x, sep, { min: 2 })` and `many(x, { min: 2 })` as leaving
   nothing behind on failure, so a later arm's tree also held the items the list kept.

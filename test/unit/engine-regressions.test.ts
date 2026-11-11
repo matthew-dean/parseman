@@ -324,6 +324,10 @@ describe('expected sets', () => {
     expect(set(new RegExp('[a--b]', 'v'))).toEqual([['/[a--b]/']])
     // `\q{}` is an empty string member, so this class can match nothing.
     expect(set(new RegExp('[\\q{}a]', 'v'))).toEqual([['/[\\q{}a]/', '"b"']])
+    // A named backreference to a group that did not match is empty.
+    const backref = (re: RegExp) => report(rules({}, () => ({ R: expectOr(sequence(regex(re), literal('b'))) })) as G, '')
+    expect(backref(/(?<x>a)?\k<x>/)).toEqual([['/(?<x>a)?\\k<x>/', '"b"']])
+    expect(backref(/(?<x>a)?\k<x>/u)).toEqual([['/(?<x>a)?\\k<x>/', '"b"']])
   })
 
   // The tables only: the interpreter's set differs, https://github.com/matthew-dean/parseman/issues/256

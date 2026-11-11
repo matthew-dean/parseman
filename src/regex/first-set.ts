@@ -277,7 +277,9 @@ function parseRegex(src: string, unicode = false, sets = false): Node {
       // A property escape (`\p{…}`/`\P{…}`) matches one character of a class this
       // analyzer does not enumerate; `\k<name>` is a backreference, which may match empty.
       case 'p': case 'P': return charNode(any(), true)
-      case 'k': return ANY
+      // Its `<name>` goes with it. Without `u`/`v` and named groups it is a literal
+      // `k<name>`, which reading it as a backreference only over-approximates.
+      case 'k': { const close = src[i] === '<' ? src.indexOf('>', i) : -1; if (close > 0) i = close + 1; return ANY }
       default:
         // A digit escape is a backreference we don't resolve → widen.
         if (e >= '1' && e <= '9') return ANY
