@@ -27,8 +27,8 @@
  * Design and measurements: `docs/design/left-corner-routing.md`.
  */
 import {
-  OP_ADJ, OP_CHOICE, OP_DISPATCH, OP_GAPGATE, OP_GATE, OP_LIT, OP_NODE, OP_NOT, OP_OPT, OP_PEEK,
-  OP_REP, OP_REPV, OP_ROUTED, OP_RULE, OP_RX, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_SEQ, OP_SEQV,
+  OP_ADJ, OP_CHOICE, OP_CONT, OP_DISPATCH, OP_GAPGATE, OP_GATE, OP_LIT, OP_NODE, OP_NOT, OP_OPT, OP_PEEK,
+  OP_REP, OP_REPV, OP_ROUTED, OP_RULE, OP_RX, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN, OP_SEED, OP_SEQ, OP_SEQV,
   OP_WITHCTX,
 } from './ops.ts'
 import {
@@ -225,7 +225,11 @@ export function packRoutes(prog: TableProgram): PackedRoutes | undefined {
       ...R.guards.flatMap(g => [g.cut, g.terminals.length, ...g.terminals]),
     ])
   }
-  const tops = [...reachableSites(t.code, roots)].filter(ip => routeTopCandidate(t.code, ip)).sort((a, b) => a - b)
+  const sites = reachableSites(t.code, roots)
+  // A late frame's node row is lowered by its `OP_CONT`, never linked: the `OP_CONT` is the site.
+  const unlinked = new Set<number>()
+  for (const ip of sites) if (t.code[ip] === OP_CONT) unlinked.add(t.code[ip + 2]!)
+  const tops = [...sites].filter(ip => !unlinked.has(ip) && routeTopCandidate(t.code, ip)).sort((a, b) => a - b)
   for (const top of tops) {
     const routes = derive(top)
     if (routes === undefined) continue
@@ -328,7 +332,7 @@ export function routeTable(packed: PackedRoutes): RouteTable {
 
 /** A node site some character may route below: the ones `lower(OP_NODE)` completes as a level. */
 export function routeTopCandidate(code: Int32Array, ip: number): boolean {
-  return nodeVariant(code, ip) !== -1
+  return nodeVariant(code, code[ip] === OP_CONT ? code[ip + 2]! : ip) !== -1
 }
 
 /** The variant `lower(OP_NODE)` selects, −1 where a route does not descend, −2 a gated collapse. */
@@ -472,6 +476,7 @@ function deriver(
     if (depth > 12) return false
     const op = code[ip]
     if (op === OP_NODE) return true
+    if (op === OP_CONT) return nodeValued(code[ip + 2]!, depth + 1)
     if (op === OP_GATE || op === OP_SCOPE || op === OP_SCOPE_PLAIN || op === OP_SCOPE_CAP || op === OP_WITHCTX) return nodeValued(code[ip + 2]!, depth + 1)
     if (op === OP_RULE) return nodeValued(code[ip + 1]!, depth + 1)
     if (op === OP_CHOICE) {
@@ -482,6 +487,9 @@ function deriver(
     return false
   }
 
+  /** A late frame's node row → its `OP_CONT`. */
+  const lateSite = new Map<number, number>()
+  const siteOf = (ip: number): number => lateSite.get(ip) ?? ip
   const routeMemo = new Map<string, Route>()
   const routeKeys = new Map<Route, string>()
   const levelIds = new Map<RouteLevel, number>()
@@ -698,6 +706,16 @@ function deriver(
       if (chars.length === 0) return
       if (depth >= 96) { finish(chars, P, ip, -1, undefined); return }
       const op = code[ip]
+      // A late frame is its node row, entered at its corner like any other node's;
+      // a route stopping at that node calls the `OP_CONT`, its site.
+      if (op === OP_CONT) {
+        const node = code[ip + 2]!
+        if (nodeVariant(code, node) === -1) { finish(chars, P, ip, ip, undefined); return }
+        lateSite.set(node, ip)
+        go(chars, node, P, depth)
+        return
+      }
+      if (op === OP_SEED) { go(chars, code[ip + 1]!, P, depth); return }
       if (op === OP_NODE) {
         const variant = nodeVariant(code, ip)
         if (variant === -1) { finish(chars, P, ip, ip, undefined); return }
@@ -842,7 +860,7 @@ function deriver(
       guards.push({ terminals: g.terminals, cut })
     }
     const atomHere = d === levels.length && atom !== undefined
-    const atomOut: RouteAtom = atomHere ? atom! : { kind: 'site', ip: d === levels.length ? terminal : levels[d]!.ip }
+    const atomOut: RouteAtom = atomHere ? atom! : { kind: 'site', ip: siteOf(d === levels.length ? terminal : levels[d]!.ip) }
     // Characters that take the same path share one route.
     const rkey = levels.slice(0, d).map(levelId).join(',') + '|' + atomKey(atomOut)
       + '|' + guards.map(g => `${g.cut}.${g.terminals.join('.')}`).join(',')
@@ -856,7 +874,7 @@ function deriver(
   type Path0 = { levels: RouteLevel[]; best: number; guardAt: { at: number; terminals: readonly number[] }[] }
 
   return top => {
-    if (code[top] !== OP_NODE) return undefined
+    if (code[top] !== OP_NODE && code[top] !== OP_CONT) return undefined
     const routes = routesFrom(top, new Map(), false)
     return routes.some(r => r !== undefined) ? routes : undefined
   }
