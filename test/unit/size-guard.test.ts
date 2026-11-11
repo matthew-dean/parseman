@@ -521,6 +521,10 @@ describe('the size probe does not weigh the version stamp', () => {
       const code = typeof out === 'string' ? out : out!.code
       expect(code).toContain(PARSEMAN_VERSION)
       expect(withoutVersionStamp(code)).not.toContain(PARSEMAN_VERSION)
+      // So a longer or shorter version weighs the same.
+      for (const v of ['0.61.10', '0.62.10', '1.0.0-alpha.12', '1.0.0']) {
+        expect(withoutVersionStamp(code.replaceAll(PARSEMAN_VERSION, v))).toBe(withoutVersionStamp(code))
+      }
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
     }
