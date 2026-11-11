@@ -140,6 +140,15 @@ The closure engine reads routes; the reference and emitted readers do not yet.
   decided when the site is linked, so a non-top pays nothing. A character with no route at a
   top pays the table read and one call to the node's body.
 
+- **A parse that records trivia does not route.** Routes don't write the trivia logs
+  (`_triviaLog`, `_rootTriviaLog`), so the entry selects, once per parse, an assembly with
+  no routes for a parse that carries one (`RunCfg.logged`). It is not part of `cfgKey`: an
+  emitted factory serves both. Jess passes `rootTrivia` on every parse, so until routes
+  write the root log, Jess's parses do not route at any budget.
+- **A late frame is a node level.** A route enters the node row under an `OP_CONT` at its
+  corner like any other node's, and a route that stops there calls the `OP_CONT`. A
+  continuation's first test is read by `continuationGate`, the late frame's own reading.
+
 An assembly with a precompiled emitted assembly (`HYBRID`) does not route yet, so CSS,
 built with `assemblyBudget` 1, is unrouted in production until the emitted reader lands.
 

@@ -985,6 +985,28 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
     stall is to be profiled. Raw samples:
     `scratchpad/left-corner/results/cyc3-nr.jsonl`, prototype branch `proto/routes-no-resume`
     (local).
+  - **On `main` after the late frames (merge of `f521215e`).** `main` now encodes a collapse
+    whose tail is a repeat or an optional as `OP_CONT` over its node row, and a route stopped
+    there, so it opened the frame it used to skip. A route now enters that node row at its
+    corner and stops at the `OP_CONT`. The route's term start reads a continuation's first
+    test through `continuationGate`, so the late frame and the route read it one way.
+    The call-count gate (new on `main`) then showed what the route runner costs where it
+    never routes: every parse that records trivia called it at each top it reached, to
+    decline. CSS workload with captured trivia +664 calls per parse; `.jess` AST on
+    `site.css`, which passes `rootTrivia` as Jess does, +1,262. Such a parse now runs an
+    assembly with no routes, chosen once at entry, and the first parse arms the tops and
+    hands over to the plain `finish` (+2 branch tests per parse on every row before). The
+    gate is then exact against v0.61.8 on all 25 rows. Calls per parse, `assemblyBudget` 0,
+    no trivia log (`main` → this): `font: 1;` 209 → 172, Less `color: red;` 327 → 237,
+    `benchmark.less` 2,244,583 → 1,936,958, bootstrap (83 files, 194 KB) 2,038,306 →
+    1,786,765, `benchmark.css` 1,845,361 → 1,694,773, `gen-workload.scss` 7,618,527 →
+    7,066,304, `.jess` `chunk.jess` ×8 70,938 → 67,700, all-non-ASCII CSS 4,988,066 →
+    4,936,147, all-non-ASCII Less 13,072,062 → 13,080,109 (+0.06%: each declining top is a
+    call), GraphQL and JSON unchanged. At the default budget every row equals `main`.
+    Identity against `main` @ `f521215e`: 0 diffs, four dialects, AST and CST, failure rows
+    included. What it leaves: Jess passes `rootTrivia` on every parse, so no Jess parse
+    routes at any budget until routes write the root trivia log; and at the default budget
+    Jess's CSS, Less and SCSS grammars run selected emitted sites, which do not route.
 - **Less declarations above the value (census, not built).** Marginal instructions per
   declaration in a block (`a{color: red; …}`, 21 against 1) with the routes above:
   ~35k JIT / 276k `--jitless`, against lessc's ~6.8k JIT for the whole declaration.
