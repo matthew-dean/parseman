@@ -9,7 +9,7 @@ import { cstOutputHost } from '../compiler/build-arity.ts'
 import { consumeTrivia } from '../combinators/trivia-skip.ts'
 import {
   advanceTrivia, commitTriviaScan, needsDeferredTriviaCommit, rollbackScannedTriviaAt, rollbackTrivia,
-  rollbackTriviaAt, saveTriviaMark, scanTriviaCompact, skipTriviaScanned, type FastTriviaScanner,
+  rollbackTriviaAt, saveTriviaMark, scanTriviaCompact, recordUnlabelledGap, type FastTriviaScanner,
 } from '../combinators/trivia-skip.ts'
 import {
   beginCstNodeCapture, cstCaptureActive, cstLeavesLen, cstRawLen, cstTlLen,
@@ -300,7 +300,9 @@ function makeDriver(
       if (ctx._rootTriviaLog === undefined && !(ctx.captureTrivia === true && ctx._cstBuf !== undefined)) {
         return s(input, cur)
       }
-      return skipTriviaScanned(s, input, cur, ctx)
+      const end = s(input, cur)
+      if (end !== cur) recordUnlabelledGap(ctx, cur, end)
+      return end
     }
     if (needsDeferredTriviaCommit(ctx)) {
       return commitTriviaScan(scanTriviaCompact(input, cur, ctx))
@@ -789,7 +791,7 @@ function makeDriver(
         const policy = code[ip] === OP_SCOPE_PLAIN ? 0 : code[ip + 3]!
         if ((policy & 2) !== 0) refuseUnclassifiedRootScope(ctx._rootTriviaStrictScopes)
         const savedRootCap = ctx._rootTriviaCapture
-        if ((policy & 1) !== 0) ctx._rootTriviaCapture = false
+        if ((policy & 1) !== 0) ctx._rootTriviaCapture = ctx._rootTriviaStrictScopes === false
         const v = exec(code[ip + 2]!, input, pos, ctx)
         if ((policy & 1) !== 0) ctx._rootTriviaCapture = savedRootCap
         ctx.captureTrivia = savedCap

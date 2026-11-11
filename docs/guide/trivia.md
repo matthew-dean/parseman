@@ -172,9 +172,10 @@ result.rootTrivia!.select // the grammar's labels, then ''
 ```
 
 Every labelled chunk is a row under its label. A gap of unlabelled trivia is one row under
-`''`, with the gap as both of its ranges. The label table is the grammar's own, fixed when
-the grammar is compiled, so `'all'` needs no `classifiedTrivia()` scope and records nothing
-inside a `rootCapture: 'opaque'` region. Before 0.62.0 this log was `ParseContext._triviaLog`.
+`''`, with the gap as both of its ranges. The label table holds every trivia scope's labels,
+the root's first, fixed when the grammar is compiled. `'all'` needs no `classifiedTrivia()`
+scope, and it records inside a `rootCapture: 'opaque'` region too. Before 0.62.0 this log was
+`ParseContext._triviaLog`.
 
 `classifiedTrivia()` is the safe constructor for selected root capture: each name owns a
 distinct grammar arm. Arms keep ordinary ordered-choice semantics, so categories such as

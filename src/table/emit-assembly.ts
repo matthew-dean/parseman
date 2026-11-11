@@ -121,7 +121,7 @@ export const EMITTED_PARAMS = [
   'SCANS', 'DISP', 'DSP', 'EMPTY_FX', 'EMPTY_CH', 'EMPTY_TLOG', 'EMPTY_TL',
   'cstCaptureActive', 'pushCstLeaf', 'pushCstChild', 'rollbackTriviaAt', 'rollbackScannedTriviaAt', 'failAt',
   'classHas', 'consumeTrivia', 'buildFieldMap', 'projectChild', 'unwrapChild',
-  'demoteCapturedToRaw', 'cstLeavesLen', 'skipTriviaScanned', 'needsDeferredTriviaCommit',
+  'demoteCapturedToRaw', 'cstLeavesLen', 'recordUnlabelledGap', 'needsDeferredTriviaCommit',
   'advanceTrivia', 'refuseUnclassifiedRootScope', 'spanLines', 'rawEntry', 'lead',
   'asciiFoldKey', 'ROUTED_FX',
   // RECOVERY, bound rather than reimplemented. `SENTS` is the sync sentinel per
@@ -160,7 +160,14 @@ export const EMITTED_PARAMS = [
  * minor covers that. The runtime refuses any record whose `abi` is not this string
  * (`assertFactoryAbi`, `assemble.ts`).
  */
-export const EMITTED_ABI = `${/^\d+\.\d+/.exec(PARSEMAN_VERSION)![0]}/${EMITTED_PARAMS.length}`
+export const EMITTED_ABI = emittedAbi(PARSEMAN_VERSION, EMITTED_PARAMS.length)
+
+/** `"<major>.<minor>/<helperCount>"` for a parseman version, a prerelease such as `0.62.0-alpha.1` included. */
+export function emittedAbi(version: string, helperCount: number): string {
+  const minor = /^\d+\.\d+/.exec(version)
+  if (minor === null) throw new TypeError(`parseman: version ${JSON.stringify(version)} has no major.minor`)
+  return `${minor[0]}/${helperCount}`
+}
 
 /**
  * The state the emitted scope owns, and the helpers that touch it.
@@ -195,7 +202,9 @@ function _skipTrivia(input,cur,ctx){
 const s=_pfScan
 if(s!==null){
 if(ctx._rootTriviaLog===undefined&&!(ctx.captureTrivia===true&&ctx._cstBuf!==undefined))return s(input,cur)
-return skipTriviaScanned(s,input,cur,ctx)
+const e=s(input,cur)
+if(e!==cur)recordUnlabelledGap(ctx,cur,e)
+return e
 }
 if(needsDeferredTriviaCommit(ctx))return skipDeferredTrivia(input,cur,ctx)
 return advanceTrivia(input,cur,ctx)
@@ -1116,17 +1125,21 @@ return advanceTrivia(input,cur,ctx)}`)
     const capturing = l.cap === CAP_OFF ? 'false' : l.cap === CAP_ON ? sink : `(ctx.captureTrivia===true&&${sink})`
     if (capturing === 'true') {
       // Capture is on and a sink is open: the bare-scanner arm is unreachable.
-      skipDefs.push(`function ${nm}(input,cur,ctx){return skipTriviaScanned(${sc},input,cur,ctx)}`)
+      skipDefs.push(`function ${nm}(input,cur,ctx){const e=${sc}(input,cur)
+if(e!==cur)recordUnlabelledGap(ctx,cur,e)
+return e}`)
       return nm
     }
     // A root log takes the recording path too: an unlabelled gap is one root row
-    // under `rootTrivia: { select: 'all' }` (`skipTriviaScanned`).
+    // under `rootTrivia: { select: 'all' }` (`recordUnlabelledGap`).
     const guard = capturing === 'false'
       ? 'ctx._rootTriviaLog===undefined'
       : `ctx._rootTriviaLog===undefined&&!${capturing}`
     skipDefs.push(`function ${nm}(input,cur,ctx){
 if(${guard})return ${sc}(input,cur)
-return skipTriviaScanned(${sc},input,cur,ctx)}`)
+const e=${sc}(input,cur)
+if(e!==cur)recordUnlabelledGap(ctx,cur,e)
+return e}`)
     return nm
   }
 
@@ -1757,7 +1770,7 @@ return v
         const strict = (flags & 2) !== 0 ? 'refuseUnclassifiedRootScope(ctx._rootTriviaStrictScopes)\n' : ''
         const rootCap = (flags & 1) !== 0
         return `${head}
-${strict}${rootCap ? 'const sR=ctx._rootTriviaCapture\nctx._rootTriviaCapture=false\n' : ''}const sT=ctx.trivia,sL=ctx.triviaKindLabels,sS=_pfScan${cap ? ',sC=ctx.captureTrivia' : ''}
+${strict}${rootCap ? 'const sR=ctx._rootTriviaCapture\nctx._rootTriviaCapture=ctx._rootTriviaStrictScopes===false\n' : ''}const sT=ctx.trivia,sL=ctx.triviaKindLabels,sS=_pfScan${cap ? ',sC=ctx.captureTrivia' : ''}
 _pfScan=${scanFor}
 ctx.trivia=${tri}
 ctx.triviaKindLabels=${lab}

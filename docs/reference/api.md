@@ -841,9 +841,10 @@ offsets.
 
 ### `run(entry, input, opts?)`
 
-Run a grammar **entry** — a rule function from a `compose()` / `compile()` map, or an
-interpreter combinator — against `input`. It threads the standard ctx (trivia log,
-`recover`/`expect` errors, the `ctx.build` host, grammar state) for you, so a tool never
+Run a grammar **entry** — a rule function from a `compose()` / `compile()` map, a
+`compile()` result, or an interpreter combinator — against `input`. It threads the
+standard ctx (root trivia, `recover`/`expect` errors, the `ctx.build` host, grammar state)
+for you, so a tool never
 has to hand-build it or branch on function-vs-combinator. Returns a
 [`RunResult`](./types#runresult):
 `{ ok, value, span, expected, errors, rootTrivia?, unconsumedFrom }`.
@@ -857,14 +858,18 @@ Pass `opts.rootTrivia: { select: [...] }` when only a few labeled markers
 need root-level preservation. This stores a compact row per selected marker and its
 complete owning trivia range; it does not record ordinary whitespace runs. Labels
 are grammar-defined policy, so a formatter may select `significantNewline` while a
-serializer selects comments. Root capture is otherwise absent: ordinary `run()`
-retains no global trivia log. `result.rootTrivia.index` provides the gap-query API,
-and raw rows are in `result.rootTrivia.rows`. Their label index is into `select`,
-which remains stable when a composed grammar changes its local trivia-label order.
+serializer selects comments. `select: 'all'` keeps the whole document's trivia
+instead: every labelled chunk under its label, and each gap of unlabelled trivia as one
+row under `''`. `select` is then every trivia scope's labels, the root's first, followed
+by `''`. Without `rootTrivia`, `run()` retains no document trivia log.
+`result.rootTrivia.index` provides the gap-query API, and raw rows are in
+`result.rootTrivia.rows`. Their label index is into `select`, which remains stable when
+a composed grammar changes its local trivia-label order.
 
 Use `classifiedTrivia()` for this grammar. Selected capture rejects a broad
 local matcher that would classify a selected category under another label; use `rootCapture:
-'opaque'` only where that loss is intentional.
+'opaque'` only where that loss is intentional. `select: 'all'` has neither requirement: it
+takes unlabelled trivia under `''` and records inside an opaque region too.
 
 ```ts
 const g = compose([base])

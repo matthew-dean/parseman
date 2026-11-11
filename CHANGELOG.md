@@ -23,10 +23,15 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   row under its label, named by label in a nested scope that orders its labels differently
   (an old entry gave that scope's own index). A gap of unlabelled trivia is one row under `''`
   whose `start, end` are the gap, the `[start, end]` entry `_triviaLog` held. The label table
-  is the grammar's, recorded on the compiled entry, and `run()` now accepts a `compile()`
-  result and runs its entry rule. A region declared `parser({ rootCapture: 'opaque' })` records
-  nothing; `_triviaLog` recorded it. A context that still carries `_triviaLog` is refused when a
-  compiled `parse` or `parseWithContext` starts, with an error that names the replacement.
+  holds every trivia scope's labels, the root's first, and a compiled entry carries it from
+  compile time. A region declared `parser({ rootCapture: 'opaque' })` is recorded, as
+  `_triviaLog` recorded it; a label list still records nothing there. `run()` now accepts a
+  `compile()` result and runs its entry rule. A context that still carries `_triviaLog` is
+  refused when a `compile()` result's `parse` or `parseWithContext` starts, with an error that
+  names the replacement. Everywhere else `ParseContext` refuses it by its type alone: a rule of
+  a `tableRules()` map, a printed module or a macro build is the same function the grammar's
+  own pieces call per rule, and an interpreted parser takes a context only on its recursive
+  `parse(input, pos, ctx)`, so a runtime check there would run on every call.
   On the CSS example, the five bench workloads and the Jess corpora in all four dialects,
   the rows give the same spans as 0.61.9's `_triviaLog`, and in Jess the same labels except
   two block comments in a nested CSS scope, which the old log named `whitespace`.

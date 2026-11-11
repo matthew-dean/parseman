@@ -13,7 +13,7 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { classifiedTrivia, literal, node, optional, regex, rules, run, sequence } from '../../src/index.ts'
 import { tableRules } from '../../src/table/assemble.ts'
-import { EMITTED_ABI, EMITTED_PARAMS, emitAssemblySource } from '../../src/table/emit-assembly.ts'
+import { EMITTED_ABI, EMITTED_PARAMS, emitAssemblySource, emittedAbi } from '../../src/table/emit-assembly.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { resolveTable, type PrecompiledAssembly, type TableProgram } from '../../src/table/program.ts'
 
@@ -120,9 +120,11 @@ describe('a factory 0.61.9 printed, on this runtime', () => {
   })
   const opts = { rootTrivia: { select: ['comment'] } }
 
-  it('takes the same helper count as this runtime', () => {
+  it('takes the same helper count as this runtime, so a count check passes it', () => {
     expect(printed.version).toBe('0.61.9')
-    expect(printed.params).toEqual([...EMITTED_PARAMS])
+    expect(printed.params).toHaveLength(EMITTED_PARAMS.length)
+    // The one slot whose helper 0.62 replaced: the installed-scanner recording.
+    expect(printed.params.filter((name, i) => name !== EMITTED_PARAMS[i])).toEqual(['skipTriviaScanned'])
   })
 
   it('is refused, as 0.61.9 stamped it', () => {
@@ -177,7 +179,7 @@ describe('the helpers a printed factory binds', () => {
       unwrapChild: 1,
       demoteCapturedToRaw: 2,
       cstLeavesLen: 1,
-      skipTriviaScanned: 4,
+      recordUnlabelledGap: 3,
       needsDeferredTriviaCommit: 1,
       advanceTrivia: 3,
       refuseUnclassifiedRootScope: 1,
@@ -200,5 +202,13 @@ describe('the helpers a printed factory binds', () => {
       _FC: 3,
       _BUF: 3,
     })
+  })
+
+  it('reads major.minor from a release or a prerelease version', () => {
+    expect(emittedAbi('0.62.0', 59)).toBe('0.62/59')
+    expect(emittedAbi('0.62.0-alpha.1', 59)).toBe('0.62/59')
+    expect(emittedAbi('0.62.10-rc.2', 59)).toBe('0.62/59')
+    expect(emittedAbi('1.0.0-beta.3', 7)).toBe('1.0/7')
+    expect(() => emittedAbi('next', 59)).toThrow('has no major.minor')
   })
 })

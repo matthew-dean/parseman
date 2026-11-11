@@ -77,7 +77,7 @@ import { PARSEMAN_VERSION } from '../version.ts'
 import { consumeTrivia } from '../combinators/trivia-skip.ts'
 import {
   advanceTrivia, needsDeferredTriviaCommit, rollbackScannedTriviaAt, rollbackTriviaAt,
-  skipTriviaScanned, type FastTriviaScanner,
+  recordUnlabelledGap, type FastTriviaScanner,
 } from '../combinators/trivia-skip.ts'
 import {
   cstCaptureActive, cstLeavesLen, cstTlLen,
@@ -969,7 +969,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       const inner = out
       out = (input, pos, ctx) => {
         const saved = ctx._rootTriviaCapture
-        ctx._rootTriviaCapture = false
+        // `select: 'all'` (strict scopes off) records an opaque region too.
+        ctx._rootTriviaCapture = ctx._rootTriviaStrictScopes === false
         const v = inner(input, pos, ctx)
         ctx._rootTriviaCapture = saved
         return v
@@ -1011,14 +1012,16 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     const t = ctx.trivia
     if (t !== undefined && cannotStartTrivia(input, cur, t)) return cur
     const s = SCAN
-    // CAPTURE IS NOT A REASON TO LEAVE THE SCANNER — see `skipTriviaScanned`, which
+    // CAPTURE IS NOT A REASON TO LEAVE THE SCANNER — see `recordUnlabelledGap`, which
     // also writes a root log's row. Nested under the one `s !== null` test, so a
     // labelled trivia (no scanner) pays that test alone.
     if (s !== null) {
       if (ctx._rootTriviaLog === undefined && !(ctx.captureTrivia === true && ctx._cstBuf !== undefined)) {
         return s(input, cur)
       }
-      return skipTriviaScanned(s, input, cur, ctx)
+      const end = s(input, cur)
+      if (end !== cur) recordUnlabelledGap(ctx, cur, end)
+      return end
     }
     if (needsDeferredTriviaCommit(ctx)) return skipDeferredTrivia(input, cur, ctx)
     return advanceTrivia(input, cur, ctx)
@@ -4353,7 +4356,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         scansArr, disp, dsp, EMPTY_FX, EMPTY_CH, EMPTY_TLOG, EMPTY_TL,
         cstCaptureActive, pushCstLeaf, pushCstChild, rollbackTriviaAt, rollbackScannedTriviaAt, failAt,
         classHas, consumeTrivia, buildFieldMap, projectChild, unwrapChild,
-        demoteCapturedToRaw, cstLeavesLen, skipTriviaScanned, needsDeferredTriviaCommit,
+        demoteCapturedToRaw, cstLeavesLen, recordUnlabelledGap, needsDeferredTriviaCommit,
         advanceTrivia, refuseUnclassifiedRootScope, spanLines, rawEntry, lead,
         asciiFoldKey, ROUTED_FX,
         REC ? prog.cc.map((_, i) => sentinelFor(i)) : EMPTY_SENTS,
@@ -4433,7 +4436,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         scansArr, disp, dsp, EMPTY_FX, EMPTY_CH, EMPTY_TLOG, EMPTY_TL,
         cstCaptureActive, pushCstLeaf, pushCstChild, rollbackTriviaAt, rollbackScannedTriviaAt, failAt,
         classHas, consumeTrivia, buildFieldMap, projectChild, unwrapChild,
-        demoteCapturedToRaw, cstLeavesLen, skipTriviaScanned, needsDeferredTriviaCommit,
+        demoteCapturedToRaw, cstLeavesLen, recordUnlabelledGap, needsDeferredTriviaCommit,
         advanceTrivia, refuseUnclassifiedRootScope, spanLines, rawEntry, lead,
         asciiFoldKey, ROUTED_FX,
         // THE SENTINEL POOL, dense over char-class indices so the emitted text can

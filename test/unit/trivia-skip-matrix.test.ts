@@ -12,7 +12,7 @@ import {
   scanTrivia,
   scanTriviaCompact,
   triviaScanEnd,
-  skipTriviaScanned,
+  recordUnlabelledGap,
 } from '../../src/combinators/trivia-skip.ts'
 
 const labeled = trivia(oneOrMore(choice(
@@ -227,7 +227,8 @@ describe('trivia skip branch matrix', () => {
     ctx.captureTrivia = true
     ctx._cstBuf = buf
     const scanner = fastTriviaScanner(regex(/[ ]+/))!
-    expect(skipTriviaScanned(scanner, '  x', 0, ctx)).toBe(2)
+    expect(scanner('  x', 0)).toBe(2)
+    recordUnlabelledGap(ctx, 0, 2)
     expect(buf.tl).toEqual([0, 2, 0])
 
     const mark = saveLookaheadMark(ctx)

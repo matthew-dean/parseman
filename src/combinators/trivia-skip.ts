@@ -334,10 +334,10 @@ export function scanTriviaCompact(input: string, cur: number, ctx: ParseContext)
       if (end === cur) return { end: cur, commit: NOOP_COMMIT }
       return {
         end,
-        commit: () => {
-          if (rootLog !== undefined) recordUnlabelledRootGap(ctx, rootLog, cur, end)
-          if (captureTl) pushCstTriviaEntry(ctx, cur, end)
-        },
+        // A capture-only commit pushes the entry itself, as one call.
+        commit: rootLog === undefined
+          ? () => pushCstTriviaEntry(ctx, cur, end)
+          : () => recordUnlabelledGap(ctx, cur, end),
       }
     }
 
@@ -386,10 +386,10 @@ export function scanTriviaCompact(input: string, cur: number, ctx: ParseContext)
     if (end === cur) return { end: cur, commit: NOOP_COMMIT }
     return {
       end,
-      commit: () => {
-        if (rootLog !== undefined) recordUnlabelledRootGap(ctx, rootLog, cur, end)
-        if (captureTl) pushCstTriviaEntry(ctx, cur, end)
-      },
+      // A capture-only commit pushes the entry itself, as one call.
+      commit: rootLog === undefined
+        ? () => pushCstTriviaEntry(ctx, cur, end)
+        : () => recordUnlabelledGap(ctx, cur, end),
     }
   }
 
@@ -398,53 +398,30 @@ export function scanTriviaCompact(input: string, cur: number, ctx: ParseContext)
 }
 
 /**
- * One root row for a gap of UNLABELLED trivia: the gap is its own marker, under
- * the `''` kind that only `rootTrivia: { select: 'all' }` defines. A label list
- * has no `''`, so it records nothing here.
+ * Record one gap of UNLABELLED trivia, `(start, end)`, in every sink that is open: a root
+ * log takes it as one row under `''`, the kind only `rootTrivia: { select: 'all' }`
+ * defines (a label list has no `''`, so it records nothing here), and a capture buffer
+ * takes it as one entry.
+ *
+ * The one place this recording is written. A deferred `{ end, commit }` commits through
+ * it, and the table engines call it straight after their installed scanner (unlabelled
+ * trivia, `trackLines` off), where the gap is a single row and there is nothing to defer.
  */
-function recordUnlabelledRootGap(ctx: ParseContext, rootLog: number[], start: number, end: number): void {
-  if (ctx._rootTriviaCapture === false) return
-  const kind = ctx._rootTriviaKindIndex?.['']
-  if (kind !== undefined) rootLog.push(start, end, start, end, kind)
+export function recordUnlabelledGap(ctx: ParseContext, start: number, end: number): void {
+  const rootLog = ctx._rootTriviaLog
+  if (rootLog !== undefined) {
+    if (ctx._rootTriviaCapture !== false) {
+      const kind = ctx._rootTriviaKindIndex?.['']
+      if (kind !== undefined) rootLog.push(start, end, start, end, kind)
+    }
+  }
+  if (ctx.captureTrivia === true && ctx._cstBuf !== undefined) pushCstTriviaEntry(ctx, start, end)
 }
 
 /** The object-shaped form of `scanTriviaCompact`. No engine calls it; the trivia-skip tests compare the two. */
 export function scanTrivia(input: string, cur: number, ctx: ParseContext): TriviaScan {
   const scan = scanTriviaCompact(input, cur, ctx)
   return typeof scan === 'number' ? { end: scan, commit: NOOP_COMMIT } : scan
-}
-
-/**
- * Skip trivia at `cur` through an INSTALLED scanner, recording it immediately.
- *
- * The table drivers install a scanner only for UNLABELLED trivia with
- * `trackLines` off, and that is exactly the case where the deferred path's whole
- * commit is the single row `(cur, end)` — so there is nothing to defer, and the
- * `{ end, commit }` pair plus its closure that `scanTrivia(…).commit()` allocated
- * on EVERY sequence term of EVERY capturing grammar buy nothing. This is that
- * branch with the allocations removed, kept here so recording has one home.
- */
-export function skipTriviaScanned(
-  s: FastTriviaScanner,
-  input: string,
-  cur: number,
-  ctx: ParseContext,
-): number {
-  const end = s(input, cur)
-  if (end !== cur) {
-    // `recordUnlabelledRootGap`, inline: this is the per-gap path of every installed scanner.
-    const rootLog = ctx._rootTriviaLog
-    if (rootLog !== undefined) {
-      if (ctx._rootTriviaCapture !== false) {
-        const kind = ctx._rootTriviaKindIndex?.['']
-        if (kind !== undefined) rootLog.push(cur, end, cur, end, kind)
-      }
-    }
-    if (ctx.captureTrivia === true && ctx._cstBuf !== undefined) {
-      pushCstTriviaEntry(ctx, cur, end)
-    }
-  }
-  return end
 }
 
 /**

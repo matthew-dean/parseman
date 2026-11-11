@@ -283,3 +283,17 @@ export function buildRootTriviaIndex(
     },
   }
 }
+
+/**
+ * The label table `rootTrivia: { select: 'all' }` names rows by: the root scope's labels in
+ * their order, then the labels only nested scopes use, sorted, so every engine derives the
+ * same table. A root chunk's index into its own labels stays valid in this table.
+ */
+export function allTriviaLabels(
+  root: readonly string[] | undefined,
+  scopes: Iterable<readonly string[] | undefined>,
+): readonly string[] | undefined {
+  const nested = new Set<string>()
+  for (const labels of scopes) for (const l of labels ?? []) if (root?.includes(l) !== true) nested.add(l)
+  return nested.size === 0 ? root : [...(root ?? []), ...[...nested].sort()]
+}

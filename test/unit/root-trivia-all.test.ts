@@ -77,11 +77,25 @@ describe("rootTrivia: { select: 'all' }", () => {
     expect(allRows(g, 'a /*1*/ y')).toEqual([[1, 8, '']])
   })
 
-  it('records nothing inside a region declared opaque to root capture', () => {
+  it('records inside a region declared opaque to root capture, as a label list does not', () => {
     const g = rules({ trivia: classified() }, () => ({
       R: sequence(parser({ trivia: classified(), rootCapture: 'opaque' }, sequence(literal('a'), literal('b'))), literal('c')),
     })) as G
-    expect(allRows(g, 'a /*1*/ b /*2*/ c')).toEqual([[9, 10, 'whitespace'], [10, 15, 'comment'], [15, 16, 'whitespace']])
+    const input = 'a /*1*/ b /*2*/ c'
+    expect(allRows(g, input)).toEqual([
+      [1, 2, 'whitespace'], [2, 7, 'comment'], [7, 8, 'whitespace'],
+      [9, 10, 'whitespace'], [10, 15, 'comment'], [15, 16, 'whitespace'],
+    ])
+    expect(run(g['R']!, input, { rootTrivia: { select: ['comment'] } }).rootTrivia!.rows).toEqual([9, 16, 10, 15, 0])
+  })
+
+  it('names a label only a nested scope uses', () => {
+    const nested = classifiedTrivia({ whitespace: regex(/[ \n]+/), lineComment: regex(/\/\/[^\n]*/) })
+    const g = rules({ trivia: classified() }, () => ({
+      R: node('R', sequence(literal('a'), parser({ trivia: nested }, sequence(literal('b'), literal('c'))))),
+    })) as G
+    expect(run(g['R']!, 'a b//x\nc', ALL).rootTrivia?.select).toEqual(['whitespace', 'comment', 'lineComment', ''])
+    expect(allRows(g, 'a b//x\nc')).toEqual([[1, 2, 'whitespace'], [3, 6, 'lineComment'], [6, 7, 'whitespace']])
   })
 
   it('runs a compile() result as its entry rule', () => {

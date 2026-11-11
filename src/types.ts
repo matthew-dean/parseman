@@ -365,11 +365,13 @@ export type ParseContext = {
   _cstLeaves?: unknown[] | undefined
   /**
    * Framework-internal: selected root-trivia rows. Each row is
-   * `[gapStart, gapEnd, markerStart, markerEnd, kindIndex]`. It
-   * never records an ordinary whitespace chunk: a row exists
-   * only for a selected labeled trivia kind, while its first pair preserves the
-   * complete committed gap that owns that marker. The fixed-width numeric log
-   * keeps compiler rollback as cheap as the legacy root sink.
+   * `[gapStart, gapEnd, markerStart, markerEnd, kindIndex]`, where `kindIndex`
+   * indexes the run's `select`. A row exists only for a selected kind, and its first
+   * pair is the complete committed gap that owns the marker. With a label list, an
+   * unselected chunk (ordinary whitespace, say) records nothing. With `select: 'all'`
+   * every labelled chunk is selected, and a gap of unlabelled trivia is one row under
+   * `''` whose two pairs are both the gap. The fixed-width numeric log keeps rollback
+   * a length reset.
    */
   _rootTriviaLog?: number[] | undefined
   /** Grammar-label → selected-root-table index. Each trivia scope maps its local

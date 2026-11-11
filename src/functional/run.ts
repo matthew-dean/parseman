@@ -1,7 +1,8 @@
 import type { Combinator, ParseContext, ParseError, ParseResult, Span } from '../types.ts'
 import { REC } from '../recovery/scan.ts'
 import { createParseContext } from '../parse-context.ts'
-import { buildRootTriviaIndex, type RootTriviaIndex } from '../cst/trivia-entries.ts'
+import { allTriviaLabels, buildRootTriviaIndex, type RootTriviaIndex } from '../cst/trivia-entries.ts'
+import { childrenOf } from '../analysis/children.ts'
 /* `cst/host-mode.ts` and `cst/trivia-entries.ts` are import-free by design, so
  * this keeps the `parseman/run` closure minimal — see
  * test/unit/run-entry-closure.test.ts. */
@@ -303,6 +304,8 @@ const invoke = (r: Runnable, input: string, pos: number, ctx: ParseContext): Par
 type RunnableMeta = {
   readonly _meta?: {
     readonly triviaKindLabels?: readonly string[]
+    /** Every trivia scope's labels, root first (`allTriviaLabels`); absent when the root's cover them. */
+    readonly allTriviaKindLabels?: readonly string[]
     readonly rootTriviaClassified?: true
     readonly grammarTrivia?: Runnable
   }
@@ -365,6 +368,34 @@ function triviaKindLabelsFromRunnable(r: Runnable | undefined): readonly string[
   return grammarTrivia?._meta.triviaKindLabels
     ?? r._meta.triviaKindLabels
     ?? (r._def.tag === 'grammar' ? r._def.triviaParser?._meta.triviaKindLabels : undefined)
+}
+
+const interpretedAllLabels = new WeakMap<Combinator<unknown>, readonly string[] | undefined>()
+
+/**
+ * The label table for `select: 'all'` on an interpreted entry: every trivia scope's
+ * labels, root first. A table entry carries it from compile time
+ * (`_meta.allTriviaKindLabels`). The interpreter has no compile step, so it walks the
+ * grammar once per entry, the first time `'all'` runs it, and keeps the answer.
+ */
+function interpretedAllTriviaLabels(entry: Combinator<unknown>, root: readonly string[] | undefined): readonly string[] | undefined {
+  if (interpretedAllLabels.has(entry)) return interpretedAllLabels.get(entry)
+  const seen = new Set<Combinator<unknown>>()
+  const scopes: Array<readonly string[] | undefined> = []
+  const stack: Array<Combinator<unknown>> = [entry]
+  while (stack.length > 0) {
+    const c = stack.pop()!
+    if (seen.has(c)) continue
+    seen.add(c)
+    scopes.push(c._meta.triviaKindLabels)
+    const ambient = (c._meta as { grammarTrivia?: Combinator<unknown> }).grammarTrivia
+    if (ambient !== undefined) stack.push(ambient)
+    if (c._def.tag === 'lazy') stack.push(c._def.thunk())
+    else stack.push(...childrenOf(c._def))
+  }
+  const labels = allTriviaLabels(root, scopes)
+  interpretedAllLabels.set(entry, labels)
+  return labels
 }
 
 function rootTriviaClassifiedFromRunnable(r: Runnable | undefined): boolean {
@@ -430,9 +461,13 @@ export function runRule(given: Runnable | CompiledEntry, input: string, options:
   const grammarTrivia = typeof entry !== 'function' ? entry._meta.grammarTrivia : undefined
   const grammarScanSkip = typeof entry !== 'function' ? entry._meta.grammarScanSkip : undefined
   const triviaKindLabels = triviaKindLabelsFromRunnable(entry) ?? triviaKindLabelsFromRunnable(options.trivia)
-  // `'all'` is the grammar's own label table, which the entry carried from compile
+  // `'all'` is every trivia scope's labels, root first, which a table entry carried from compile
   // time, plus `''` for trivia no label covers. It is not grown during the parse.
-  const rootTriviaSelection = allTrivia ? [...(triviaKindLabels ?? []), ''] : requested
+  const rootTriviaSelection = !allTrivia
+    ? requested
+    : [...((typeof entry === 'function'
+        ? (entry as RunnableMeta)._meta?.allTriviaKindLabels ?? triviaKindLabels
+        : interpretedAllTriviaLabels(entry, triviaKindLabels)) ?? []), '']
   const captureRootTrivia = rootTriviaSelection !== undefined && rootTriviaSelection.length > 0
   if (captureRootTrivia && !allTrivia) {
     if (triviaKindLabels === undefined) {

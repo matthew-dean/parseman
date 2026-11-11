@@ -31,7 +31,7 @@ export type ParserOptions = ParseOptions & {
    * Declare that this local trivia scope intentionally does not preserve
    * selected root categories. Required only by
    * `rootTrivia: { select }` when the scope does not use
-   * `classifiedTrivia()`.
+   * `classifiedTrivia()`. `select: 'all'` records the region anyway.
    */
   rootCapture?: 'opaque'
   /** Record consumed trivia as CSTTrivia tokens in rawChildren. Default: skip. */
@@ -228,7 +228,9 @@ export function parser<T>(opts: ParserOptions, root: Combinator<T>): ParsemanPar
       // This is a property of the local trivia scope, not a post-parse filter:
       // nested recognition can still skip its trivia, but selected root rows
       // must never be written for an explicitly opaque region.
-      if (opaqueRootCapture) ctx._rootTriviaCapture = false
+      // `rootTrivia: { select: 'all' }` (strict scopes off) records an opaque region too:
+      // one store at region entry, no test per gap.
+      if (opaqueRootCapture) ctx._rootTriviaCapture = ctx._rootTriviaStrictScopes === false
       const result = root.parse(input, pos ?? 0, ctx)
       if (trackLines && _ctx && ctx._lineScannedTo !== undefined) {
         _ctx._lineScannedTo = Math.max(_ctx._lineScannedTo ?? 0, ctx._lineScannedTo)

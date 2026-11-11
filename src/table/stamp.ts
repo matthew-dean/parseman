@@ -12,6 +12,7 @@
  */
 import type { Combinator, ParseContext, ParseResult } from '../types.ts'
 import { FUSED_HOST_ELIDED, FUSED_HOST_MODE } from '../cst/host-mode.ts'
+import { allTriviaLabels } from '../cst/trivia-entries.ts'
 import { GRAMMAR_COVERAGE_DEFINITIONS } from '../grammar-metadata.ts'
 import { reachableIps } from './inspect.ts'
 import { OP_NODE, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_PLAIN } from './ops.ts'
@@ -107,10 +108,13 @@ export function stampRuleMap(
     const slot = prog.code[ip + 1]!
     return slot < 0 ? undefined : resolved.trivia[slot]
   }
-  const baseMeta = prog.labels === undefined && prog.classified !== 1
+  // Every scope's labels, for `select: 'all'`: table data, read once per table.
+  const allLabels = allTriviaLabels(prog.labels, resolved.trivia.map(t => t._meta.triviaKindLabels))
+  const baseMeta = prog.labels === undefined && prog.classified !== 1 && allLabels === undefined
     ? undefined
     : {
         ...(prog.labels === undefined ? {} : { triviaKindLabels: prog.labels }),
+        ...(allLabels === prog.labels ? {} : { allTriviaKindLabels: allLabels }),
         ...(prog.classified === 1 ? { rootTriviaClassified: true as const } : {}),
       }
   // Chosen ONCE, from table data, at rule-map construction. Not a per-parse
