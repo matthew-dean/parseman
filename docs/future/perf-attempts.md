@@ -536,9 +536,12 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
   (benchmark.less) and from 177 to 239 ms (Bootstrap). Module load rises from 43 to 105 ms.
   The shipped bundle grows from 592,167 B (115,656 gz) to 5,291,835 B (534,666 gz). Not
   shipped: no budget fits the size contract with a real gain, and every-site's first-parse
-  and load costs rule it out. The gain shows only near every-site, so it comes from removing
-  closure↔emitted boundaries or closure overhead, not from the hottest sites. That is the
-  open lead.
+  and load costs rule it out. The curve is a selection-coverage effect, not a crossing tax.
+  Crossings per parse on `benchmark.less` are 48.6k at the default budget, 65.4k at budget
+  10 and none when every site is emitted. Their wrappers are 2.1–2.4% of a CPU profile,
+  ≤ ~1 ms a parse. Per parse, the closure engine runs 22.1 ms at the default budget and
+  still 11.0 ms at budget 10. The sites the static ranking takes last carry that half and
+  gain most from emitting: their 11.0 ms becomes 5.5 ms emitted.
 
 ## Parked
 
@@ -868,8 +871,9 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
     exact keys and prefix and suffix matchers. Deriving them would mean reading the
     arms' shared identifier corner once and routing on its text and on the next captured
     token, from the arms' leading literals.
-  Planned separately, and also not built yet: the build-out compiles the routes above
-  into table rows at encode time, read by every engine, on `main` after 0.59.0. Branch `perf/left-corner-routing`, raw samples under
+  Superseded: the build-out that compiles these routes into table rows at encode time
+  was built and is parked; see "Left-corner routes, second form, as table data" under
+  Parked. Branch `perf/left-corner-routing`, raw samples under
   `scratchpad/left-corner/results/`.
 - **Less declarations above the value (census, not built).** Marginal instructions per
   declaration in a block (`a{color: red; …}`, 21 against 1) with the routes above:
