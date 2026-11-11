@@ -43,3 +43,14 @@ export function childrenOf(d: ParserDef): readonly Combinator<unknown>[] {
     }
   }
 }
+
+/**
+ * Every combinator a walk steps to from `p`: its structural children, then, for a `lazy`,
+ * the rule it refers to. A reference that does not resolve yet (a rule the map has not
+ * defined) has no target, so a walk over a grammar with a hole still finishes.
+ */
+export function edgesOf(p: Combinator<unknown>): Combinator<unknown>[] {
+  const kids = [...childrenOf(p._def)]
+  if (p._def.tag === 'lazy') { try { kids.push(p._def.thunk()) } catch { /* unresolved */ } }
+  return kids
+}

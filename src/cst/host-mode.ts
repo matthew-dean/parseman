@@ -35,9 +35,9 @@ export const FUSED_HOST_ELIDED = Symbol.for('parseman.fusedHostElided')
  * rule carries the stamps `run()` reads (trivia labels, host mode), the wrapper does not. */
 export const COMPILED_ENTRY = Symbol.for('parseman.compiledEntry')
 
-/** On a table rule: `(entry, rootLabels) => labels`, the `select: 'all'` label table for that
- * entry, from the trivia scopes reachable from it. Built on the entry's first `'all'` run. */
-export const ALL_TRIVIA_LABELS = Symbol.for('parseman.allTriviaLabels')
+/** On a table rule: `(entry) => scopes`, the labels of each trivia scope reachable from that
+ * entry, which `select: 'all'` joins with the root labels. Built on the entry's first `'all'` run. */
+export const TRIVIA_SCOPE_LABELS = Symbol.for('parseman.triviaScopeLabels')
 
 /**
  * A compiled artifact and the host it is driven with must agree — and when they do not,

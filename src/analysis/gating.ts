@@ -25,7 +25,7 @@
  * on the fused artifact, which really runs and whose author really can fix it.
  */
 import type { Combinator, FirstSet, ParserDef } from '../types.ts'
-import { childrenOf } from './children.ts'
+import { childrenOf, edgesOf } from './children.ts'
 
 export { childrenOf }
 import { firstSetOf, intersects, matchesEmpty, type RefResolver } from '../combinators/first-set.ts'
@@ -568,14 +568,13 @@ export function analyzeGatingRules(
     // one place: choice-cost, duplication and dependency analysis use the same
     // authored edge order, including matcher arms, grammar trivia, and routed
     // fallbacks.
-    const kids = [...childrenOf(d)]
+    const kids = edgesOf(p)
     // Deliberately NOT `resolveRef`-aware: the WALK must visit the same choices with
     // and without a resolver, so a choice's `id` (per-rule occurrence order) is the
     // same in both passes — that identity is what lets the fuse-time diagnostic report
     // exactly the choices its authoring site deferred. Nothing is lost: every rule of
     // the fused map is its own seed below, so a rule reached only through a hole is
     // still analyzed, under its own name.
-    if (d.tag === 'lazy') { try { kids.push((d as { thunk(): Combinator<unknown> }).thunk()) } catch { /* unresolved */ } }
     for (const k of kids) visit(k, rule)
   }
 

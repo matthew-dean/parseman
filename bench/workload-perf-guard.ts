@@ -68,6 +68,7 @@ import {
 } from './ab-harness.ts'
 import type { Workload } from './workloads/index.ts'
 import { assertWorkloadFullyConsumed } from './workloads/consumption.ts'
+import { parsedTree } from './all-trivia.ts'
 
 const GATE = 'workload-perf-guard'
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -156,7 +157,9 @@ function toCases(workloads: readonly Workload[], side: string): Case[] {
     return {
       id: w.id,
       detail: `${(w.bytes / 1024).toFixed(0)} KB`,
-      parse: () => built.parse(),
+      // The tree both sides build, as the other guards compare it: the result around it
+      // differs across 0.62.0 (`ParseResult` before, `RunResult` after) for the same parse.
+      parse: () => parsedTree(built.parse()),
       run: (reps: number) => { for (let n = 0; n < reps; n++) built.parse() },
     }
   })

@@ -9,7 +9,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import {
-  choice, classifiedTrivia, compile, literal, node, parser, regex, rules, sequence, trivia,
+  choice, classifiedTrivia, compile, lines, literal, node, parser, ref, regex, rules, sequence, trivia,
   type Combinator,
 } from '../../src/index.ts'
 import { run } from '../../src/functional/run.ts'
@@ -87,6 +87,42 @@ describe("rootTrivia: { select: 'all' }", () => {
       expect(r.rootTrivia?.select, name).toEqual(select)
       expect(r.rootTrivia?.rows.slice(5, 10), name).toEqual([3, 7, 3, 6, 2])
     }
+  })
+
+  it('takes the labels of a scope inside a lines() body, in every engine', () => {
+    const inline = classifiedTrivia({ whitespace: regex(/[ \n]+/), note: regex(/\/\*[^*]*\*\//) })
+    const g = rules({ trivia: classified() }, () => ({
+      R: lines(literal('>'), parser({ trivia: inline }, sequence(literal('a'), literal('b')))),
+    })) as G
+    const want = { rows: [1, 6, 1, 6, 2], select: ['whitespace', 'comment', 'note', ''] }
+    // A `lines()` body parses the line's content, so its rows are in content offsets.
+    expect(capture(run(g['R']!, '>a/*c*/b', ALL))).toEqual(want)
+    expect(capture(run(compile(g['R']!), '>a/*c*/b', ALL))).toEqual(want)
+    const prog = encodeTable(g)
+    // `readers()`'s plain emitted leg links no scan subtrees, so it cannot run `lines()`;
+    // the hybrid legs do, `Infinity` with every site emitted.
+    for (const [name, table] of [...readers(prog).filter(([n]) => n !== 'emitted'), ...hybridReaders(prog)]) {
+      expect(capture(run(table['R']!, '>a/*c*/b', ALL)), name).toEqual(want)
+    }
+  })
+
+  it('joins the root labels of each run, so a second run with other root trivia names its own', () => {
+    const nested = classifiedTrivia({ whitespace: regex(/[ \n]+/), note: regex(/#[^\n]*/) })
+    const entry = sequence(literal('a'), parser({ trivia: nested }, sequence(literal('b'), literal('c'))))
+    const block = classifiedTrivia({ whitespace: regex(/[ \n]+/), comment: regex(/\/\*[^*]*\*\//) })
+    const line = classifiedTrivia({ whitespace: regex(/[ \n]+/), lineComment: regex(/\/\/[^\n]*/) })
+    for (const e of [entry, compile(entry)]) {
+      expect(run(e, 'ab#x\nc', { ...ALL, trivia: block }).rootTrivia?.select).toEqual(['whitespace', 'comment', 'note', ''])
+      expect(run(e, 'ab#x\nc', { ...ALL, trivia: line }).rootTrivia?.select).toEqual(['whitespace', 'lineComment', 'note', ''])
+    }
+  })
+
+  it('walks past a rule reference that does not resolve, in a branch the parse never enters', () => {
+    const missing = ref<unknown>()
+    const g = rules({ trivia: classified() }, () => ({
+      R: choice(sequence(literal('a'), literal('c')), sequence(literal('b'), missing)),
+    })) as G
+    expect(capture(run(g['R']!, 'a/*1*/c', ALL))).toEqual({ rows: [1, 6, 1, 6, 1], select: ['whitespace', 'comment', ''] })
   })
 
   it('keeps no row for trivia a failed alternative scanned', () => {
