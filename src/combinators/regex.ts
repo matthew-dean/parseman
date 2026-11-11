@@ -164,7 +164,8 @@ export function regex(pattern: string | RegExp, flags = ''): Combinator<string> 
   const firstSet = forFlags(raw.firstSet)
   const canMatchNewline = raw.canMatchNewline
   const meta: ParserMeta = { firstSet, canMatchNewline, isTrivia: false }
-  if (firstSet.kind === 'any' && regexCanMatchEmpty(source)) {
+  if (regexCanMatchEmpty(source, resolvedFlags)) meta.zeroWidth = true
+  if (firstSet.kind === 'any' && meta.zeroWidth === true) {
     const consuming = forFlags(consumingFirstSetFromRegex(source, resolvedFlags))
     if (consuming.kind !== 'any') meta.consumingFirstSet = consuming
   }

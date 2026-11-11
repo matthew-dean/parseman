@@ -878,8 +878,8 @@ export const DEFECTS = {
     why: 'regex first sets: a `v`-mode nested class is read as a flat one, up to its first `]`',
     edits: [{
       file: 'src/regex/first-set.ts',
-      find: 'if (nested) { i = k + 1; return charNode(any(), true) }',
-      replace: 'if (nested && false) { i = k + 1; return charNode(any(), true) }',
+      find: 'if (nested) { i = k + 1; return emptyString ? ANY : charNode(any(), true) }',
+      replace: 'if (nested && false) { i = k + 1; return emptyString ? ANY : charNode(any(), true) }',
     }],
   },
 

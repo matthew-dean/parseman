@@ -167,6 +167,7 @@ export function matchesEmpty(
   p: Combinator<unknown>,
   seen: Set<Combinator<unknown>> = new Set(),
   resolve?: RefResolver,
+  exact = false,
 ): boolean {
   // RECURSION-STACK guard: a mutually-nullable ref cycle (e.g.
   // `A = oneOrMore(B); B = oneOrMore(A)`) would recurse forever. Treat a node
@@ -177,7 +178,7 @@ export function matchesEmpty(
   if (seen.has(p)) return true
   seen.add(p)
   try {
-    return matchesEmptyBody(p, seen, resolve)
+    return matchesEmptyBody(p, seen, resolve, exact)
   } finally {
     seen.delete(p)
   }
@@ -187,8 +188,9 @@ function matchesEmptyBody(
   p: Combinator<unknown>,
   seen: Set<Combinator<unknown>>,
   resolve: RefResolver | undefined,
+  exact: boolean,
 ): boolean {
-  const me = (c: Combinator<unknown>): boolean => matchesEmpty(c, seen, resolve)
+  const me = (c: Combinator<unknown>): boolean => matchesEmpty(c, seen, resolve, exact)
   const d = p._def as ParserDef
   switch (d.tag) {
     case 'literal':   return d.value.length === 0
@@ -196,8 +198,11 @@ function matchesEmptyBody(
     // The routed token itself is the selector's match, never empty; a fallback can be.
     case 'routed':    return d.fallback === undefined ? false : me(d.fallback)
     case 'regex':
+      // `exact` also counts a zero-width match at a non-empty cursor (`(?=a)`, `\b`),
+      // which an expected set must read past. `regex()` records it with the flags.
+      if (exact) return p._meta.zeroWidth === true
       // Precise: does the pattern admit a zero-length match? (`a*`, `a?`, `a|`, …)
-      try { const m = new RegExp(d.source).exec(''); return m != null && m[0] === '' }
+      try { const m = new RegExp(d.source, d.flags).exec(''); return m != null && m[0] === '' }
       catch { return true }
     case 'many':
     case 'optional':
@@ -216,6 +221,12 @@ function matchesEmptyBody(
       return d.parsers.some(me)
     case 'dispatch':
       return me(d.selector)
+    // Nullable to the choice classifier, so an attempt never authorizes one-arm
+    // dispatch. `exact` asks what these can actually match.
+    case 'attempt':
+    case 'field':
+      if (!exact) return true
+    // falls through
     case 'transform':
     case 'label':
     case 'trivia':
