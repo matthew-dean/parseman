@@ -262,6 +262,15 @@ jobs:
         # `pnpm coverage:baseline` locally and commit the result to turn this on.
         run: pnpm coverage:guard
 
+      - name: The rest of the release preflight
+        # publish.yml's preflight also runs test/perf, which the coverage run above
+        # leaves out, and `npm pack --dry-run`. Run them here so a PR cannot pass
+        # what the release then refuses. One leg is enough for both.
+        if: matrix.node-version == 'lts/*'
+        run: |
+          pnpm vitest run test/perf
+          npm pack --dry-run
+
       - name: Upload coverage report
         if: always()
         uses: actions/upload-artifact@v4
