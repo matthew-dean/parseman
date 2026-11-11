@@ -25,6 +25,19 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   entry for a child when no capture buffer is open to take it. Against 0.61.9, branch tests
   per parse fall 2.6% to 10.2% on every call-count row (Less `app.less` AST −8.15%, CSS
   `site.css` AST −10.22%) and calls by up to 3.7% (Less AST −3.62%); no row rises.
+- **A sequence that opens with `attempt(x)` or `field(name, x)` no longer expects what follows
+  it.** The expected set read either as able to match empty, so an arm a first-character gate
+  declined named a token that could only come after `x`.
+  `sequence(attempt(literal('a')), literal('b'))` now expects `"a"`, not `"a"` and `"b"`.
+  An expected set still reads past a regex that can match zero width before a character, such
+  as `(?=a)` or `\b`, wrapped or not. It reads the regex with its flags, so `/\u{0}/u` and
+  `/[a--b]/v` are required characters, and `/[\q{}a]/v`, whose empty string member matches
+  nothing, is not. First-character gates and choice dispatch don't change.
+- **A named backreference such as `\k<x>` can match empty.** The regex reader took the `<x>`
+  after `\k` as required characters, so `/(?<x>a)?\k<x>/` read as always consuming. Expected
+  sets stopped at it, and the commitment, hold-gap and assembly checks treated it as consuming
+  when it could match nothing. Only a group name goes with `\k`, so in `/a\k<x|b>/`, where `\k` is
+  a literal `k`, the `|` still splits the pattern.
 - **A list with a minimum above one takes back its items when it fails in a choice.** Generated
   code and `compile()` treated `sepBy(x, sep, { min: 2 })` and `many(x, { min: 2 })` as leaving
   nothing behind on failure, so a later arm's tree also held the items the list kept.

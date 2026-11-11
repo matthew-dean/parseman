@@ -56,7 +56,7 @@ function derive(c: Combinator<unknown>, seen: Set<Combinator<unknown>>): string[
       const out: string[] = []
       for (const term of def.parsers) {
         if (!isZeroWidthAssertion(term)) out.push(...deriveExpected(term))
-        if (!matchesEmpty(term)) break
+        if (!matchesEmpty(term, new Set(), undefined, true)) break
       }
       return out
     }

@@ -290,6 +290,52 @@ describe('expected sets', () => {
     expect(agreed(g, 'aq').expected).toEqual(['"c"', '"d"', '"e"', '"x"', '/b/'])
   })
 
+  it('a choice failing at its start reports nothing past a corner under attempt or field', () => {
+    const ladder = (): G => rules({}, () => ({
+      R: choice(
+        node('N0', sequence(
+          attempt(regex(/[+*-]/)),
+          many(sequence(literal('-'), attempt(regex(/[+*-]/)))),
+        ), c => c, { collapse: true }),
+        literal('z'),
+      ),
+    })) as G
+    expect(agreed(ladder(), '').expected).toEqual(['"z"', '/[+*-]/'])
+    expect(agreed(ladder(), '', { build: host }).expected).toEqual(['"z"', '/[+*-]/'])
+    const plain = rules({}, () => ({ R: choice(sequence(attempt(literal('a')), literal('b')), literal('z')) })) as G
+    expect(agreed(plain, '').expected).toEqual(['"a"', '"z"'])
+    const named = rules({}, () => ({ R: choice(sequence(field('k', literal('a')), literal('b')), literal('z')) })) as G
+    expect(agreed(named, '').expected).toEqual(['"a"', '"z"'])
+  })
+
+  it('an expected set reads past a regex that can match zero width before a character', () => {
+    const report = (g: G, input: string): unknown => (agreed(g, input).errors as { expected?: unknown }[]).map(e => e.expected)
+    const named = rules({}, () => ({ R: expectOr(sequence(field('k', regex(/(?=[ab])/)), literal('a'))) })) as G
+    expect(report(named, 'b')).toEqual([['/(?=[ab])/', '"a"']])
+    const tried = rules({}, () => ({ R: expectOr(sequence(attempt(regex(/(?=a)/)), literal('ab'))) })) as G
+    expect(report(tried, 'ax')).toEqual([['/(?=a)/', '"ab"']])
+    const bare = rules({}, () => ({ R: expectOr(sequence(regex(/\b/), literal('ab'))) })) as G
+    expect(report(bare, 'ax')).toEqual([['/\\b/', '"ab"']])
+    // Read with its flags, `\u{61}` is a required `a`, so the set stops there.
+    const escaped = rules({}, () => ({ R: expectOr(sequence(regex(/\u{61}/u), literal('b'))) })) as G
+    expect(report(escaped, '')).toEqual([['/\\u{61}/']])
+    const set = (re: RegExp) => report(rules({}, () => ({ R: expectOr(sequence(regex(re), literal('b'))) })) as G, 'x')
+    expect(set(/\u{0}/u)).toEqual([['/\\u{0}/']])
+    expect(set(new RegExp('[a--b]', 'v'))).toEqual([['/[a--b]/']])
+    // `\q{}` is an empty string member, so this class can match nothing.
+    expect(set(new RegExp('[\\q{}a]', 'v'))).toEqual([['/[\\q{}a]/', '"b"']])
+    // A named backreference to a group that did not match is empty.
+    const backref = (re: RegExp) => report(rules({}, () => ({ R: expectOr(sequence(regex(re), literal('b'))) })) as G, '')
+    expect(backref(/(?<x>a)?\k<x>/)).toEqual([['/(?<x>a)?\\k<x>/', '"b"']])
+    expect(backref(/(?<x>a)?\k<x>/u)).toEqual([['/(?<x>a)?\\k<x>/', '"b"']])
+  })
+
+  it('a `\\k<…>` that names no group leaves the regex around it alone', () => {
+    // Without `u` and named groups, `\k` is a literal `k`, and `|` still splits the pattern.
+    const g = rules({}, () => ({ R: attempt(regex(new RegExp('a\\k<x|b>'))) })) as G
+    expect(agreed(g, 'b>').ok).toBe(true)
+  })
+
   // The tables only: the interpreter's set differs, https://github.com/matthew-dean/parseman/issues/256
   it('a choice failing at its start reports the arm the mask skipped before the last it tried', () => {
     const g = rules({}, () => ({
