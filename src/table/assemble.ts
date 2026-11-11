@@ -374,6 +374,12 @@ export type RunCfg = {
    * Fixed for the parse: a program with no trivia never installs any.
    */
   readonly inheritedTrivia?: boolean
+  /**
+   * The parse records trivia (`ctx._triviaLog` or `ctx._rootTriviaLog`). Left-corner
+   * routes do not run then. Not part of `cfgKey`: an emitted assembly does not route,
+   * so the same factory serves both; only the closure cache keeps the two apart.
+   */
+  readonly logged?: boolean
 }
 
 /** THE bit packing for an assembly cache key. Seven bits, so at most 128
@@ -1708,7 +1714,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
    from the corner's end. The top node owns the collector suppression: nothing
    below it publishes while the levels complete alone. */
   const ROUTES = !hostCst && !REC && !cfg.probe && !cfg.coverage && !cfg.trackLines && !cfg.tolerant
-    && prog.routes !== undefined
+    && cfg.logged !== true && prog.routes !== undefined
     ? routeTable(prog.routes)
     : undefined
 
@@ -2100,7 +2106,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       if (now === undefined) return NO_ROUTE
       R = now
     }
-    if (ctx._triviaLog !== undefined || ctx._rootTriviaLog !== undefined) return NO_ROUTE
     let d = R.d
     let chain = R.chain
     const guards = R.guards
@@ -5579,10 +5584,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   function finish(): void {
     if (depth <= 0) throw new Error('parseman table assembly frame underflow')
     depth--
-    if (depth === 0) {
-      if (!ARMED && ROUTES !== undefined) armRoutes()
-      return
-    }
+    if (depth === 0) return
     const prior = frames.pop()!
     SCAN = prior.scan
     HOST = prior.host
@@ -5590,7 +5592,16 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     EC.e = prior.end
   }
 
-  return { pieces, end: () => EC.e, begin, finish, scanSkip, reached, emitRefusal }
+  const out = { pieces, end: () => EC.e, begin, finish, scanSkip, reached, emitRefusal }
+  // The first parse's finish arms the tops, then hands over to the plain finish:
+  // no parse after it tests for routes.
+  if (ROUTES !== undefined) {
+    out.finish = () => {
+      finish()
+      if (depth === 0) { armRoutes(); out.finish = finish }
+    }
+  }
+  return out
 }
 
 /**
@@ -5644,7 +5655,8 @@ export function countSiteVisits(
 export class AssemblyCache {
   private readonly t: ResolvedTable
   private readonly prog: TableProgram
-  private readonly byCfg: Array<Assembly | undefined> = Array.from({ length: 128 })
+  /** By `cfgKey`, plus 128 for a parse that records trivia (`RunCfg.logged`). */
+  private readonly byCfg: Array<Assembly | undefined> = Array.from({ length: 256 })
   /** Whether this program installs no trivia of its own (`RunCfg.inheritedTrivia`). */
   private readonly noOwnTrivia: boolean
   /**
@@ -5664,7 +5676,7 @@ export class AssemblyCache {
   }
 
   for(cfg: RunCfg): Assembly {
-    const key = cfgKey(cfg)
+    const key = cfgKey(cfg) | (cfg.logged === true ? 128 : 0)
     // No host identity is available to own this predicate specialisation.
     if (cfg.hostCaptureTrivia !== undefined) return assemble(this.t, this.prog, cfg)
     const hit = this.byCfg[key]
@@ -5729,7 +5741,9 @@ export class AssemblyCache {
     const coverage = ctx._grammarCoverage !== undefined
     const probe = ctx._probe !== undefined
     const inheritedTrivia = this.noOwnTrivia && ctx.trivia !== undefined
-    const key = cfgKeyOf(hostCst, trackLines, tolerant, coverage, probe, hostReadsChildren, inheritedTrivia)
+    // 128 where the parse records trivia (`RunCfg.logged`), read without a test.
+    const logBit = (+(ctx._triviaLog !== undefined) | +(ctx._rootTriviaLog !== undefined)) << 7
+    const key = cfgKeyOf(hostCst, trackLines, tolerant, coverage, probe, hostReadsChildren, inheritedTrivia) | logBit
     let cache = this.byCfg
     if (hostCaptureTrivia !== undefined) {
       // The predicate is host configuration, not parse state. Specialising each
@@ -5740,7 +5754,7 @@ export class AssemblyCache {
         cache = this.hostAssemblies!
       }
       else {
-        cache = Array.from({ length: 128 })
+        cache = Array.from({ length: 256 })
         this.hostPredicate = hostCaptureTrivia
         this.hostAssemblies = cache
       }
@@ -5749,7 +5763,7 @@ export class AssemblyCache {
     if (hit !== undefined) return hit
     const made = assemble(this.t, this.prog, {
       hostCst, hostReadsChildren, hostCaptureTrivia,
-      trackLines, tolerant, coverage, probe, inheritedTrivia,
+      trackLines, tolerant, coverage, probe, inheritedTrivia, logged: logBit !== 0,
     })
     cache[key] = made
     return made
