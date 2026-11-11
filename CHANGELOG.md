@@ -3,7 +3,7 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
-## Unreleased
+## 0.61.10 — 2026-11-11
 
 - **A sequence that opens with `attempt(x)` or `field(name, x)` no longer expects what follows
   it.** The expected set read either as able to match empty, so an arm a first-character gate
@@ -13,19 +13,27 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   as `(?=a)` or `\b`, wrapped or not. It reads the regex with its flags, so `/\u{0}/u` and
   `/[a--b]/v` are required characters, and `/[\q{}a]/v`, whose empty string member matches
   nothing, is not. First-character gates and choice dispatch don't change.
+
 - **A named backreference such as `\k<x>` can match empty.** The regex reader took the `<x>`
   after `\k` as required characters, so `/(?<x>a)?\k<x>/` read as always consuming. Expected
   sets stopped at it, and the commitment, hold-gap and assembly checks treated it as consuming
   when it could match nothing. Only a group name goes with `\k`, so in `/a\k<x|b>/`, where `\k` is
   a literal `k`, the `|` still splits the pattern.
+
+## 0.61.9 — 2026-11-06
+
 - **A list with a minimum above one takes back its items when it fails in a choice.** Generated
   code and `compile()` treated `sepBy(x, sep, { min: 2 })` and `many(x, { min: 2 })` as leaving
   nothing behind on failure, so a later arm's tree also held the items the list kept.
   `node('N', choice(sepBy(literal('a'), literal(','), { min: 2 }), literal('a')))` on `"a"` now
   gives `[a]`, not `[a, a]`. A choice with such a list now marks and restores around that arm.
+
+## 0.61.8 — 2026-11-06
+
 - **`run()` no longer keeps a dispatch selector's leaf after `otherwise(x, { commit: false })`
   fails.** The closure engine read every fallback as committing, so it skipped the rollback
   and the next arm of an enclosing choice built a tree with the leaf twice.
+
 - **`expect()` is read as what it is: it matches empty, and it runs on any character.** It
   recovers at zero width when its child fails, but nullability and first sets read it as its
   child. So a repeat could keep an error from an item it gave back, a first-character gate could
@@ -35,17 +43,34 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   there, and where it follows a lookahead under trivia, which can put a held gap back (+5.97%
   calls on the closure engine). One that only uses it after a term that must consume compiles to
   the same table.
+
+## 0.61.7 — 2026-11-06
+
+- **`expect()` is read as what it is: it matches empty, and it runs on any character.** It
+  recovers at zero width when its child fails, but nullability and first sets read it as its
+  child. So a repeat could keep an error from an item it gave back, a first-character gate could
+  skip an `expect()` that should have reported, and a gap held for one stayed consumed after it
+  recovered. All engines now agree. Resync sentinels still read through it. A grammar only pays
+  where `expect()` opens a repeat item, a choice arm or a sequence, which lose a gate there; one
+  that only uses it after a term that must consume compiles to the same table.
+
+## 0.61.6 — 2026-11-06
+
 - **`assemblyProfile` picks sites that sit next to each other.** A call between generated
   code and the closure engine goes through a wrapper, so ranking by calls per byte alone left
   islands of generated code and could make more calls per parse than the static ranking. A
   site's worth now counts the crossings it removes. A build without a profile picks the same
   sites as before, except that a `collapse` level the emitter can't decide at no longer leaves
   its wrapper out of the estimate.
+
 - **A macro build prints functions that read the same once.** `optional(x)` written in 25
   places was 25 functions. Which sites are generated doesn't change, and neither do the calls
   a parse makes.
+
 - **Docs: `triviaLog` entries have four numbers when the trivia has kind labels.** The guide
   documented only `[start, end, insertIdx]`. With labels each entry also carries `kind`.
+
+## 0.61.5 — 2026-11-05
 
 - **A `collapse` ladder level opens its frame only where its tail starts.** A
   `node(type, sequence(corner, tail), build, { collapse: true })` whose corner always
@@ -57,15 +82,22 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   probe and the reference driver run the node as written. Tables gain two opcodes,
   `OP_CONT` and `OP_SEED`. See `docs/design/internals.md`, `docs/guide/ast.md` and
   `test/unit/table-late-frame.test.ts`.
+
+## 0.61.4 — 2026-11-05
+
 - **`assemblyProfile.scope` lets a grammar whose reducers or gates read imported helpers
   use a measured ranking.** Callback source runs at build time with no module around it,
   so those grammars couldn't profile. Pass the helpers, and the corpus run sees them for
   that run only.
   A name that's already a global fails the build.
+
 - **A build fails when grammars were profiled and none has the `entry` rule.** A mistyped
   rule name used to give the static ranking with no warning, so the output looked profiled
   and wasn't. A direct `transformMacro` caller gets `assemblyProfile: 'no-entry'` on the
   result instead, and has to read it.
+
+## 0.61.3 — 2026-11-05
+
 - **`assemblyBudget` is now a share of a module's code, not counting comments or
   whitespace, and a larger budget never loses a site.** The budget was a share of the
   module's raw text, so a longer comment bought more generated code: on Jess's SCSS
@@ -79,6 +111,9 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   The default is `0.5` on the new base. Comments are about 40% of Jess's grammars, so an
   explicit budget needs raising to buy what it did: a grammar that passed `1` and is half
   comments passes about `2.7`.
+
+## 0.61.2 — 2026-11-05
+
 - **An `assemblyProfile` that cannot run fails the build, naming the file and the reducer
   or gate that threw.** So does a corpus with nothing in it, and a file that parses only
   by recovering. It used to swallow the throw, and when no file parsed it warned
@@ -86,6 +121,9 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   silently ship a different one. On Jess's Less and SCSS grammars the gates read imported
   helpers, which aren't in scope at build time, so a profile on those grammars now fails
   instead of being ignored.
+
+## 0.61.1 — 2026-11-05
+
 - **`backtrackProbe` in `parseman/diagnostics` counts rewinds among matched terminals.**
   Per parse it reports how often one started behind the one before it and how many of
   its bytes had already matched, plus the lookahead `not()`/`peek()` and regex lookarounds
