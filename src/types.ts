@@ -468,6 +468,11 @@ export type ParserMeta = {
    * unions this set with the next term's instead (`sequenceSet`).
    */
   consumingFirstSet?: FirstSet
+  /**
+   * Set only by `regex()`, read with the pattern's flags: it can match zero width
+   * somewhere, a lookahead or `\b` included, not only at the end of input.
+   */
+  zeroWidth?: true
   /** Whether this parser can consume a newline character */
   canMatchNewline: boolean
   /** Whether this parser is marked as trivia (auto-skip) */

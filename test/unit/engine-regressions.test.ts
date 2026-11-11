@@ -316,6 +316,9 @@ describe('expected sets', () => {
     expect(report(tried, 'ax')).toEqual([['/(?=a)/', '"ab"']])
     const bare = rules({}, () => ({ R: expectOr(sequence(regex(/\b/), literal('ab'))) })) as G
     expect(report(bare, 'ax')).toEqual([['/\\b/', '"ab"']])
+    // Read with its flags, `\u{61}` is a required `a`, so the set stops there.
+    const escaped = rules({}, () => ({ R: expectOr(sequence(regex(/\u{61}/u), literal('b'))) })) as G
+    expect(report(escaped, '')).toEqual([['/\\u{61}/']])
   })
 
   // The tables only: the interpreter's set differs, https://github.com/matthew-dean/parseman/issues/256

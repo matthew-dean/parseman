@@ -1,7 +1,6 @@
 import type { CharRange, FirstSet, Combinator, ParserDef } from '../types.ts'
 import { implicitLeadsDropped, leadRanges } from '../lead-ranges.ts'
 import { triviaThroughRef } from './trivia-boundary.ts'
-import { regexCanMatchEmpty } from '../regex/first-set.ts'
 
 /**
  * Resolve a NAMED cross-artifact rule reference (`g.Foo`) whose own thunk does not
@@ -200,8 +199,8 @@ function matchesEmptyBody(
     case 'routed':    return d.fallback === undefined ? false : me(d.fallback)
     case 'regex':
       // `exact` also counts a zero-width match at a non-empty cursor (`(?=a)`, `\b`),
-      // which an expected set must read past.
-      if (exact) return regexCanMatchEmpty(d.source)
+      // which an expected set must read past. `regex()` records it with the flags.
+      if (exact && p._meta.zeroWidth === true) return true
       // Precise: does the pattern admit a zero-length match? (`a*`, `a?`, `a|`, …)
       try { const m = new RegExp(d.source).exec(''); return m != null && m[0] === '' }
       catch { return true }

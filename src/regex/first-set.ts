@@ -347,9 +347,10 @@ function canConsumeNewline(n: Node): boolean {
  *
  * Errs toward `true` (nullable) — an unparseable pattern is assumed able to
  * match empty, so callers that delete code on a `false` keep their proof.
+ * `flags` reads atoms as `firstSetFromRegex` does.
  */
-export function regexCanMatchEmpty(source: string): boolean {
-  try { return nullable(parseRegex(source)) } catch { return true }
+export function regexCanMatchEmpty(source: string, flags = ''): boolean {
+  try { return nullable(parseRegex(source, flags.includes('u') || flags.includes('v'), flags.includes('v'))) } catch { return true }
 }
 
 /**
