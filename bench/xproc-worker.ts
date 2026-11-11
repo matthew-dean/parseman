@@ -10,7 +10,8 @@
 import { createHash } from 'node:crypto'
 import { buildWorkloads } from './workloads/index.ts'
 import { DENSITY_CASES, caseGrammar, caseInput } from './grammar-density/grammar.ts'
-import { compile } from '../src/index.ts'
+import { compile, run } from '../src/index.ts'
+import { allTriviaParse, parsedTree } from './all-trivia.ts'
 
 type Args = {
   suite: 'density' | 'workloads'
@@ -48,7 +49,7 @@ if (a.suite === 'density') {
   if (c === undefined) throw new Error(`no density case ${a.id}`)
   const compiled = compile(caseGrammar(c))
   const input = caseInput(c, a.rules)
-  parse = () => compiled.parseWithContext(input, { trackLines: false }, 0)
+  parse = allTriviaParse(run, compiled, input)
 } else {
   const w = buildWorkloads().find(x => x.id === a.id)
   if (w === undefined) throw new Error(`no workload ${a.id}`)
@@ -56,7 +57,7 @@ if (a.suite === 'density') {
   parse = () => built.parse()
 }
 
-const digest = createHash('sha256').update(JSON.stringify(parse())).digest('hex').slice(0, 16)
+const digest = createHash('sha256').update(JSON.stringify(parsedTree(parse()))).digest('hex').slice(0, 16)
 const warmStart = performance.now()
 for (let k = 0; k < a.warmup || performance.now() - warmStart < a.warmupMs; k++) parse()
 const samples: number[] = []

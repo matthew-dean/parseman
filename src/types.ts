@@ -1,5 +1,6 @@
 import type { LineView } from './combinators/lines.ts'
 import type { LabeledTriviaSpec } from './cst/trivia-kinds.ts'
+import type { COMPILED_ENTRY } from './cst/host-mode.ts'
 
 export type Span = {
   start: number
@@ -600,6 +601,8 @@ export type CompiledParser<T> = {
   runtimeOnly?: readonly string[]
   /** Present only when compiled with `{ coverage: true }`. */
   coverageDefinitions?: readonly import('./compiler/grammar-coverage-ids.ts').GrammarCoverageDefinition[]
+  /** The entry rule, which `run(compiled, input, options)` drives. */
+  readonly [COMPILED_ENTRY]: (input: string, pos: number, ctx: ParseContext) => ParseResult<unknown>
 }
 
 /** A trivia gap scanned from `at` to `end` that recorded nothing, and the key it holds for. */

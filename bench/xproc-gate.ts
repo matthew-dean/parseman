@@ -230,7 +230,7 @@ if (AGGREGATE !== null) {
 }
 
 async function measureAll(): Promise<{ logs: Map<string, number[]>; minLogs: Map<string, number[]> }> {
-  const COPY = ['bench/grammar-density', 'bench/workloads', 'examples'] as const
+  const COPY = ['bench/grammar-density', 'bench/workloads', 'bench/all-trivia.ts', 'examples'] as const
   const refDist = buildSide(materialise(GATE, ROOT, REF, COPY))
   const headDist = buildSide(HEAD_REF === null ? workingTreeBuildDir() : materialise(GATE, ROOT, HEAD_REF, COPY))
   // Checked on the built dist/ each side is copied from: every worker then loads that

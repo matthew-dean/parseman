@@ -35,7 +35,7 @@ is a design rule, not a runtime guarantee.
 
 One narrower check does exist, for printed assembly factories. Each record carries
 `abi` (`EMITTED_ABI`, `src/table/emit-assembly.ts`): the minor of the parseman that
-printed it and its helper count, as `"0.62/62"`. The runtime refuses a record whose `abi`
+printed it and its helper count, as `"0.62/59"`. The runtime refuses a record whose `abi`
 is not its own, naming both (`assertFactoryAbi`, `src/table/assemble.ts`). The factory
 also opens with `FACTORY_ARITY_GUARD` (`src/table/emit.ts`), which throws when it is called
 with any other number of helpers.

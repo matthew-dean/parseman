@@ -1011,14 +1011,15 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     const t = ctx.trivia
     if (t !== undefined && cannotStartTrivia(input, cur, t)) return cur
     const s = SCAN
-    if (s !== null
-      && !(ctx.captureTrivia === true && ctx._cstBuf !== undefined)) {
-      return s(input, cur)
+    // CAPTURE IS NOT A REASON TO LEAVE THE SCANNER — see `skipTriviaScanned`, which
+    // also writes a root log's row. Nested under the one `s !== null` test, so a
+    // labelled trivia (no scanner) pays that test alone.
+    if (s !== null) {
+      if (ctx._rootTriviaLog === undefined && !(ctx.captureTrivia === true && ctx._cstBuf !== undefined)) {
+        return s(input, cur)
+      }
+      return skipTriviaScanned(s, input, cur, ctx)
     }
-    // CAPTURE IS NOT A REASON TO LEAVE THE SCANNER — see `skipTriviaScanned`.
-    // Appended rather than folded into the test above so the non-capturing path
-    // keeps the exact branch it had.
-    if (s !== null) return skipTriviaScanned(s, input, cur, ctx)
     if (needsDeferredTriviaCommit(ctx)) return skipDeferredTrivia(input, cur, ctx)
     return advanceTrivia(input, cur, ctx)
   }

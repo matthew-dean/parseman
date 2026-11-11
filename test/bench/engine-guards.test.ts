@@ -27,20 +27,31 @@ afterAll(() => rmSync(TMP, { recursive: true, force: true }))
 /** Workload rows only: the jess snapshot build is the gate's job, not this file's. */
 const workloadsOnly = (row: string): boolean => row.startsWith('emitted/') || row.startsWith('closure/')
 
-/** A side whose `src/` is this repo's with one edit, built the way the gate builds a reference. */
-function plantedSide(name: string, file: string, find: string, replace: string): string {
+type Plant = readonly [file: string, find: string, replace: string]
+
+/** A side whose `src/` is this repo's with the given edits, built the way the gate builds a reference. */
+function plantedSide(name: string, ...plants: readonly Plant[]): string {
   const dir = path.join(TMP, name)
-  for (const rel of ['src', 'bench/grammar-density', 'bench/workloads', 'examples', 'package.json']) cpSync(path.join(ROOT, rel), path.join(dir, rel), { recursive: true })
+  for (const rel of ['src', 'bench/grammar-density', 'bench/workloads', 'bench/all-trivia.ts', 'examples', 'package.json']) cpSync(path.join(ROOT, rel), path.join(dir, rel), { recursive: true })
   symlinkSync(path.join(ROOT, 'node_modules'), path.join(dir, 'node_modules'), 'dir')
-  const target = path.join(dir, file)
-  const text = readFileSync(target, 'utf8')
-  if (text.split(find).length !== 2) throw new Error(`plant anchor must occur exactly once in ${file}: ${find}`)
-  writeFileSync(target, text.replace(find, replace))
+  for (const [file, find, replace] of plants) {
+    const target = path.join(dir, file)
+    const text = readFileSync(target, 'utf8')
+    if (text.split(find).length !== 2) throw new Error(`plant anchor must occur exactly once in ${file}: ${find}`)
+    writeFileSync(target, text.replace(find, replace))
+  }
   return dir
 }
 
-const ENTRY = 'src/table/compile.ts'
-const ANCHOR = '      return runOnce(input, pos, parseCtx)'
+/**
+ * The two places a workload's parse enters: `parseWithContext` on a compiled parser, and
+ * `run()`, which a workload that records its trivia calls. A plant goes in both, once each.
+ */
+const ENTRIES = [
+  ['src/table/compile.ts', '      return runOnce(input, pos, parseCtx)'],
+  ['src/functional/run.ts', '  const r = invoke(entry, input, 0, ctx)'],
+] as const
+const atEntries = (line: string): Plant[] => ENTRIES.map(([file, anchor]) => [file, anchor, `${line}\n${anchor}`])
 
 describe('instrumentation', () => {
   it('counts one call per function entry and one per branch test, and keeps strict mode', () => {
@@ -71,7 +82,7 @@ describe('call-count gate', () => {
   }, 180_000)
 
   it('FAILS on one extra function call per parse', async () => {
-    const dir = plantedSide('extra-call', ENTRY, ANCHOR, `      ;(() => 0)()\n${ANCHOR}`)
+    const dir = plantedSide('extra-call', ...atEntries('      ;(() => 0)()'))
     const planted = await measureSide(dir, path.join(TMP, 'extra-call-out'), workloadsOnly)
     const failures = callCountFailures(clean, planted, null, 'clean')
     expect(failures.filter(f => f.includes(' calls: '))).toHaveLength(10)
@@ -80,7 +91,7 @@ describe('call-count gate', () => {
   }, 180_000)
 
   it('FAILS on a parse-time check that adds no call', async () => {
-    const dir = plantedSide('extra-check', ENTRY, ANCHOR, `      if (pos < 0) throw new RangeError('pos')\n${ANCHOR}`)
+    const dir = plantedSide('extra-check', ...atEntries("      if (input.length < 0) throw new RangeError('input')"))
     const planted = await measureSide(dir, path.join(TMP, 'extra-check-out'), workloadsOnly)
     const failures = callCountFailures(clean, planted, null, 'clean')
     expect(failures.some(f => f.includes(' calls: '))).toBe(false)
@@ -93,7 +104,7 @@ describe('call-count gate', () => {
   })
 
   it('REFUSES a workload that stops early, instead of reading it as fewer calls', async () => {
-    const dir = plantedSide('partial', 'bench/workloads/index.ts', 'const cssInput = scaleStyles(cssCorpus, 48)', "const cssInput = scaleStyles(cssCorpus, 48).replace('}', '}\\n}}}@@@ !!! not css\\n')")
+    const dir = plantedSide('partial', ['bench/workloads/index.ts', 'const cssInput = scaleStyles(cssCorpus, 48)', "const cssInput = scaleStyles(cssCorpus, 48).replace('}', '}\\n}}}@@@ !!! not css\\n')"])
     await expect(measureSide(dir, path.join(TMP, 'partial-out'), row => row === 'emitted/')).rejects.toThrow(/css\/stylesheet: parse (FAILED|stopped|left)/)
   }, 180_000)
 

@@ -53,40 +53,31 @@ export type TriviaLogRun<T> = {
 }
 
 /**
- * Every trivia entry the parse handed to a node builder, as one source-ordered
- * `(start, end)` log, `(start, end, kindIndex)` with `labels`.
- *
- * Each committed trivia scan records into exactly one frame, the innermost open
- * `node()`, so the union of the per-node logs is every committed trivia span. A
- * speculative scan that was not rolled back appears twice. A builder exposes its
- * log as `tl` or `triviaLog`; every builder of a grammar measured here must.
+ * The document's whole trivia log from a run's root rows (`rootTrivia: { select: 'all' }`),
+ * in the `(start, end[, kindIndex])` form these checks read: an unlabelled gap is
+ * `(start, end)`, a labelled chunk `(start, end, kindIndex)` into `labels`.
  */
-export function nodeTriviaLog(value: unknown, labels?: readonly string[]): number[] {
-  const stride = labels ? 4 : 3
-  const entries: number[][] = []
-  const seen = new Set<object>()
-  const walk = (v: unknown): void => {
-    if (typeof v !== 'object' || v === null || seen.has(v)) return
-    seen.add(v)
-    if (Array.isArray(v)) {
-      for (const x of v) walk(x)
-      return
-    }
-    const o = v as { tl?: unknown; triviaLog?: unknown }
-    const tl = o.tl ?? o.triviaLog
-    if (Array.isArray(tl) && tl.every((n): n is number => typeof n === 'number')) {
-      for (let i = 0; i + stride - 1 < tl.length; i += stride) {
-        entries.push(labels ? [tl[i]!, tl[i + 1]!, tl[i + 3]!] : [tl[i]!, tl[i + 1]!])
-      }
-    }
-    for (const x of Object.values(o)) if (x !== tl) walk(x)
+export function triviaLogFromRootRows(rows: readonly number[], labels: readonly string[] = []): number[] {
+  const out: number[] = []
+  for (let i = 0; i < rows.length; i += 5) {
+    const kind = rows[i + 4]!
+    if (kind === labels.length) out.push(rows[i + 2]!, rows[i + 3]!)
+    else out.push(rows[i + 2]!, rows[i + 3]!, kind)
   }
-  walk(value)
-  entries.sort((x, y) => x[0]! - y[0]!)
-  return entries.flat()
+  return out
 }
 
-/** Run interpreted + compiled with trivia capture on, and read each one's per-node trivia logs. */
+/** A context that records every trivia chunk in the document, as `run()` sets one up for
+ * `rootTrivia: { select: 'all' }`: each label, then `''` for unlabelled trivia. */
+function allTriviaContext(base: ParseContext, labels: readonly string[] = []): { ctx: ParseContext; rows: number[] } {
+  const rows: number[] = []
+  const kinds: Record<string, number> = {}
+  labels.forEach((label, i) => { kinds[label] ??= i })
+  kinds[''] = labels.length
+  return { ctx: { ...base, _rootTriviaLog: rows, _rootTriviaKindIndex: kinds }, rows }
+}
+
+/** Run interpreted + compiled, each recording the document's whole trivia log. */
 export function runTriviaLogParity<T>(
   parser: Combinator<T>,
   compiled: CompiledParser<T>,
@@ -94,10 +85,12 @@ export function runTriviaLogParity<T>(
   baseCtx: ParseContext = { trackLines: false },
   labels: readonly string[] | undefined = baseCtx.triviaKindLabels,
 ): TriviaLogRun<T> {
-  const interpreted = parser.parse(input, 0, { ...baseCtx, captureTrivia: true })
-  const compiledResult = compiled.parseWithContext(input, { ...baseCtx, captureTrivia: true }, 0)
-  const iLog = interpreted.ok ? nodeTriviaLog(interpreted.value, labels) : []
-  const cLog = compiledResult.ok ? nodeTriviaLog(compiledResult.value, labels) : []
+  const i = allTriviaContext(baseCtx, labels)
+  const k = allTriviaContext(baseCtx, labels)
+  const interpreted = parser.parse(input, 0, i.ctx)
+  const compiledResult = compiled.parseWithContext(input, k.ctx, 0)
+  const iLog = triviaLogFromRootRows(i.rows, labels)
+  const cLog = triviaLogFromRootRows(k.rows, labels)
   return { iLog, cLog, interpreted, compiled: compiledResult }
 }
 
@@ -110,7 +103,7 @@ export function expectTriviaLogParity(
   cLog: readonly number[],
   labels?: readonly string[],
 ): void {
-  expect(iLog.length, 'no trivia reached a node builder: the parity check would be vacuous').toBeGreaterThan(0)
+  expect(iLog.length, 'no trivia was logged: the parity check would be vacuous').toBeGreaterThan(0)
   expectUniqueTriviaEntries(iLog, labels)
   expectUniqueTriviaEntries(cLog, labels)
   expect(cLog, 'compiled trivia log must match interpreted trivia log').toEqual([...iLog])

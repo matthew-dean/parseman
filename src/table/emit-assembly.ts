@@ -154,13 +154,13 @@ export const EMITTED_PARAMS = [
 
 /**
  * What a printed factory's record says it binds: the parseman minor that printed it and
- * the helper count, as `"0.62/62"`. The count alone misses a helper whose parameters
+ * the helper count, as `"0.62/59"`. The count alone misses a helper whose parameters
  * changed, which binds every argument after the change to the wrong name and runs. A
  * helper's parameters change only in a minor (`docs/design/artifact-format.md`), so the
  * minor covers that. The runtime refuses any record whose `abi` is not this string
  * (`assertFactoryAbi`, `assemble.ts`).
  */
-export const EMITTED_ABI = `${PARSEMAN_VERSION.slice(0, PARSEMAN_VERSION.lastIndexOf('.'))}/${EMITTED_PARAMS.length}`
+export const EMITTED_ABI = `${/^\d+\.\d+/.exec(PARSEMAN_VERSION)![0]}/${EMITTED_PARAMS.length}`
 
 /**
  * The state the emitted scope owns, and the helpers that touch it.
@@ -193,8 +193,10 @@ let _pfSeqEnd=-1
 function _asciiFoldCode(c){return c>=65&&c<=90?c+32:c}
 function _skipTrivia(input,cur,ctx){
 const s=_pfScan
-if(s!==null&&!(ctx.captureTrivia===true&&ctx._cstBuf!==undefined))return s(input,cur)
-if(s!==null)return skipTriviaScanned(s,input,cur,ctx)
+if(s!==null){
+if(ctx._rootTriviaLog===undefined&&!(ctx.captureTrivia===true&&ctx._cstBuf!==undefined))return s(input,cur)
+return skipTriviaScanned(s,input,cur,ctx)
+}
 if(needsDeferredTriviaCommit(ctx))return skipDeferredTrivia(input,cur,ctx)
 return advanceTrivia(input,cur,ctx)
 }
@@ -1117,10 +1119,13 @@ return advanceTrivia(input,cur,ctx)}`)
       skipDefs.push(`function ${nm}(input,cur,ctx){return skipTriviaScanned(${sc},input,cur,ctx)}`)
       return nm
     }
-    skipDefs.push(capturing === 'false'
-      ? `function ${nm}(input,cur){return ${sc}(input,cur)}`
-      : `function ${nm}(input,cur,ctx){
-if(!${capturing})return ${sc}(input,cur)
+    // A root log takes the recording path too: an unlabelled gap is one root row
+    // under `rootTrivia: { select: 'all' }` (`skipTriviaScanned`).
+    const guard = capturing === 'false'
+      ? 'ctx._rootTriviaLog===undefined'
+      : `ctx._rootTriviaLog===undefined&&!${capturing}`
+    skipDefs.push(`function ${nm}(input,cur,ctx){
+if(${guard})return ${sc}(input,cur)
 return skipTriviaScanned(${sc},input,cur,ctx)}`)
     return nm
   }

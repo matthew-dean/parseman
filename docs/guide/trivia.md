@@ -164,6 +164,18 @@ a result still omits `rootTrivia` when no selected marker occurred; otherwise
 `result.rootTrivia.index` is the normal API, and `result.rootTrivia.rows` exposes the
 raw compact rows when you need them.
 
+`select: 'all'` asks for the document's whole trivia log, labelled or not:
+
+```ts
+const result = run(compile(Document), input, { rootTrivia: { select: 'all' } })
+result.rootTrivia!.select // the grammar's labels, then ''
+```
+
+Every labelled chunk is a row under its label. A gap of unlabelled trivia is one row under
+`''`, with the gap as both of its ranges. The label table is the grammar's own, fixed when
+the grammar is compiled, so `'all'` needs no `classifiedTrivia()` scope and records nothing
+inside a `rootCapture: 'opaque'` region. Before 0.62.0 this log was `ParseContext._triviaLog`.
+
 `classifiedTrivia()` is the safe constructor for selected root capture: each name owns a
 distinct grammar arm. Arms keep ordinary ordered-choice semantics, so categories such as
 `lineComment` and `blockComment` can legitimately share their opening character. A bare

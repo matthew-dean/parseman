@@ -39,6 +39,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { allTriviaParse, parsedTree } from './all-trivia.ts'
 import { assertIndependentLegs, materialise as materialiseAt, median, pairedMedianRatio, previousRelease, sign } from './ab-harness.ts'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -61,7 +62,8 @@ if (WORKER_DIR !== null) {
   const reps = Number(argValue('--worker-reps') ?? 40)
 
   const pm = await import(path.join(WORKER_DIR, 'src', 'index.ts')) as {
-    compile: (c: unknown) => { parseWithContext: (input: string, ctx: unknown, pos?: number) => unknown }
+    compile: (c: unknown) => { parseWithContext: (input: string, ctx: never, pos?: number) => unknown }
+    run: Parameters<typeof allTriviaParse>[0]
   }
   const g = await import(path.join(WORKER_DIR, 'bench', 'grammar-density', 'grammar.ts')) as {
     caseGrammar: (c: { kind: string; n: number }) => unknown
@@ -75,7 +77,8 @@ if (WORKER_DIR !== null) {
 
   const compiled = pm.compile(g.caseGrammar(c))
   const input = g.caseInput(c, config.input.rules)
-  const parse = (): unknown => compiled.parseWithContext(input, { trackLines: false }, 0)
+  const parseAll = allTriviaParse(pm.run, compiled, input)
+  const parse = (): unknown => parsedTree(parseAll())
 
   // The parent cannot hold both sides' parse results — that is the whole point of
   // running them in separate processes — so each side reports a digest of its own

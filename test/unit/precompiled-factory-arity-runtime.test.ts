@@ -7,12 +7,11 @@
  * minifier lowers; these factories have no guard of their own.
  *
  * 0.62.0 changed `rollbackTriviaAt` and `rollbackScannedTriviaAt` without changing the
- * count. A factory 0.61.9 printed for `sequence(literal('x'), optional(node('E',
- * optional(literal('z')))), literal('y'))`, run on 0.62.0 past this check, records the
- * root trivia row for `x/*c*\/y` twice and reports success.
+ * count. The last block below runs factories 0.61.9 printed, kept as a fixture.
  */
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { literal, node, run, sequence } from '../../src/index.ts'
+import { classifiedTrivia, literal, node, optional, regex, rules, run, sequence } from '../../src/index.ts'
 import { tableRules } from '../../src/table/assemble.ts'
 import { EMITTED_ABI, EMITTED_PARAMS, emitAssemblySource } from '../../src/table/emit-assembly.ts'
 import { encodeTable } from '../../src/table/encode.ts'
@@ -89,5 +88,117 @@ describe('a precompiled factory printed against another helper list', () => {
       `was printed for helper ABI ${MINOR}/${params.length} (parseman minor / helper count), but parseman`,
     )
     expect(() => parse(withFactory(prog, params))).toThrow(`binds ${EMITTED_ABI}`)
+  })
+})
+
+/**
+ * Factories 0.61.9 printed for one grammar (`test/fixtures/printed-factory-0.61.9.json`:
+ * the helper list, and each assembly's source, plan and reached sites). The helper count
+ * is this runtime's, so only the minor tells the two apart.
+ */
+describe('a factory 0.61.9 printed, on this runtime', () => {
+  const printed = JSON.parse(readFileSync(new URL('../fixtures/printed-factory-0.61.9.json', import.meta.url), 'utf8')) as {
+    version: string
+    params: string[]
+    recs: { key: number; source: string; plan: PrecompiledAssembly['plan']; reached: number[] }[]
+  }
+  const t = classifiedTrivia({ ws: regex(/[ ]+/), comment: regex(/\/\*[^*]*\*\//) })
+  const g = rules({ trivia: t }, () => ({
+    Doc: sequence(literal('x'), optional(node('E', optional(literal('z')))), literal('y')),
+  })) as Record<string, Parameters<typeof run>[0]>
+  const prog = encodeTable(g as never, { hostMode: 'ast' })
+  const withPrinted = (stamp: { arity: number } | { abi: string }): TableProgram => ({
+    ...prog,
+    asm: printed.recs.map(r => ({
+      key: r.key,
+      // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
+      factory: new Function(...printed.params, r.source) as PrecompiledAssembly['factory'],
+      plan: r.plan,
+      reached: r.reached,
+      ...stamp,
+    } as PrecompiledAssembly)),
+  })
+  const opts = { rootTrivia: { select: ['comment'] } }
+
+  it('takes the same helper count as this runtime', () => {
+    expect(printed.version).toBe('0.61.9')
+    expect(printed.params).toEqual([...EMITTED_PARAMS])
+  })
+
+  it('is refused, as 0.61.9 stamped it', () => {
+    expect(() => run(tableRules(withPrinted({ arity: printed.params.length })).Doc!, 'x/*c*/y', opts))
+      .toThrow('carries no helper ABI, so it was printed before parseman 0.62.0, whose helpers take other arguments')
+  })
+
+  it('records the comment twice when its stamp is forged past the check', () => {
+    expect(run(g.Doc!, 'x/*c*/y', opts).rootTrivia?.rows).toEqual([1, 6, 1, 6, 0])
+    const forged = run(tableRules(withPrinted({ abi: EMITTED_ABI })).Doc!, 'x/*c*/y', opts)
+    expect(forged.ok).toBe(true)
+    expect(forged.rootTrivia?.rows).toEqual([1, 6, 1, 6, 0, 1, 6, 1, 6, 0])
+  })
+})
+
+/**
+ * Within one minor, helpers are only appended: none changes its parameters. A helper whose
+ * parameters change needs the next minor, so the printed `abi` refuses factories printed
+ * before it. This pins each helper's `length` beside the ABI it was declared under; a
+ * change here without a new minor is the misbind 0.61.9's factories show above.
+ */
+describe('the helpers a printed factory binds', () => {
+  it('have the parameter counts declared for this ABI', () => {
+    expect(EMITTED_ABI).toBe('0.62/59')
+    const prog = encodeTable({ Entry: node('Pair', sequence(literal('a'), literal('b'))) })
+    const em = emitAssemblySource(resolveTable(prog), prog, STRICT)
+    const real = new Function(...EMITTED_PARAMS, em.source) as (...helpers: unknown[]) => unknown
+    let bound: unknown[] = []
+    const factory = ((...helpers: unknown[]) => {
+      bound = helpers
+      return real(...helpers)
+    }) as unknown as PrecompiledAssembly['factory']
+    const record = { key: 0, abi: EMITTED_ABI, factory, plan: em.plan, reached: [...em.reached] }
+    expect(run(tableRules({ ...prog, asm: [record] })['Entry']!, 'ab').ok).toBe(true)
+    expect(bound).toHaveLength(EMITTED_PARAMS.length)
+    const lengths: Record<string, number> = {}
+    EMITTED_PARAMS.forEach((name, i) => {
+      const helper = bound[i]
+      if (typeof helper === 'function') lengths[name] = helper.length
+    })
+    expect(lengths).toEqual({
+      cstCaptureActive: 1,
+      pushCstLeaf: 2,
+      pushCstChild: 3,
+      rollbackTriviaAt: 7,
+      rollbackScannedTriviaAt: 5,
+      failAt: 3,
+      classHas: 2,
+      consumeTrivia: 3,
+      buildFieldMap: 1,
+      projectChild: 3,
+      unwrapChild: 1,
+      demoteCapturedToRaw: 2,
+      cstLeavesLen: 1,
+      skipTriviaScanned: 4,
+      needsDeferredTriviaCommit: 1,
+      advanceTrivia: 3,
+      refuseUnclassifiedRootScope: 1,
+      spanLines: 3,
+      rawEntry: 4,
+      lead: 2,
+      asciiFoldKey: 1,
+      matchesAt: 4,
+      recoverScan: 5,
+      orSentinel: 2,
+      captureError: 2,
+      adjacencyHolds: 5,
+      triviaFieldCapture: 7,
+      skipDeferredTrivia: 3,
+      collapseEmpty: 6,
+      popCstChild: 1,
+      _SP: 2,
+      _LF: 2,
+      _ND: 4,
+      _FC: 3,
+      _BUF: 3,
+    })
   })
 })

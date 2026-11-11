@@ -293,16 +293,15 @@ function makeDriver(
    */
   function skipTrivia(input: string, cur: number, ctx: ParseContext): number {
     const s = SCAN
-    if (s !== null
-      && !(ctx.captureTrivia === true && ctx._cstBuf !== undefined)) {
-      return s(input, cur)
-    }
     // CAPTURE IS NOT A REASON TO LEAVE THE SCANNER. The recording an installed
-    // scanner's scope can owe is one `(cur, end)` row, so it is written here
-    // rather than through a deferred `{ end, commit }` pair per term. Appended
-    // rather than folded into the test above so the non-capturing path — every
-    // grammar that already had a scanner — keeps the exact branch it had.
-    if (s !== null) return skipTriviaScanned(s, input, cur, ctx)
+    // scanner's scope can owe is one `(cur, end)` row (and a root log's row), so it
+    // is written here rather than through a deferred `{ end, commit }` pair per term.
+    if (s !== null) {
+      if (ctx._rootTriviaLog === undefined && !(ctx.captureTrivia === true && ctx._cstBuf !== undefined)) {
+        return s(input, cur)
+      }
+      return skipTriviaScanned(s, input, cur, ctx)
+    }
     if (needsDeferredTriviaCommit(ctx)) {
       return commitTriviaScan(scanTriviaCompact(input, cur, ctx))
     }

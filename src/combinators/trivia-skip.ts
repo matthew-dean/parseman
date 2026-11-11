@@ -303,7 +303,7 @@ export function scanTriviaCompact(input: string, cur: number, ctx: ParseContext)
   if (!ctx.trackLines) {
     const fast = !ctx.triviaKindLabels ? fastTriviaScanner(triviaP) : null
     if (fast && !captureTl) {
-      return { end: fast(input, cur), commit: NOOP_COMMIT }
+      if (rootLog === undefined) return { end: fast(input, cur), commit: NOOP_COMMIT }
     }
 
     if (ctx.triviaKindLabels && (rootLog !== undefined || captureTl)) {
@@ -335,6 +335,7 @@ export function scanTriviaCompact(input: string, cur: number, ctx: ParseContext)
       return {
         end,
         commit: () => {
+          if (rootLog !== undefined) recordUnlabelledRootGap(ctx, rootLog, cur, end)
           if (captureTl) pushCstTriviaEntry(ctx, cur, end)
         },
       }
@@ -347,9 +348,11 @@ export function scanTriviaCompact(input: string, cur: number, ctx: ParseContext)
 
   const fast = !ctx.triviaKindLabels ? fastTriviaScanner(triviaP) : null
   if (fast && !captureTl) {
-    const end = fast(input, cur)
-    if (trackTriviaLines) recordLineRangeFromContext(ctx, input, cur, end)
-    return { end, commit: NOOP_COMMIT }
+    if (rootLog === undefined) {
+      const end = fast(input, cur)
+      if (trackTriviaLines) recordLineRangeFromContext(ctx, input, cur, end)
+      return { end, commit: NOOP_COMMIT }
+    }
   }
 
   if (ctx.triviaKindLabels && (rootLog !== undefined || captureTl)) {
@@ -384,6 +387,7 @@ export function scanTriviaCompact(input: string, cur: number, ctx: ParseContext)
     return {
       end,
       commit: () => {
+        if (rootLog !== undefined) recordUnlabelledRootGap(ctx, rootLog, cur, end)
         if (captureTl) pushCstTriviaEntry(ctx, cur, end)
       },
     }
@@ -391,6 +395,17 @@ export function scanTriviaCompact(input: string, cur: number, ctx: ParseContext)
 
   const tr = parseTriviaNoCapture(triviaP, input, cur, ctx)
   return { end: tr.ok ? tr.span.end : cur, commit: NOOP_COMMIT }
+}
+
+/**
+ * One root row for a gap of UNLABELLED trivia: the gap is its own marker, under
+ * the `''` kind that only `rootTrivia: { select: 'all' }` defines. A label list
+ * has no `''`, so it records nothing here.
+ */
+function recordUnlabelledRootGap(ctx: ParseContext, rootLog: number[], start: number, end: number): void {
+  if (ctx._rootTriviaCapture === false) return
+  const kind = ctx._rootTriviaKindIndex?.['']
+  if (kind !== undefined) rootLog.push(start, end, start, end, kind)
 }
 
 /** The object-shaped form of `scanTriviaCompact`. No engine calls it; the trivia-skip tests compare the two. */
@@ -417,6 +432,14 @@ export function skipTriviaScanned(
 ): number {
   const end = s(input, cur)
   if (end !== cur) {
+    // `recordUnlabelledRootGap`, inline: this is the per-gap path of every installed scanner.
+    const rootLog = ctx._rootTriviaLog
+    if (rootLog !== undefined) {
+      if (ctx._rootTriviaCapture !== false) {
+        const kind = ctx._rootTriviaKindIndex?.['']
+        if (kind !== undefined) rootLog.push(cur, end, cur, end, kind)
+      }
+    }
     if (ctx.captureTrivia === true && ctx._cstBuf !== undefined) {
       pushCstTriviaEntry(ctx, cur, end)
     }

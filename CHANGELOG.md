@@ -11,20 +11,34 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   0.61.x would bind the arguments after the change to the wrong names and run: a
   `sequence(literal('x'), optional(node('E', optional(literal('z')))), literal('y'))` on
   `x/*c*/y` recorded its root trivia row twice and reported success. Each printed record now
-  carries `abi`, the printing minor and helper count (`"0.62/62"`), in place of `arity`. The
+  carries `abi`, the printing minor and helper count (`"0.62/59"`), in place of `arity`. The
   runtime refuses a record whose `abi` is not its own, naming both, and refuses a record
   printed before 0.62.0, which has no `abi`. A helper's parameters or order change only in a
   minor (`docs/design/artifact-format.md`). A 0.61.x runtime refuses a 0.62.0 record because
   it carries no `arity`.
-- **Breaking: `ParseContext` no longer has `_triviaLog`, `_cstTriviaLog` or
-  `_cstRawChildren`.** No engine read them back. A node's trivia reaches its builder as the
-  fifth argument (`triviaLog`), selected root trivia comes back on `run()`'s `rootTrivia`, and
-  raw children come from the node's own capture. `parseWithContext` no longer fills a
-  `_triviaLog` the caller puts on the context. Every engine stops saving, clearing and testing
-  the three fields around each attempt, token and node, and a node no longer builds the raw
-  entry for a child when no capture buffer is open to take it. Against 0.61.9, branch tests
-  per parse fall 2.6% to 10.2% on every call-count row (Less `app.less` AST −8.15%, CSS
-  `site.css` AST −10.22%) and calls by up to 3.7% (Less AST −3.62%); no row rises.
+- **Breaking: the document's trivia log moves from `ParseContext._triviaLog` to
+  `run(parser, input, { rootTrivia: { select: 'all' } })`.** `RunResult.rootTrivia.rows` holds
+  five numbers per row, `gapStart, gapEnd, start, end, kind`, where `kind` indexes
+  `RunResult.rootTrivia.select`: the grammar's trivia labels, then `''`. A labelled chunk is a
+  row under its label, named by label in a nested scope that orders its labels differently
+  (an old entry gave that scope's own index). A gap of unlabelled trivia is one row under `''`
+  whose `start, end` are the gap, the `[start, end]` entry `_triviaLog` held. The label table
+  is the grammar's, recorded on the compiled entry, and `run()` now accepts a `compile()`
+  result and runs its entry rule. A region declared `parser({ rootCapture: 'opaque' })` records
+  nothing; `_triviaLog` recorded it. A context that still carries `_triviaLog` is refused when a
+  compiled `parse` or `parseWithContext` starts, with an error that names the replacement.
+  On the CSS example, the five bench workloads and the Jess corpora in all four dialects,
+  the rows give the same spans as 0.61.9's `_triviaLog`, and in Jess the same labels except
+  two block comments in a nested CSS scope, which the old log named `whitespace`.
+- **Breaking: `ParseContext` no longer has `_cstTriviaLog` or `_cstRawChildren`.** No engine
+  read them back. A node's trivia reaches its builder as the fifth argument (`triviaLog`), and
+  raw children come from the node's own capture. Every engine stops saving, clearing and
+  testing the trivia log fields around each attempt, token and node, and a node no longer
+  builds the raw entry for a child when no capture buffer is open to take it. A grammar whose
+  trivia has no labels still tests once per gap whether a root log is open, as 0.61.9 did.
+  Against 0.61.9, branch tests per parse fall 1.8% to 10.8% on every call-count row (Less
+  `app.less` AST −8.46%, CSS `site.css` AST −10.81%) and calls by up to 3.7% (Less AST −3.74%);
+  no row rises, on the first parse or after warmup.
 - **A sequence that opens with `attempt(x)` or `field(name, x)` no longer expects what follows
   it.** The expected set read either as able to match empty, so an arm a first-character gate
   declined named a token that could only come after `x`.

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cstBuildHost, gate, label, literal, not, regex, run, sequence } from '../../src/index.ts'
+import { cstBuildHost, gate, label, literal, not, regex, run, sequence, type Runnable } from '../../src/index.ts'
 import { buildGrammarPlan } from '../../src/compiler/grammar-coverage-ids.ts'
 import { createParseContext } from '../../src/parse-context.ts'
 import { digestValue } from '../../src/oracle/index.ts'
@@ -13,7 +13,7 @@ import { resolveTable, type PrecompiledAssembly, type TableProgram } from '../..
 import { scalarTerminalNotChild } from '../../src/table/scalar-terminal.ts'
 import type { Combinator, ParseContext, ParseFail } from '../../src/types.ts'
 
-type Entry = Parameters<typeof run>[0]
+type Entry = Runnable
 const STRICT = { hostCst: false, trackLines: false, tolerant: false, coverage: false, probe: false }
 const CLOSURE_CFG: RunCfg = { ...STRICT, hostReadsChildren: true }
 

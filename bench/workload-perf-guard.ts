@@ -131,7 +131,7 @@ const M: GateMeasurement = QUICK
  * example grammars they reuse must be byte-identical across sides or the gate
  * measures the benchmark's history instead of the compiler's.
  */
-const COPY = ['bench/workloads', 'bench/grammar-density', 'examples'] as const // grammar-density: the fixtures' `tree-node.js`
+const COPY = ['bench/workloads', 'bench/all-trivia.ts', 'bench/grammar-density', 'examples'] as const // grammar-density: the fixtures' `tree-node.js`
 
 /** Every call is a FRESH module graph — see `freshGraph`. */
 async function loadSide(dir: string): Promise<Workload[]> {

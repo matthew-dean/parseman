@@ -5,7 +5,7 @@ import { buildRootTriviaIndex, type RootTriviaIndex } from '../cst/trivia-entrie
 /* `cst/host-mode.ts` and `cst/trivia-entries.ts` are import-free by design, so
  * this keeps the `parseman/run` closure minimal — see
  * test/unit/run-entry-closure.test.ts. */
-import { assertHostModeCompatible, FUSED_HOST_MODE, FUSED_HOST_ELIDED, type HostMode } from '../cst/host-mode.ts'
+import { assertHostModeCompatible, COMPILED_ENTRY, FUSED_HOST_MODE, FUSED_HOST_ELIDED, type HostMode } from '../cst/host-mode.ts'
 
 /**
  * Run a compiled/interpreted grammar entry against an input and collect the raw
@@ -71,12 +71,14 @@ export type RunOptions = {
    */
   triviaCaptureMask?: number
   /**
-   * Opt into sparse root trivia capture. `run()` retains no root trivia unless
-   * this is supplied. Capture records only the named labels, each with the one
-   * complete authored gap that owns it; ordinary whitespace has no root entry.
+   * Opt into root trivia capture. `run()` retains no root trivia unless this is
+   * supplied. A label list records only those labels, each with the one complete
+   * authored gap that owns it; ordinary whitespace has no root entry. `'all'`
+   * records every trivia chunk in the document: each labelled chunk under its
+   * label, and each gap of unlabelled trivia as one row under the label `''`.
    */
   rootTrivia?: {
-    readonly select: readonly string[]
+    readonly select: readonly string[] | 'all'
   }
   /**
    * Activate automatic list recovery. When true, `many`/`sepBy`/`oneOrMore` recover
@@ -94,7 +96,8 @@ export type RunOptions = {
 export type RootTriviaCapture = {
   /** Packed `[gapStart, gapEnd, markerStart, markerEnd, selectedKindIndex]` rows. */
   readonly rows: readonly number[]
-  /** Labels requested by this caller; row kind indices refer to this array. */
+  /** Labels requested by this caller; row kind indices refer to this array. For
+   * `select: 'all'`, the grammar's labels followed by `''` (unlabelled trivia). */
   readonly select: readonly string[]
   /** Lazy lookup over `rows`; no tokens or strings are materialized. */
   readonly index: RootTriviaIndex
@@ -405,19 +408,20 @@ function growSpanEnd(span: Span, input: string, end: number): Span {
   return { ...span, end, endLine: line, endColumn: column }
 }
 
+/** A `compile()` result, which runs as its entry rule. */
+export type CompiledEntry = { readonly [COMPILED_ENTRY]: Runnable }
+
 /** Keep the run-entry closure independent from grammar-construction helpers. */
-function runOnce(entry: Runnable, input: string, options: RunOptions): RunResult {
+export function runRule(given: Runnable | CompiledEntry, input: string, options: RunOptions): RunResult {
+  // A `compile()` result runs as its entry rule, which carries the stamps read below.
+  const entry = typeof given === 'object' && given !== null && COMPILED_ENTRY in given ? given[COMPILED_ENTRY] : given
   if (typeof entry !== 'function' && typeof (entry as Combinator<unknown> | undefined)?.parse !== 'function') {
     throw new TypeError(
       `run(): start production is ${entry === null ? 'null' : typeof entry}, not a rule — the requested grammar rule does not exist (check the rule name).`,
     )
   }
-  const rootTriviaSelection = options.rootTrivia?.select
-  const captureRootTrivia = rootTriviaSelection !== undefined && rootTriviaSelection.length > 0
-  const selectedRootLog = captureRootTrivia ? [] as number[] : undefined
-  const selectedRootLabelIndex = captureRootTrivia
-    ? makeSelectedRootLabelIndex(rootTriviaSelection)
-    : undefined
+  const requested = options.rootTrivia?.select
+  const allTrivia = requested === 'all'
   const errors: ParseError[] = []
   // Grammar-level ambient trivia declared via rules({ trivia }, factory): install
   // it as ctx.trivia so it's ambient for the whole parse (the interpreter path;
@@ -426,23 +430,26 @@ function runOnce(entry: Runnable, input: string, options: RunOptions): RunResult
   const grammarTrivia = typeof entry !== 'function' ? entry._meta.grammarTrivia : undefined
   const grammarScanSkip = typeof entry !== 'function' ? entry._meta.grammarScanSkip : undefined
   const triviaKindLabels = triviaKindLabelsFromRunnable(entry) ?? triviaKindLabelsFromRunnable(options.trivia)
-  if (captureRootTrivia && triviaKindLabels === undefined) {
-    throw new TypeError('run(): rootTrivia.select requires labeled grammar trivia.')
-  }
-  if (captureRootTrivia) {
+  // `'all'` is the grammar's own label table, which the entry carried from compile
+  // time, plus `''` for trivia no label covers. It is not grown during the parse.
+  const rootTriviaSelection = allTrivia ? [...(triviaKindLabels ?? []), ''] : requested
+  const captureRootTrivia = rootTriviaSelection !== undefined && rootTriviaSelection.length > 0
+  if (captureRootTrivia && !allTrivia) {
+    if (triviaKindLabels === undefined) {
+      throw new TypeError('run(): rootTrivia.select requires labeled grammar trivia.')
+    }
     for (const label of rootTriviaSelection) {
-      if (!triviaKindLabels!.includes(label)) {
+      if (!triviaKindLabels.includes(label)) {
         throw new TypeError(`run(): rootTrivia.select contains unknown trivia label ${JSON.stringify(label)}.`)
       }
     }
+    if (!rootTriviaClassifiedFromRunnable(entry) && !rootTriviaClassifiedFromRunnable(options.trivia)) {
+      throw new TypeError(
+        'run(): rootTrivia.select requires classifiedTrivia() at the root.',
+      )
+    }
   }
-  if (captureRootTrivia
-    && !rootTriviaClassifiedFromRunnable(entry)
-    && !rootTriviaClassifiedFromRunnable(options.trivia)) {
-    throw new TypeError(
-      'run(): rootTrivia.select requires classifiedTrivia() at the root.',
-    )
-  }
+  const selectedRootLog = captureRootTrivia ? [] as number[] : undefined
   /*
    * Refuse an artifact/host mismatch ONCE per parse, exactly as `parseDoc` and a
    * compiled parser's `parseWithContext` already do. `run()` is handed a RULE, not the
@@ -474,8 +481,10 @@ function runOnce(entry: Runnable, input: string, options: RunOptions): RunResult
   const ctx = createParseContext()
   if (captureRootTrivia) {
     ctx._rootTriviaLog = selectedRootLog!
-    ctx._rootTriviaKindIndex = selectedRootLabelIndex!
-    ctx._rootTriviaStrictScopes = true
+    ctx._rootTriviaKindIndex = makeSelectedRootLabelIndex(rootTriviaSelection)
+    // A label list is answered only by classified scopes; `'all'` takes unlabelled
+    // scopes too, under `''`.
+    ctx._rootTriviaStrictScopes = !allTrivia
   }
   ctx._errors = errors
   ctx.build = options.build
@@ -555,6 +564,6 @@ function runOnce(entry: Runnable, input: string, options: RunOptions): RunResult
  * What a restoration would take is recorded in
  * `docs/future/bench-typecheck-followups.md`. */
 
-export function run(entry: Runnable, input: string, options: RunOptions = {}): RunResult {
-  return runOnce(entry, input, options)
+export function run(entry: Runnable | CompiledEntry, input: string, options: RunOptions = {}): RunResult {
+  return runRule(entry, input, options)
 }

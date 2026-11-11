@@ -354,14 +354,31 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
     parses with a live root trivia log. Dropping the gap memo is rejected (below).
   - Branch `perf/shipped-alloc-trivia`.
 
-- **Delete three trivia slots no engine read back, and build a raw entry only where a buffer
-  takes it.** `ParseContext._triviaLog`, `_cstTriviaLog` and `_cstRawChildren` were saved,
-  cleared and tested around every attempt, token and node on all four engines. A node also
-  built `rawEntry()` (a leaf, a span and a slice for a non-node value) and then dropped it when
-  no `_cstBuf` was open. Call count against v0.61.9: branch tests fall 2.6% to 10.2% on every
-  row and calls up to 3.7% (Less `app.less` AST −8.15% branches, −3.62% calls); no row rises.
-  Time not measured: the x64 machine is with the cold-start lane. Breaking for printed
-  factories (two helper signatures), so it declares 0.62.0 with an `abi` lock on the record.
+- **Delete two trivia slots no engine read back, fold the third into root trivia, and build
+  a raw entry only where a buffer takes it.** `ParseContext._triviaLog`, `_cstTriviaLog` and
+  `_cstRawChildren` were saved, cleared and tested around every attempt, token and node on all
+  four engines. No engine read `_cstTriviaLog` or `_cstRawChildren` back, so they go. A caller
+  did read `_triviaLog` after a parse: it was the document's whole trivia log. It is now
+  `run()`'s root trivia with `select: 'all'`, the grammar's labels plus `''` for unlabelled
+  gaps, so one log mechanism remains. A node also built `rawEntry()` (a leaf, a span and a
+  slice for a non-node value) and then dropped it when no `_cstBuf` was open.
+  - Same rows: 0.61.9's `_triviaLog` against `select: 'all'` gives byte-identical spans on
+    the CSS example, every bench density case and all five workloads, on the interpreter, the
+    closure engine and the emitted engine. On the Jess corpora in four dialects, spans and row
+    counts match (css 918, less 13,176, scss 9,847, jess 1,049 rows). Labels match except two
+    block comments in a nested CSS scope, which the old log named by that scope's index and
+    so read as `whitespace`.
+  - Call count against v0.61.9: branch tests fall 1.8% to 10.8% on every row and calls up to
+    3.7% (Less `app.less` AST −8.46% branches, −3.62% calls); no row rises. The first parse
+    of every row also falls (branches −1.8% to −7.9%, calls ≤ 0.61.9).
+  - What it cost: a grammar without trivia labels keeps 0.61.9's per-gap test for an open
+    root log, and every guard on the skip path nests under the scanner test, because a
+    longer `&&` chain is one more branch test even when its first operand short-circuits.
+    Hoisting the three per-chunk root tests out of the labelled scan cost CST rows a branch
+    and was dropped. The refusal of a passed `_triviaLog` sits at compiled run start, not in
+    the per-rule wrapper, where it added 2,000 to 4,000 branch tests to each Jess row.
+  - Time not measured: the x64 machine is with the cold-start lane. Breaking for printed
+    factories (two helper signatures), so it declares 0.62.0 with an `abi` lock on the record.
 
 ## Rejected (measured)
 

@@ -31,6 +31,10 @@ export const FUSED_HOST_MODE = Symbol.for('parseman.fusedHostMode')
 /** Whether any fused piece omitted a direct builder's positioned-CST branch. */
 export const FUSED_HOST_ELIDED = Symbol.for('parseman.fusedHostElided')
 
+/** The entry rule a `compile()` result runs, which `run()` drives in its place: the
+ * rule carries the stamps `run()` reads (trivia labels, host mode), the wrapper does not. */
+export const COMPILED_ENTRY = Symbol.for('parseman.compiledEntry')
+
 /**
  * A compiled artifact and the host it is driven with must agree — and when they do not,
  * that has to be an ERROR, never a quietly-degraded tree.

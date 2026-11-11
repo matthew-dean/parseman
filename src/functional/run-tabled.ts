@@ -41,7 +41,7 @@
  * later call is one map lookup.
  */
 import type { Combinator, ParseContext, ParseResult } from '../types.ts'
-import { run as runDriver, type Runnable, type RunOptions, type RunResult } from './run.ts'
+import { runRule, type CompiledEntry, type Runnable, type RunOptions, type RunResult } from './run.ts'
 import { encodeTable } from '../table/encode.ts'
 import { tableRules } from '../table/assemble.ts'
 import { closureArtifact } from '../table/program.ts'
@@ -123,10 +123,12 @@ function tableEntryFor(c: Combinator<unknown>, hostCst: boolean, tolerant: boole
  * TypeError is what the caller sees. Encoding it first would replace a message
  * that names the mistake with whatever the encoder happens to throw on garbage.
  */
-function tabled(r: Runnable, hostCst: boolean, tolerant: boolean): Runnable {
+/** An interpreter combinator's table entry. A rule function, a `compile()` result (no
+ * `_def`; `runRule` unwraps it) and a non-rule (`runRule` names it) pass through. */
+function tabled<R extends Runnable | CompiledEntry>(r: R, hostCst: boolean, tolerant: boolean): R | TableEntry {
   if (typeof r === 'function') return r
-  if (typeof (r as Combinator<unknown> | undefined)?.parse !== 'function') return r
-  return tableEntryFor(r, hostCst, tolerant)
+  if (typeof (r as Combinator<unknown> | undefined)?.parse !== 'function' || !('_def' in r)) return r
+  return tableEntryFor(r as Combinator<unknown>, hostCst, tolerant)
 }
 
 /**
@@ -138,7 +140,7 @@ function tabled(r: Runnable, hostCst: boolean, tolerant: boolean): Runnable {
  * of the same grammar and would otherwise be the one place the interpreter still
  * ran on the product path.
  */
-export function run(entry: Runnable, input: string, options: RunOptions = {}): RunResult {
+export function run(entry: Runnable | CompiledEntry, input: string, options: RunOptions = {}): RunResult {
   const hostCst = cstOutput(options.build)
   // `tolerant` selects the TABLE, not just a flag on the parse: the sync sentinel
   // a list resyncs to is inferred from grammar structure, so it has to be encoded
@@ -146,8 +148,8 @@ export function run(entry: Runnable, input: string, options: RunOptions = {}): R
   // grammar driven both ways is encoded both ways, once each.
   const tolerant = options.tolerant === true
   const e = tabled(entry, hostCst, tolerant)
-  if (options.trivia === undefined) return runDriver(e, input, options)
+  if (options.trivia === undefined) return runRule(e, input, options)
   // The trailing-trivia probe runs on a throwaway ctx with no host and nothing to
   // recover, so it is always the plain 'ast' lowering regardless of the entry's.
-  return runDriver(e, input, { ...options, trivia: tabled(options.trivia, false, false) })
+  return runRule(e, input, { ...options, trivia: tabled(options.trivia, false, false) })
 }

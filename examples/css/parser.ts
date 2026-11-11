@@ -10,8 +10,8 @@ import {
   scanTo, balanced, parser, trivia, rules, compile,
   type Combinator,
 } from '../../src/index.ts'
-import type { ParseResult } from '../../src/types.ts'
-import { mk, nilNode, type CssNode } from './stub-build.ts'
+import { run, type RunResult } from '../../src/run/index.ts'
+import { mk, buildLazyTriviaMap, nilNode, type CssNode } from './stub-build.ts'
 
 const ws = regex(/[ \t\n\r\f]+/)
 const comment = regex(/\/\*(?:[^*]|\*(?!\/))*\*\//)
@@ -167,9 +167,10 @@ export const { Stylesheet } = cssRules
 export type CssParseResult = {
   tree: CssNode
   errors: Array<{ message: string; offset?: number }>
+  trivia: { entries: number }
 }
 
-function finishCssParse(r: ParseResult<unknown>): CssParseResult {
+function finishCssParse(input: string, r: RunResult): CssParseResult {
   const tree: CssNode = r.ok && typeof r.value === 'object' && r.value !== null && (r.value as CssNode)._tag === 'node'
     ? r.value as CssNode
     : nilNode()
@@ -177,17 +178,20 @@ function finishCssParse(r: ParseResult<unknown>): CssParseResult {
   if (!r.ok) {
     errors.push({ message: (r.expected ?? []).join(', ') || 'Parse error', offset: r.span?.start })
   }
-  return { tree, errors }
+  return { tree, errors, trivia: buildLazyTriviaMap(r.rootTrivia?.rows ?? [], input) }
 }
 
-/** Interpreted — full CST with per-node trivia capture. */
+/** Every trivia gap in the document, as root rows. */
+const ALL_TRIVIA = { rootTrivia: { select: 'all' } } as const
+
+/** Interpreted — full CST + trivia capture (jess parseCssFn shape). */
 export function parseCss(input: string): CssParseResult {
-  return finishCssParse(Stylesheet.parse(input, 0, { trackLines: false }))
+  return finishCssParse(input, run(Stylesheet, input, ALL_TRIVIA))
 }
 
 export const compiledCss = compile(Stylesheet)
 
-/** Compiled — full CST with per-node trivia capture. */
+/** Compiled — full CST + trivia capture (jess parseCssFn shape). */
 export function parseCssCompiled(input: string): CssParseResult {
-  return finishCssParse(compiledCss.parseWithContext(input, { trackLines: false }, 0))
+  return finishCssParse(input, run(compiledCss, input, ALL_TRIVIA))
 }

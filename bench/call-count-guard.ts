@@ -81,7 +81,7 @@ const BASELINE_PATH = path.join(HERE, 'call-count-baseline.json')
 const REASONS_PATH = path.join(HERE, 'call-count-reasons.json')
 const WORKER = path.join(HERE, 'engine-guards', 'count-worker.ts')
 /** The grammars and inputs both sides run: this tree's, so only the compiler differs. */
-const COPY = ['bench/grammar-density', 'bench/workloads', 'examples', 'fixtures/jess-grammars', 'bench/jess/real-grammars.ts'] as const
+const COPY = ['bench/grammar-density', 'bench/workloads', 'bench/all-trivia.ts', 'examples', 'fixtures/jess-grammars', 'bench/jess/real-grammars.ts'] as const
 const METRICS = ['calls', 'branches'] as const
 const FAMILIES = ['emitted/', 'closure/', 'macro/'] as const
 
