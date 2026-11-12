@@ -2844,8 +2844,46 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         }
         if (hasAdj) {
           const first = linkFirst()
+          // What a held gap needs undone if the next term recovers at zero width.
+          // Written after the lookahead returns and read before the next term runs,
+          // so nothing can re-enter this sequence in between.
+          let heldFrom = 0, heldTl = 0, heldScanTl = 0, heldLog = 0, heldScanLog = 0, heldRoot = 0, heldScanRoot = 0
           const runnerAt = (i: number): TermRunner => {
             const kidIp = code[base + i]!
+            if (i > 1 && holdsGap(code, k, base, n, i - 1, NULLABLE) && rowNullable(code, k, kidIp, NULLABLE)) {
+              const kid = link(kidIp)
+              return (input, cur, ctx) => {
+                const from = heldFrom, tl = heldTl, scanTl = heldScanTl, log = heldLog
+                const scanLog = heldScanLog, root = heldRoot, scanRoot = heldScanRoot
+                const next = step(kid, input, cur, ctx)
+                if (next !== cur || from === cur) return next
+                rollbackScannedTriviaAt(ctx, tl, scanTl, log, scanLog, root, scanRoot)
+                return from
+              }
+            }
+            if (holdsGap(code, k, base, n, i, NULLABLE) && rowNullable(code, k, code[base + i + 1]!, NULLABLE)) {
+              const kid = link(kidIp)
+              return (input, cur, ctx) => {
+                if (ctx.trivia === undefined) {
+                  const v = kid(input, cur, ctx)
+                  if (v === FAIL) return -1
+                  TERMV = v
+                  heldFrom = cur
+                  return EC.e
+                }
+                const tl = cstTlLen(ctx), log = ctx._triviaLog?.length ?? 0, root = ctx._rootTriviaLog?.length ?? 0
+                const scanEnd = skipTrivia(input, cur, ctx)
+                const scanTl = cstTlLen(ctx), scanLog = ctx._triviaLog?.length ?? 0, scanRoot = ctx._rootTriviaLog?.length ?? 0
+                const v = kid(input, scanEnd, ctx)
+                if (v === FAIL) return -1
+                TERMV = v
+                heldFrom = cur
+                heldTl = tl; heldScanTl = scanTl
+                heldLog = log; heldScanLog = scanLog
+                heldRoot = root; heldScanRoot = scanRoot
+                return scanEnd
+              }
+            }
             if (holdsGap(code, k, base, n, i, NULLABLE)) {
               const kid = link(kidIp)
               return (input, cur, ctx) => {

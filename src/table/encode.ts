@@ -752,7 +752,7 @@ class Encoder {
     for (let j = i + 1; j < parsers.length; j++) {
       // As the interpreter's `followSentinels` derive them (`sequence.ts`): with no
       // trivia, whatever scope the sequence runs in.
-      fs = union(fs, firstSetOf(parsers[j]!, new Set(), rr, undefined, false))
+      fs = union(fs, firstSetOf(parsers[j]!, new Set(), rr, undefined, false, true))
     }
     return this.charClass(fs)
   }

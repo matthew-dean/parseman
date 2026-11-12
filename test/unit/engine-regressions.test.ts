@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import {
-  attempt, choice, classifiedTrivia, dispatch, expect as expectOr, field, leaf, literal, many, node, not, optional, otherwise, parser,
+  attempt, choice, classifiedTrivia, dispatch, expect as expectOr, field, leaf, literal, many, node, not, oneOrMore, oneOrMoreSep, optional, otherwise, parser, peek,
   regex, routed, rules, sepBy, sequence, sourceLeaf, token, transform, when,
 } from '../../src/index.ts'
 import { compile } from '../../src/table/compile.ts'
@@ -17,7 +17,7 @@ import { defaultAssemblyCfgs } from '../../src/table/emit.ts'
 import { emitAssemblySource } from '../../src/table/emit-assembly.ts'
 import { assemblyExtraIps, resolveTable } from '../../src/table/program.ts'
 import type { Combinator } from '../../src/types.ts'
-import { readers } from '../helpers/table-readers.ts'
+import { hybridReaders, readers } from '../helpers/table-readers.ts'
 
 type G = Record<string, Combinator<unknown>>
 type Options = { build?: unknown; rootTrivia?: { select: string[] } }
@@ -43,7 +43,8 @@ const outcome = (r: ReturnType<typeof run>): object => ({
 function agreed(g: G, input: string, options: Options = {}, skip?: string): Record<string, unknown> {
   const prog = encodeTable(g, options.build === undefined ? {} : { hostMode: 'cst' })
   const want = outcome(run(g.R as never, input, options as never))
-  for (const [name, table] of readers(prog)) {
+  const legs = options.build === undefined ? [...readers(prog), ...hybridReaders(prog)] : readers(prog)
+  for (const [name, table] of legs) {
     if (name === skip) continue
     expect(outcome(run(table.R as never, input, options as never)), name).toEqual(want)
   }
@@ -89,10 +90,35 @@ describe('rollback', () => {
     expect(leaves(agreed(g, 'az', { build: host }).value)).toEqual({ O: ['a', 'z'] })
   })
 
-  // Emitted keeps the item: https://github.com/matthew-dean/parseman/issues/282
   it('a failed sepBy with a minimum takes back the items it kept', () => {
     const g = rules({}, () => ({ R: node('N', choice(sepBy(literal('a'), literal(','), { min: 2 }), literal('a'))) })) as G
-    expect(leaves(agreed(g, 'a', { build: host }, 'emitted').value)).toEqual({ N: ['a'] })
+    expect(leaves(agreed(g, 'a', { build: host }).value)).toEqual({ N: ['a'] })
+    expect(leaves(agreed(g, 'a').value)).toEqual({ N: ['a'] })
+    expect(leaves((compile(g.R as never).parse('a') as { value: unknown }).value)).toEqual({ N: ['a'] })
+  })
+
+  it('a failed repeat with a minimum takes back the items it kept', () => {
+    const g = rules({}, () => ({ R: node('N', choice(many(literal('a'), { min: 2 }), literal('a'))) })) as G
+    expect(leaves(agreed(g, 'a', { build: host }).value)).toEqual({ N: ['a'] })
+    expect(leaves(agreed(g, 'a').value)).toEqual({ N: ['a'] })
+    expect(leaves((compile(g.R as never).parse('a') as { value: unknown }).value)).toEqual({ N: ['a'] })
+  })
+
+  it('a dispatch with an uncommitted fallback leaves no selector behind', () => {
+    const word = regex(/[a-z]+/)
+    const dispatched = (): Combinator<unknown> =>
+      dispatch(word, when('foo', sequence(routed(), literal('x'))), otherwise(literal(','), { commit: false }))
+    const shapes: Record<string, () => Combinator<unknown>> = {
+      choice: () => choice(dispatched(), word),
+      optional: () => sequence(optional(dispatched()), word),
+      // A routed fallback gives the selector back before it runs.
+      routed: () => choice(dispatch(word, when('foo', literal('x')), otherwise(sequence(routed(), literal('!')), { commit: false })), word),
+    }
+    for (const shape of Object.values(shapes)) {
+      const g = rules({}, () => ({ R: node('N', shape()) })) as G
+      expect(leaves(agreed(g, 'k', { build: host }).value)).toEqual({ N: ['k'] })
+      expect(leaves(agreed(g, 'k').value)).toEqual({ N: ['k'] })
+    }
   })
 
   it('a choice that fails inside another takes back what its arm kept', () => {
@@ -149,10 +175,86 @@ describe('rollback', () => {
     expect((agreed(g, 'b').errors as unknown[]).length).toBe(1)
   })
 
-  // With no trivia the closure engine keeps it: https://github.com/matthew-dean/parseman/issues/278
   it('a repeat item that fails under trivia keeps no error', () => {
     const g = rules({ trivia: spaces }, (r: G) => ({ R: many(expectOr(r.A!, 'want')), A: sequence(literal('a'), literal('b')) })) as G
     expect(agreed(g, 'a').errors).toEqual([])
+  })
+})
+
+describe('an expect() recovers at zero width', () => {
+  const A = (): Combinator<unknown> => sequence(literal('a'), literal('b'))
+  const want = (r: G): Combinator<unknown> => expectOr(r.A!, 'want')
+  const comma = (): Combinator<unknown> => expectOr(literal(','), 'comma')
+  const errorsOf = (r: Record<string, unknown>): unknown => (r.errors as { expected: string[] }[]).map(e => e.expected)
+  const inGrammar = (shape: (r: G) => Combinator<unknown>, trivia?: Combinator<unknown>): G =>
+    rules(trivia === undefined ? {} : { trivia }, (r: G) => ({ R: shape(r), A: A(), I: node('I', want(r)) })) as G
+
+  it('so a repeat gives its error back with the item, whatever wraps the expect', () => {
+    const items: Record<string, (r: G) => Combinator<unknown>> = {
+      bare: want,
+      node: r => node('N', want(r)),
+      rule: r => r.I!,
+      attempt: r => attempt(want(r)),
+      transform: r => transform(want(r), v => v),
+      choice: r => choice(node('N', want(r)), literal('c')),
+      'later arm': r => choice(literal('c'), want(r)),
+      'later term': r => sequence(optional(literal('z')), want(r)),
+    }
+    for (const [name, item] of Object.entries(items)) {
+      expect(errorsOf(agreed(inGrammar(r => many(item(r))), 'a')), name).toEqual([])
+      expect(errorsOf(agreed(inGrammar(r => many(item(r)), spaces), 'ab a')), name).toEqual([])
+      expect(agreed(inGrammar(r => many(item(r))), 'abab').ok, name).toBe(true)
+    }
+    expect(errorsOf(agreed(inGrammar(r => oneOrMore(want(r))), 'a'))).toEqual([['want']])
+    expect(errorsOf(agreed(inGrammar(r => oneOrMore(node('N', want(r)))), 'aba'))).toEqual([])
+  })
+
+  it('so a separator that recovers has no first-character gate', () => {
+    for (const list of [
+      (): Combinator<unknown> => sepBy(literal('a'), comma()),
+      (): Combinator<unknown> => oneOrMoreSep(literal('a'), comma()),
+      (): Combinator<unknown> => oneOrMoreSep(literal('a'), node('S', comma())),
+    ]) {
+      for (const input of ['a', 'a,a', 'a;a', 'aa', 'a,']) agreed(inGrammar(list), input)
+    }
+  })
+
+  it('so it opens no gate, and what follows it still gets to run', () => {
+    const shapes: Record<string, (r: G) => Combinator<unknown>> = {
+      node: r => node('N', want(r)),
+      'choice arm': r => choice(want(r), literal('c')),
+      'sequence opener': r => sequence(want(r), literal('z')),
+      'node of a sequence': r => node('N', sequence(want(r), literal('z'))),
+      'choice of a sequence': r => choice(sequence(want(r), literal('z')), literal('a')),
+      peek: () => sequence(peek(expectOr(literal('a'), 'want')), literal('x')),
+      'repeat with a minimum': () => many(expectOr(literal('a'), 'want'), { min: 2 }),
+    }
+    for (const [name, shape] of Object.entries(shapes)) {
+      for (const input of ['', 'a', 'x', 'c', 'z', 'ab', 'abz', 'x z']) {
+        expect(() => agreed(inGrammar(shape), input), `${name} on ${input}`).not.toThrow()
+      }
+    }
+    expect(errorsOf(agreed(inGrammar(r => node('N', want(r))), ''))).toEqual([['want']])
+    expect(agreed(inGrammar(r => choice(want(r), literal('c'))), '').ok).toBe(true)
+  })
+
+  it('so a gap held for it comes back if it recovers', () => {
+    const shapes: Record<string, (r: G) => Combinator<unknown>> = {
+      bare: () => node('N', sequence(literal('x'), not(literal('y')), expectOr(literal('a'), 'want'))),
+      'then a term': () => node('N', sequence(literal('x'), not(literal('y')), expectOr(literal('a'), 'want'), literal('z'))),
+      peek: () => node('N', sequence(literal('x'), peek(literal('q')), expectOr(literal('a'), 'want'))),
+      node: r => node('N', sequence(literal('x'), not(literal('y')), node('M', want(r)))),
+      attempt: r => node('N', sequence(literal('x'), not(literal('y')), attempt(want(r)))),
+    }
+    for (const [name, shape] of Object.entries(shapes)) {
+      for (const input of ['x', 'x a', 'x /*c*/ a', 'x /*c*/', 'x /*c*/ q', 'x /*c*/ ab', 'x /*c*/ a z']) {
+        const g = (): G => inGrammar(shape, comments())
+        const root = { rootTrivia: { select: ['comment'] } }
+        expect(() => agreed(g(), input), `${name} on ${input}`).not.toThrow()
+        expect(() => agreed(g(), input, root), `${name} on ${input}, root trivia`).not.toThrow()
+        expect(() => agreed(g(), input, { build: host }), `${name} on ${input}, CST`).not.toThrow()
+      }
+    }
   })
 })
 
@@ -229,6 +331,52 @@ describe('expected sets', () => {
       R: choice(attempt(sequence(literal('a'), literal('x'))), dispatch(regex(/b/), when('b', sequence(routed(), literal('y')))), literal('c'), literal('d'), literal('e')),
     })) as G
     expect(agreed(g, 'aq').expected).toEqual(['"c"', '"d"', '"e"', '"x"', '/b/'])
+  })
+
+  it('a choice failing at its start reports nothing past a corner under attempt or field', () => {
+    const ladder = (): G => rules({}, () => ({
+      R: choice(
+        node('N0', sequence(
+          attempt(regex(/[+*-]/)),
+          many(sequence(literal('-'), attempt(regex(/[+*-]/)))),
+        ), c => c, { collapse: true }),
+        literal('z'),
+      ),
+    })) as G
+    expect(agreed(ladder(), '').expected).toEqual(['"z"', '/[+*-]/'])
+    expect(agreed(ladder(), '', { build: host }).expected).toEqual(['"z"', '/[+*-]/'])
+    const plain = rules({}, () => ({ R: choice(sequence(attempt(literal('a')), literal('b')), literal('z')) })) as G
+    expect(agreed(plain, '').expected).toEqual(['"a"', '"z"'])
+    const named = rules({}, () => ({ R: choice(sequence(field('k', literal('a')), literal('b')), literal('z')) })) as G
+    expect(agreed(named, '').expected).toEqual(['"a"', '"z"'])
+  })
+
+  it('an expected set reads past a regex that can match zero width before a character', () => {
+    const report = (g: G, input: string): unknown => (agreed(g, input).errors as { expected?: unknown }[]).map(e => e.expected)
+    const named = rules({}, () => ({ R: expectOr(sequence(field('k', regex(/(?=[ab])/)), literal('a'))) })) as G
+    expect(report(named, 'b')).toEqual([['/(?=[ab])/', '"a"']])
+    const tried = rules({}, () => ({ R: expectOr(sequence(attempt(regex(/(?=a)/)), literal('ab'))) })) as G
+    expect(report(tried, 'ax')).toEqual([['/(?=a)/', '"ab"']])
+    const bare = rules({}, () => ({ R: expectOr(sequence(regex(/\b/), literal('ab'))) })) as G
+    expect(report(bare, 'ax')).toEqual([['/\\b/', '"ab"']])
+    // Read with its flags, `\u{61}` is a required `a`, so the set stops there.
+    const escaped = rules({}, () => ({ R: expectOr(sequence(regex(/\u{61}/u), literal('b'))) })) as G
+    expect(report(escaped, '')).toEqual([['/\\u{61}/']])
+    const set = (re: RegExp) => report(rules({}, () => ({ R: expectOr(sequence(regex(re), literal('b'))) })) as G, 'x')
+    expect(set(/\u{0}/u)).toEqual([['/\\u{0}/']])
+    expect(set(new RegExp('[a--b]', 'v'))).toEqual([['/[a--b]/']])
+    // `\q{}` is an empty string member, so this class can match nothing.
+    expect(set(new RegExp('[\\q{}a]', 'v'))).toEqual([['/[\\q{}a]/', '"b"']])
+    // A named backreference to a group that did not match is empty.
+    const backref = (re: RegExp) => report(rules({}, () => ({ R: expectOr(sequence(regex(re), literal('b'))) })) as G, '')
+    expect(backref(/(?<x>a)?\k<x>/)).toEqual([['/(?<x>a)?\\k<x>/', '"b"']])
+    expect(backref(/(?<x>a)?\k<x>/u)).toEqual([['/(?<x>a)?\\k<x>/', '"b"']])
+  })
+
+  it('a `\\k<…>` that names no group leaves the regex around it alone', () => {
+    // Without `u` and named groups, `\k` is a literal `k`, and `|` still splits the pattern.
+    const g = rules({}, () => ({ R: attempt(regex(new RegExp('a\\k<x|b>'))) })) as G
+    expect(agreed(g, 'b>').ok).toBe(true)
   })
 
   // The tables only: the interpreter's set differs, https://github.com/matthew-dean/parseman/issues/256

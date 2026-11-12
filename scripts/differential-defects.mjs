@@ -711,8 +711,8 @@ export const DEFECTS = {
     why: 'encoder: a recovery follow class takes the live trivia, which the interpreter\'s follow sentinels do not',
     edits: [{
       file: 'src/table/encode.ts',
-      find: 'fs = union(fs, firstSetOf(parsers[j]!, new Set(), rr, undefined, false))',
-      replace: 'fs = union(fs, firstSetOf(parsers[j]!, new Set(), rr, this.activeTrivia, false))',
+      find: 'fs = union(fs, firstSetOf(parsers[j]!, new Set(), rr, undefined, false, true))',
+      replace: 'fs = union(fs, firstSetOf(parsers[j]!, new Set(), rr, this.activeTrivia, false, true))',
     }],
   },
 
@@ -738,8 +738,8 @@ export const DEFECTS = {
     why: 'first sets: a reference from a cleared region is read under the caller\'s scope, not the trivia it installs',
     edits: [{
       file: 'src/combinators/first-set.ts',
-      find: 'through ? triviaThroughRef(p, target, null) : activeTrivia, consuming)',
-      replace: 'activeTrivia, consuming)',
+      find: 'through ? triviaThroughRef(p, target, null) : activeTrivia, consuming, follow)',
+      replace: 'activeTrivia, consuming, follow)',
     }],
   },
 
@@ -878,8 +878,8 @@ export const DEFECTS = {
     why: 'regex first sets: a `v`-mode nested class is read as a flat one, up to its first `]`',
     edits: [{
       file: 'src/regex/first-set.ts',
-      find: 'if (nested) { i = k + 1; return charNode(any(), true) }',
-      replace: 'if (nested && false) { i = k + 1; return charNode(any(), true) }',
+      find: 'if (nested) { i = k + 1; return emptyString ? ANY : charNode(any(), true) }',
+      replace: 'if (nested && false) { i = k + 1; return emptyString ? ANY : charNode(any(), true) }',
     }],
   },
 

@@ -11,6 +11,36 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   was nothing to restore either, so
   `node('N', choice(choice(sequence(literal('a'), literal('b')), literal('x')), literal('a')))`
   on `a` built `N` with `a` twice.
+- **A sequence that opens with `attempt(x)` or `field(name, x)` no longer expects what follows
+  it.** The expected set read either as able to match empty, so an arm a first-character gate
+  declined named a token that could only come after `x`.
+  `sequence(attempt(literal('a')), literal('b'))` now expects `"a"`, not `"a"` and `"b"`.
+  An expected set still reads past a regex that can match zero width before a character, such
+  as `(?=a)` or `\b`, wrapped or not. It reads the regex with its flags, so `/\u{0}/u` and
+  `/[a--b]/v` are required characters, and `/[\q{}a]/v`, whose empty string member matches
+  nothing, is not. First-character gates and choice dispatch don't change.
+- **A named backreference such as `\k<x>` can match empty.** The regex reader took the `<x>`
+  after `\k` as required characters, so `/(?<x>a)?\k<x>/` read as always consuming. Expected
+  sets stopped at it, and the commitment, hold-gap and assembly checks treated it as consuming
+  when it could match nothing. Only a group name goes with `\k`, so in `/a\k<x|b>/`, where `\k` is
+  a literal `k`, the `|` still splits the pattern.
+- **A list with a minimum above one takes back its items when it fails in a choice.** Generated
+  code and `compile()` treated `sepBy(x, sep, { min: 2 })` and `many(x, { min: 2 })` as leaving
+  nothing behind on failure, so a later arm's tree also held the items the list kept.
+  `node('N', choice(sepBy(literal('a'), literal(','), { min: 2 }), literal('a')))` on `"a"` now
+  gives `[a]`, not `[a, a]`. A choice with such a list now marks and restores around that arm.
+- **`run()` no longer keeps a dispatch selector's leaf after `otherwise(x, { commit: false })`
+  fails.** The closure engine read every fallback as committing, so it skipped the rollback
+  and the next arm of an enclosing choice built a tree with the leaf twice.
+- **`expect()` is read as what it is: it matches empty, and it runs on any character.** It
+  recovers at zero width when its child fails, but nullability and first sets read it as its
+  child. So a repeat could keep an error from an item it gave back, a first-character gate could
+  skip an `expect()` that should have reported, and a gap held for one stayed consumed after it
+  recovered. All engines now agree. Resync sentinels still read through it. A grammar pays
+  where `expect()` opens a repeat item, a choice arm, a sequence or a separator, which lose a gate
+  there, and where it follows a lookahead under trivia, which can put a held gap back (+5.97%
+  calls on the closure engine). One that only uses it after a term that must consume compiles to
+  the same table.
 - **`assemblyProfile` picks sites that sit next to each other.** A call between generated
   code and the closure engine goes through a wrapper, so ranking by calls per byte alone left
   islands of generated code and could make more calls per parse than the static ranking. A
