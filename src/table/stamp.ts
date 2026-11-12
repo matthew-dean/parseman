@@ -14,7 +14,8 @@ import type { Combinator, ParseContext, ParseResult } from '../types.ts'
 import { FUSED_HOST_ELIDED, FUSED_HOST_MODE, TRIVIA_SCOPE_LABELS } from '../cst/host-mode.ts'
 import { GRAMMAR_COVERAGE_DEFINITIONS } from '../grammar-metadata.ts'
 import { reachableIps } from './inspect.ts'
-import { OP_NODE, OP_NODE_TRACK, OP_SCAN, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN } from './ops.ts'
+import { OP_LIVE, OP_NODE, OP_NODE_TRACK, OP_SCAN, OP_SCOPE, OP_SCOPE_CAP, OP_SCOPE_PLAIN } from './ops.ts'
+import { triviaScopesOf } from '../analysis/children.ts'
 import { covDefinitions, resolveTable, scanRefs, type ResolvedTable, type TableProgram, type TableRule } from './program.ts'
 
 const EMPTY_FX: string[] = []
@@ -147,6 +148,7 @@ export function stampRuleMap(
     const code = prog.code
     const scopes: Array<readonly string[] | undefined> = []
     const seen = new Set<number>()
+    let complete = true
     let roots = [prog.rules[names.find(n => out[n] === entry)!]!]
     while (roots.length > 0) {
       const next: number[] = []
@@ -157,11 +159,17 @@ export function stampRuleMap(
         if (op === OP_SCAN) for (const ref of scanRefs(prog.scans![code[ip + 1]!]!)) next.push(ref[0])
         else if ((op === OP_SCOPE || op === OP_SCOPE_CAP || op === OP_SCOPE_PLAIN) && code[ip + 1]! >= 0) {
           scopes.push(resolved.trivia[code[ip + 1]!]!._meta.triviaKindLabels)
+        } else if (op === OP_LIVE) {
+          // A combinator run live (a `ref()` defined after encoding, or a hand-written one)
+          // has its own scopes, walked as the interpreter walks them.
+          const live = triviaScopesOf(prog.fns[code[ip + 1]!] as Combinator<unknown>)
+          scopes.push(...live.scopes)
+          if (!live.complete) complete = false
         }
       }
       roots = next
     }
-    scopesByEntry.set(entry, scopes)
+    if (complete) scopesByEntry.set(entry, scopes)
     return scopes
   }
   for (let ri = 0; ri < names.length; ri++) {

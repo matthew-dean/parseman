@@ -3,6 +3,7 @@ import type { HostMode } from '../cst/host-mode.ts'
 import type { Runnable } from '../functional/run.ts'
 import { any } from './first-set.ts'
 import { ref } from './ref.ts'
+import { UnresolvedReference } from '../analysis/children.ts'
 import { markUnusedValues } from '../compiler/value-usage.ts'
 import { collectAfterLink } from './link-scope.ts'
 import { parser as grammarParser } from './grammar.ts'
@@ -196,7 +197,7 @@ export type KnownRuleNames<Base> = keyof {
 } & string
 
 const priorUnfilled = (key: string): Error =>
-  new Error(`compose: prior.${key} is read, but no grammar composed before it defines "${key}"`)
+  new UnresolvedReference(`compose: prior.${key} is read, but no grammar composed before it defines "${key}"`)
 
 /** The placeholder for a `prior.X` no earlier piece has defined yet. Composition
  * replaces it; running it, or analysing what it leads to, reports the name. */

@@ -9,11 +9,13 @@
  */
 import { describe, expect, it } from 'vitest'
 import {
-  choice, classifiedTrivia, compile, lines, literal, many, node, parser, ref, regex, rules, sequence, trivia,
+  choice, classifiedTrivia, compile, lines, literal, many, node, parser, ref, regex, rules, sequence, token, trivia,
   type Combinator,
 } from '../../src/index.ts'
 import { run } from '../../src/functional/run.ts'
 import { encodeTable } from '../../src/table/encode.ts'
+import { tableRules } from '../../src/table/assemble.ts'
+import { edgesOf } from '../../src/analysis/children.ts'
 import { hybridReaders, readers } from '../helpers/table-readers.ts'
 
 type G = Record<string, Combinator<unknown>>
@@ -126,6 +128,36 @@ describe("rootTrivia: { select: 'all' }", () => {
     expect(capture(run(g['R']!, 'a/*1*/c', ALL))).toEqual({ rows: [1, 6, 1, 6, 1], select: ['whitespace', 'comment', ''] })
   })
 
+  it('counts only an unresolved reference as a hole in the walk, and rethrows any other error', () => {
+    let holes = 0
+    expect(edgesOf(ref<unknown>(), () => { holes++ })).toEqual([])
+    expect(holes).toBe(1)
+    const broken = { _tag: 'lazy', _meta: {}, _def: { tag: 'lazy', thunk: () => { throw new TypeError('thunk bug') } } } as unknown as Combinator<unknown>
+    expect(() => edgesOf(broken, () => { holes++ })).toThrow('thunk bug')
+    expect(holes).toBe(1)
+  })
+
+  it('takes the labels of a rule defined after an earlier run, in every engine', () => {
+    const late = ref<unknown>()
+    const g = rules({ trivia: classifiedTrivia({ whitespace: regex(/[ \n]+/) }) }, () => ({
+      R: choice(sequence(literal('a'), literal('c')), sequence(literal('b'), late)),
+    })) as G
+    // A slot run live cannot be emitted, so the table legs are `compile()` and the closure engine.
+    const engines: Array<readonly [string, Record<string, unknown>]> = [
+      ['interpreter', g], ['compile', { R: compile(g['R']!) }], ['closure', tableRules(encodeTable(g))],
+    ]
+    for (const [name, e] of engines) expect(run(e['R'] as Combinator<unknown>, 'a c', ALL).ok, name).toBe(true)
+    late.define(parser({ trivia: classifiedTrivia({ note: regex(/#[^\n]*\n/) }) }, sequence(literal('x'), literal('y'))))
+    for (const [name, e] of engines) {
+      const r = run(e['R'] as Combinator<unknown>, 'bx#n\ny', ALL)
+      const rows = r.rootTrivia?.rows ?? []
+      const select = r.rootTrivia?.select ?? []
+      const marks: Array<[number, number, string]> = []
+      for (let i = 0; i < rows.length; i += 5) marks.push([rows[i + 2]!, rows[i + 3]!, select[rows[i + 4]!]!])
+      expect(marks, name).toEqual([[2, 5, 'note']])
+    }
+  })
+
   it('returns its rows as an Int32Array of exactly the rows kept, past the log\'s first growth', () => {
     const g = rules({ trivia: plain() }, () => ({ R: node('R', many(literal('a'))) })) as G
     const input = Array.from({ length: 200 }, () => 'a').join(' ')
@@ -142,6 +174,13 @@ describe("rootTrivia: { select: 'all' }", () => {
       R: choice(sequence(literal('a'), literal('x')), sequence(literal('a'), literal('y'))),
     })) as G
     expect(allRows(g, 'a /*1*/ y')).toEqual([[1, 8, '']])
+  })
+
+  it('keeps no row for a gap a token skips inside itself', () => {
+    const g = rules({ trivia: plain() }, () => ({
+      R: sequence(literal('a'), token(parser({ trivia: plain() }, sequence(literal('b'), literal('c'))))),
+    })) as G
+    expect(allRows(g, 'a b /*x*/ c')).toEqual([[1, 2, '']])
   })
 
   it('records inside a region declared opaque to root capture, as a label list does not', () => {

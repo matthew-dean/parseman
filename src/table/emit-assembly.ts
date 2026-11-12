@@ -1814,20 +1814,19 @@ ${rootCap ? 'ctx._rootTriviaCapture=sR\n' : ''}return v
         // the match is one contiguous run of input (`ops.ts:180-190`).
         return `${head}
 const sBuf=ctx._cstBuf,sCh=ctx._cstChildren,sLv=ctx._cstLeaves
-${isToken ? 'const sTri=ctx.trivia,sKinds=ctx.triviaKindLabels,sScan=_pfScan,sRtl=ctx._rootTriviaLog,sGtl=ctx._rootGapLog\n' : ''}const wasCap=${wasCap}
+${isToken ? 'const sTri=ctx.trivia,sKinds=ctx.triviaKindLabels,sScan=_pfScan,sRtl=ctx._rootTriviaLog\n' : ''}const wasCap=${wasCap}
 ${isToken ? `_pfScan=null
 ctx.trivia=undefined
 ctx.triviaKindLabels=undefined
 ` : ''}ctx._cstBuf=undefined
 ctx._cstChildren=undefined
 ctx._cstLeaves=undefined
-${isToken ? 'ctx._rootTriviaLog=undefined\nctx._rootGapLog=undefined\n' : ''}let v
+${isToken ? 'ctx._rootTriviaLog=undefined\n' : ''}let v
 try{v=${child}(input,pos,ctx)}finally{
 ${isToken ? `_pfScan=sScan
 ctx.trivia=sTri
 ctx.triviaKindLabels=sKinds
 ctx._rootTriviaLog=sRtl
-ctx._rootGapLog=sGtl
 ` : ''}ctx._cstBuf=sBuf
 ctx._cstChildren=sCh
 ctx._cstLeaves=sLv
@@ -1873,7 +1872,7 @@ return v
         if (scanId !== undefined) return `${head}
 const sTri=ctx.trivia,sKinds=ctx.triviaKindLabels,sScan=_pfScan
 const sBuf=ctx._cstBuf,sCh=ctx._cstChildren,sLv=ctx._cstLeaves
-const sRtl=ctx._rootTriviaLog,sGtl=ctx._rootGapLog
+const sRtl=ctx._rootTriviaLog
 const wasCap=ctx._cstBuf!==undefined||ctx._cstLeaves!==undefined
 _pfScan=null
 ctx.trivia=undefined
@@ -1882,7 +1881,6 @@ ctx._cstBuf=undefined
 ctx._cstChildren=undefined
 ctx._cstLeaves=undefined
 ctx._rootTriviaLog=undefined
-ctx._rootGapLog=undefined
 let e
 try{e=${run}(input,pos,ctx,SCANS[${scanId}])}finally{
 _pfScan=sScan
@@ -1892,7 +1890,6 @@ ctx._cstBuf=sBuf
 ctx._cstChildren=sCh
 ctx._cstLeaves=sLv
 ctx._rootTriviaLog=sRtl
-ctx._rootGapLog=sGtl
 }
 if(e<0)return FAIL
 const v=input.slice(pos,e)

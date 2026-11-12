@@ -1,5 +1,10 @@
 import type { Combinator, ParserDef } from '../types.ts'
 
+/** What a reference throws while its target does not exist yet: a `ref()` before `.define()`, or a
+ * `prior.X` no earlier grammar composed. A walk catches this, and only this, as a hole. Defined
+ * here, in an import-free module, so the walk can test for it without importing the combinators. */
+export class UnresolvedReference extends Error {}
+
 /**
  * Ordered structural children per def tag. Explicit rather than "every key that
  * holds a Combinator" because a SLOT's position is what near-duplicate detection
@@ -46,11 +51,41 @@ export function childrenOf(d: ParserDef): readonly Combinator<unknown>[] {
 
 /**
  * Every combinator a walk steps to from `p`: its structural children, then, for a `lazy`,
- * the rule it refers to. A reference that does not resolve yet (a rule the map has not
- * defined) has no target, so a walk over a grammar with a hole still finishes.
+ * the rule it refers to. A reference that does not resolve yet (`UnresolvedReference`)
+ * has no target, so a walk over a grammar with a hole still finishes; `onHole` hears of
+ * it, for a walk whose result must not outlive the hole. Any other error is rethrown.
  */
-export function edgesOf(p: Combinator<unknown>): Combinator<unknown>[] {
+export function edgesOf(p: Combinator<unknown>, onHole?: () => void): Combinator<unknown>[] {
   const kids = [...childrenOf(p._def)]
-  if (p._def.tag === 'lazy') { try { kids.push(p._def.thunk()) } catch { /* unresolved */ } }
+  if (p._def.tag === 'lazy') {
+    try { kids.push(p._def.thunk()) }
+    catch (e) {
+      if (!(e instanceof UnresolvedReference)) throw e
+      onHole?.()
+    }
+  }
   return kids
+}
+
+/**
+ * The labels of each trivia scope reachable from `entry`, for `select: 'all'`, and whether
+ * the walk reached every reference. A walk that met a hole is `complete: false`: a rule
+ * defined later can add scopes, so its caller must not keep the result.
+ */
+export function triviaScopesOf(entry: Combinator<unknown>): { scopes: Array<readonly string[] | undefined>; complete: boolean } {
+  const seen = new Set<Combinator<unknown>>()
+  const scopes: Array<readonly string[] | undefined> = []
+  const stack: Array<Combinator<unknown>> = [entry]
+  let complete = true
+  const hole = (): void => { complete = false }
+  while (stack.length > 0) {
+    const c = stack.pop()!
+    if (seen.has(c)) continue
+    seen.add(c)
+    scopes.push(c._meta.triviaKindLabels)
+    const ambient = (c._meta as { grammarTrivia?: Combinator<unknown> }).grammarTrivia
+    if (ambient !== undefined) stack.push(ambient)
+    stack.push(...edgesOf(c, hole))
+  }
+  return { scopes, complete }
 }

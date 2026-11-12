@@ -2,6 +2,7 @@ import type { Combinator, ParseContext, ParseResult, ParserMeta } from '../types
 import { any } from './first-set.ts'
 import { hasOwnTriviaBoundary } from './trivia-boundary.ts'
 import { scalarOf, type ScalarParser } from './scalar.ts'
+import { UnresolvedReference } from '../analysis/children.ts'
 
 function withRuleTrivia<T>(
   trivia: Combinator<unknown>, ctx: ParseContext, run: () => T,
@@ -33,7 +34,7 @@ function withRuleTrivia<T>(
  * one shared error spares a stack capture per probe. Parsing through an undefined
  * ref still throws a fresh error below, with the stack that locates it.
  */
-const UNDEFINED_REF = new Error('ref<T>() used before .define() was called')
+const UNDEFINED_REF = new UnresolvedReference('ref<T>() used before .define() was called')
 
 export function ref<T>(): Combinator<T> & { define(p: Combinator<T>): void } {
   let resolved: Combinator<T> | null = null

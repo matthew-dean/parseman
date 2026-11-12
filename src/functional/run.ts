@@ -2,7 +2,7 @@ import type { Combinator, ParseContext, ParseError, ParseResult, Span } from '..
 import { REC } from '../recovery/scan.ts'
 import { createParseContext } from '../parse-context.ts'
 import { allTriviaLabels, buildRootTriviaIndex, RootTriviaLog, type RootTriviaIndex } from '../cst/trivia-entries.ts'
-import { edgesOf } from '../analysis/children.ts'
+import { triviaScopesOf } from '../analysis/children.ts'
 /* `cst/host-mode.ts` and `cst/trivia-entries.ts` are import-free by design, so
  * this keeps the `parseman/run` closure minimal — see
  * test/unit/run-entry-closure.test.ts. */
@@ -386,19 +386,10 @@ const interpretedScopeLabels = new WeakMap<Combinator<unknown>, TriviaScopeLabel
 function interpretedTriviaScopeLabels(entry: Combinator<unknown>): TriviaScopeLabels {
   const cached = interpretedScopeLabels.get(entry)
   if (cached !== undefined) return cached
-  const seen = new Set<Combinator<unknown>>()
-  const scopes: Array<readonly string[] | undefined> = []
-  const stack: Array<Combinator<unknown>> = [entry]
-  while (stack.length > 0) {
-    const c = stack.pop()!
-    if (seen.has(c)) continue
-    seen.add(c)
-    scopes.push(c._meta.triviaKindLabels)
-    const ambient = (c._meta as { grammarTrivia?: Combinator<unknown> }).grammarTrivia
-    if (ambient !== undefined) stack.push(ambient)
-    stack.push(...edgesOf(c))
-  }
-  interpretedScopeLabels.set(entry, scopes)
+  const { scopes, complete } = triviaScopesOf(entry)
+  // A walk that met an undefined reference is redone next run: a later `.define()` can
+  // add scopes, and a kept list would drop their rows.
+  if (complete) interpretedScopeLabels.set(entry, scopes)
   return scopes
 }
 
@@ -490,8 +481,8 @@ export function runRule(given: Runnable | CompiledEntry, input: string, options:
     }
   }
   const selectedRootLog = captureRootTrivia
-    // Room for a row per 8 input characters, so a document rarely grows the log.
-    ? new RootTriviaLog(Math.max(320, (input.length >> 3) * 5))
+    // Room for a row per 8 input characters, up to 65536 rows; past that the log doubles.
+    ? new RootTriviaLog(Math.max(320, Math.min((input.length >> 3) * 5, (1 << 16) * 5)))
     : undefined
   /*
    * Refuse an artifact/host mismatch ONCE per parse, exactly as `parseDoc` and a
