@@ -178,6 +178,7 @@ Registered today:
 | differential | legs | plants |
 |---|---|---|
 | `scan-shape-oracle` | emitted straight-line scan vs sticky `RegExp.exec`, per regex, per position | `scan-class-narrow` |
+| `table-fuzz` | seeded generated grammars and inputs through `execRules`, closure and emitted `tableRules`, a bare table with no assembly, emitted and closure mixes at three size budgets, and the macro; whole results and leaf sinks compared | `list-min-rollback-off`, `uncommitted-fallback-clean` |
 | `table-lowering-identity` | interpreted vs the closures-only table (`tableRules` over the program with `asm: []`, not `compileRuleMap()`'s own output) vs `tableRules` (shipped) vs `execRules` (reference) | `emit-node-span`, `exec-node-span` |
 | `macro-optimize-contract` | the macro timing gate's structured acceptance errors vs the process exit status required CI reads | `macro-timing-exit-off` |
 | `lex-selected-vs-character` | selected lexical bodies vs the CHARACTER lowering of the same grammar, in `execRules`, closure and emitted `tableRules`; whole results and completion probes | `lex-choice-exclusive-off`, `lex-repeat-min-short`, `lex-rule-trivia-glued` |
@@ -220,7 +221,7 @@ Four of the registered differentials drive jess's grammars over jess's
 corpora, which live in an unpinned sibling checkout (`JESS_ROOT`) this repo does
 not vendor. Where that checkout is absent they are reported UNPROVEN on their own
 summary line — never as passing, and never silently omitted. CI runs the plain
-mode and proves the eight self-contained ones; `--strict` makes an UNPROVEN entry a
+mode and proves the self-contained ones; `--strict` makes an UNPROVEN entry a
 failure and is what a release runs, on a box where the jess checkout exists.
 
 ## Adding a differential
