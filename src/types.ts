@@ -379,12 +379,6 @@ export type ParseContext = {
    * label through this once-built table, so composed grammars may use different
    * label orders without a per-chunk linear selected-label search. */
   _rootTriviaKindIndex?: Readonly<Record<string, number>> | undefined
-  /** The root log when it takes gaps of unlabelled trivia (`select: 'all'`), else
-   * undefined; its `gapKind` is the row kind. Decided once at run start, so recording a
-   * gap is one test and the stores. Never cleared: a token or a recovery probe clears
-   * `_rootTriviaLog`, and every gap is recorded only past a test of that or of a CST buffer,
-   * which those clear too. */
-  _rootGapLog?: RootTriviaLog | undefined
   /** Selected-root capture checks local trivia classification once per scope. */
   _rootTriviaStrictScopes?: boolean | undefined
   /**

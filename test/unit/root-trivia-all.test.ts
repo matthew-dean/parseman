@@ -16,6 +16,10 @@ import { run } from '../../src/functional/run.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { tableRules } from '../../src/table/assemble.ts'
 import { edgesOf } from '../../src/analysis/children.ts'
+import { recordUnlabelledGap } from '../../src/combinators/trivia-skip.ts'
+import { beginCstNodeCapture, endCstNodeCapture } from '../../src/cst/capture-buffer.ts'
+import { RootTriviaLog } from '../../src/cst/trivia-entries.ts'
+import { createParseContext } from '../../src/parse-context.ts'
 import { hybridReaders, readers } from '../helpers/table-readers.ts'
 
 type G = Record<string, Combinator<unknown>>
@@ -181,6 +185,44 @@ describe("rootTrivia: { select: 'all' }", () => {
       R: sequence(literal('a'), token(parser({ trivia: plain() }, sequence(literal('b'), literal('c'))))),
     })) as G
     expect(allRows(g, 'a b /*x*/ c')).toEqual([[1, 2, '']])
+  })
+
+  it('keeps no row for a gap a token skips while a node inside it captures trivia, in every engine', () => {
+    const host = Object.assign(
+      (type: string, children: unknown, _f: unknown, span: unknown) => ({ type, children, span }),
+      { _parsemanCstOutput: true },
+    )
+    const g = rules({ trivia: plain() }, () => ({
+      R: node('N', sequence(token(node('T', parser({ trivia: plain(), captureTrivia: true }, sequence(literal('b'), literal('c'))))), literal('d'))),
+    })) as G
+    const options = { build: host, ...ALL } as const
+    const prog = encodeTable(g, { hostMode: 'cst' })
+    for (const [name, R] of [['interpreter', g['R']!], ...readers(prog).map(([n, t]) => [n, t['R']!] as const)] as const) {
+      const r = run(R, 'b /*x*/ c d', options as never)
+      expect(r.ok, name).toBe(true)
+      expect([...r.rootTrivia!.rows], name).toEqual([9, 10, 9, 10, 0])
+    }
+  })
+
+  it('records a gap only in the root log the context holds, and only when that log takes gaps', () => {
+    // A token or a recovery probe clears `_rootTriviaLog`; no engine reaches the recorder
+    // there today, so this pins the recorder itself: with the log cleared and a capture
+    // buffer open, the gap goes to the buffer and nowhere else.
+    const ctx = createParseContext()
+    const all = new RootTriviaLog()
+    all.gapKind = 0
+    ctx._rootTriviaLog = all
+    recordUnlabelledGap(ctx, 1, 2)
+    expect(all.buf.subarray(0, all.length)).toEqual(Int32Array.of(1, 2, 1, 2, 0))
+    ctx._rootTriviaLog = undefined
+    const saved = beginCstNodeCapture(ctx)
+    recordUnlabelledGap(ctx, 3, 4)
+    expect(endCstNodeCapture(ctx, saved).triviaLog.slice(0, 2)).toEqual([3, 4])
+    expect(all.length).toBe(5)
+    const labelled = new RootTriviaLog()
+    ctx._rootTriviaLog = labelled
+    recordUnlabelledGap(ctx, 5, 6)
+    expect(labelled.length).toBe(0)
   })
 
   it('records inside a region declared opaque to root capture, as a label list does not', () => {

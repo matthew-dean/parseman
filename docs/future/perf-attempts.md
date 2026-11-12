@@ -417,15 +417,20 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
       against 12.7 to 13.7 MB at 4 bytes a character. The presize stops at 65,536 rows
       (1.25 MB); a larger document's log doubles from there.
     - Whether the root log takes unlabelled gaps, and under which kind, is decided at run
-      start. It's one field, `_rootGapLog`, so a gap is one test plus the stores. The token
-      and probe sites don't touch it: every gap is recorded past a test of `_rootTriviaLog`
-      or of a CST buffer, which those sites clear, so saving and clearing `_rootGapLog` there
-      too only cost three property operations per token. Before, every gap tested
-      the log, the capture mode and the kind, and the kind lookup hit a prototype-less index
-      that V8 keeps as a dictionary.
+      start and held on the log itself, as `gapKind` (-1 under a label list). The recorder
+      reads `_rootTriviaLog`, so a gap is a load and two tests plus the stores, and a gap
+      inside a token or probe, which clear `_rootTriviaLog`, can never reach the document
+      log. A first cut kept the decision in a second context field, `_rootGapLog`, one load
+      and test cheaper, but nothing tied it to `_rootTriviaLog`, so the token and probe
+      sites stayed correct only because no engine reaches the recorder there with a capture
+      buffer open. Before, every gap tested the log, the capture mode and the kind, and
+      the kind lookup hit a prototype-less index that V8 keeps as a dictionary.
   - Call counts: every row is below `main`, warm and cold. Jess label-list rows take +1 call
     and +1 branch test per parse for the run-start decision.
-  - Result, `'all'` against 0.61.9 with `_triviaLog`, paired:
+    The `gapKind` test adds one branch test per gap where a root log is open: +10,642 to
+    +12,650 per parse on the closure and emitted CSS and Less rows, which stay below `main`.
+  - Result, `'all'` against 0.61.9 with `_triviaLog`, paired, taken on the `_rootGapLog` cut
+    (the shipped recorder's extra load and test per gap under capture was not re-timed):
     - rollback cases: −5.2% to +1.4%;
     - Less workloads: −1.6% and −2.0%;
     - CSS workload: +0.1% to +0.5%;
@@ -436,7 +441,7 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
       the recorder call, its CST test and the `'all'` marks and rollbacks around attempts.
     - The xproc gate compares the plain parse on both sides and reports the `'all'` rows
       without gating them.
-  - Candidates, not tried: test `_rootGapLog` inline at the emitted and closure call sites
+  - Candidates, not tried: test `gapKind` inline at the emitted and closure call sites
     before calling the recorder (costs emitted bytes), and move the CST test off the gap
     path.
   - Breaking for printed factories (two helper signatures), so it declares 0.62.0 with an

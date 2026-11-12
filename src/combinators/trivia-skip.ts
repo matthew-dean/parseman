@@ -422,8 +422,10 @@ export function scanTriviaCompact(input: string, cur: number, ctx: ParseContext)
  */
 export function recordUnlabelledGap(ctx: ParseContext, start: number, end: number): void {
   // `_rootTriviaCapture` needs no test: an opaque region sets it to `true` under `'all'`.
-  const rootLog = ctx._rootGapLog
-  if (rootLog !== undefined) {
+  // A token clears `_rootTriviaLog`, so a gap inside one never reaches the document log,
+  // whatever capture buffer is open there.
+  const rootLog = ctx._rootTriviaLog
+  if (rootLog !== undefined && rootLog.gapKind >= 0) {
     const n = rootLog.length
     if (n + 5 > rootLog.buf.length) growRootTriviaLog(rootLog, 5)
     const b = rootLog.buf

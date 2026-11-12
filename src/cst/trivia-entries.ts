@@ -77,7 +77,8 @@ const SELECTED_ROOT_STRIDE = 5
 export class RootTriviaLog {
   length = 0
   buf: Int32Array
-  /** The row kind of a gap of unlabelled trivia: `select`'s `''`, or -1 without one. */
+  /** The row kind of a gap of unlabelled trivia: `select`'s `''` under `'all'`, set once at
+   * run start, or -1 under a label list, which records no gap. */
   gapKind = -1
   constructor(capacity = 320) {
     this.buf = new Int32Array(capacity)

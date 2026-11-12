@@ -65,7 +65,7 @@ function freshSinks(
     trackLines: false,
     ...ambient,
     ...(captures
-      ? { _rootTriviaLog: sinks.triviaLog, _rootTriviaKindIndex: allTriviaKinds(ambient), _rootGapLog: sinks.triviaLog, _cstLeaves: sinks.cstLeaves }
+      ? { _rootTriviaLog: sinks.triviaLog, _rootTriviaKindIndex: allTriviaKinds(ambient), _cstLeaves: sinks.cstLeaves }
       : {}),
     _errors: sinks.errors,
   } as unknown as ParseContext

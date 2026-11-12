@@ -516,10 +516,7 @@ export function runRule(given: Runnable | CompiledEntry, input: string, options:
   if (captureRootTrivia) {
     ctx._rootTriviaLog = selectedRootLog!
     ctx._rootTriviaKindIndex = makeSelectedRootLabelIndex(rootTriviaSelection)
-    if (allTrivia) {
-      selectedRootLog!.gapKind = ctx._rootTriviaKindIndex['']!
-      ctx._rootGapLog = selectedRootLog
-    }
+    if (allTrivia) selectedRootLog!.gapKind = ctx._rootTriviaKindIndex['']!
     // A label list is answered only by classified scopes; `'all'` takes unlabelled
     // scopes too, under `''`.
     ctx._rootTriviaStrictScopes = !allTrivia

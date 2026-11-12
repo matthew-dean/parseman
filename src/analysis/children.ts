@@ -60,6 +60,7 @@ export function edgesOf(p: Combinator<unknown>, onHole?: () => void): Combinator
   if (p._def.tag === 'lazy') {
     try { kids.push(p._def.thunk()) }
     catch (e) {
+      // Two copies of parseman each have their own class, so a grammar built with one and walked by the other rethrows here.
       if (!(e instanceof UnresolvedReference)) throw e
       onHole?.()
     }

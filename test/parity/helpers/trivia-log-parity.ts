@@ -77,7 +77,7 @@ function allTriviaContext(base: ParseContext, labels: readonly string[] = []): {
   const kinds: Record<string, number> = {}
   labels.forEach((label, i) => { kinds[label] ??= i })
   kinds[''] = labels.length
-  return { ctx: { ...base, _rootTriviaLog: rows, _rootTriviaKindIndex: kinds, _rootGapLog: rows }, rows }
+  return { ctx: { ...base, _rootTriviaLog: rows, _rootTriviaKindIndex: kinds }, rows }
 }
 
 /** Run interpreted + compiled, each recording the document's whole trivia log. */
