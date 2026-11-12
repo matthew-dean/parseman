@@ -63,12 +63,25 @@ export const DEFECTS = {
     why: 'emitted table engine: an optional or many passes on a committed failure with its captures',
     edits: [{
       file: 'src/analysis/commitment.ts',
-      find: 'return commits(d.parser) && mayLeavePartialCapture(d.parser, seen, triviaActive, throughNodes, restores, commits, resolve)',
+      find: 'return commits(d.parser) && mayLeavePartialCapture(d.parser, seen, triviaActive, throughNodes, restores, targets, commits)',
       replace: 'return false',
     }, {
       file: 'src/analysis/commitment.ts',
       find: "case 'many':\n      return commits(d.parser)\n",
       replace: "case 'many':\n      return false\n",
+    }],
+  },
+  /**
+   * The commit walk reads each reference through its thunk instead of the rule the
+   * merged map binds to its name, so a base piece's reference to an overridden rule
+   * misses the override's committed failure and the table keeps the failed captures.
+   */
+  'ref-targets-thunk-first': {
+    why: 'table census: a reference reads as the base piece\'s rule, not the merged map\'s override',
+    edits: [{
+      file: 'src/analysis/commitment.ts',
+      find: 'const t = targets.get(p)\n      return t === undefined ? true : [t]',
+      replace: 'const t = THUNK_TARGETS.get(p)\n      return t === undefined ? true : [t]',
     }],
   },
   /**

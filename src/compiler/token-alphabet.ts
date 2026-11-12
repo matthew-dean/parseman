@@ -1334,9 +1334,18 @@ export function winnerWrapsReference(
 }
 
 /** Final winner resolution is authoritative; a stale construction thunk is fallback only. */
+/**
+ * A resolver that can also keep what each reference it resolves reads as: the table
+ * encoder passes one, and its rollback census reads references through `targets`.
+ */
+type RecordingResolver = ((name: string) => Combinator<unknown> | undefined) & {
+  readonly targets?: Map<Combinator<unknown>, Combinator<unknown>>
+}
+
+/** What the reference `parser` reads as: its rule by name first, else its thunk. */
 function resolvedLazyTarget(
   parser: Combinator<unknown>,
-  resolve?: (name: string) => Combinator<unknown> | undefined,
+  resolve?: RecordingResolver,
 ): Combinator<unknown> | undefined {
   const def = parser._def
   if (def.tag !== 'lazy') return undefined
@@ -1347,9 +1356,16 @@ function resolvedLazyTarget(
     // with its OWN name. Resolving that name returns the same object, not the
     // referenced winner; only a distinct winner supersedes the construction
     // thunk.
-    if (winner !== undefined && !winnerWrapsReference(winner, parser)) return winner
+    if (winner !== undefined && !winnerWrapsReference(winner, parser)) {
+      resolve.targets?.set(parser, winner)
+      return winner
+    }
   }
-  try { return def.thunk() } catch { return undefined }
+  try {
+    const target = def.thunk()
+    resolve?.targets?.set(parser, target)
+    return target
+  } catch { return undefined }
 }
 
 /** Direct sub-parsers of a def, resolving a lazy through `resolve` when its own thunk is a hole. */

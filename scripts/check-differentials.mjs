@@ -190,6 +190,15 @@ const REGISTRY = [
     ],
   },
   {
+    id: 'table-compose-merge',
+    needs: 'repo',
+    file: 'test/unit/table-compose-merge.test.ts',
+    legs: 'a merged rule map encoded once (tableRules) vs fuseInterpreted, value, span and expected compared',
+    cleanExit: 0,
+    run: () => runCmd(['node_modules/vitest/vitest.mjs', 'run', '--reporter=dot', 'test/unit/table-compose-merge.test.ts']),
+    plants: [{ defect: 'ref-targets-thunk-first', expect: 'moves' }],
+  },
+  {
     id: 'table-lowering-identity',
     needs: 'repo',
     file: 'test/unit/table-identity.test.ts (bench/table-lowering-identity.ts)',

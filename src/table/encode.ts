@@ -4,7 +4,7 @@ import { factorPrefixArms, factorSharedEnds, factoredChoices } from './factor-ch
 import type { AutoNotCheck, Combinator, FirstSet, ParserDef } from '../types.ts'
 import { classifyFinalChoice, empty, firstSetOf, intersects, matchesEmpty, union, winnerForRef, type RefResolver } from '../combinators/first-set.ts'
 import { childrenOf } from '../analysis/gating.ts'
-import { capturesLeaf, mayCommitFailure, mayLeavePartialCapture, reachesMarked } from '../analysis/commitment.ts'
+import { capturesLeaf, mayCommitFailure, mayLeavePartialCapture, reachesMarked, type RefTargets } from '../analysis/commitment.ts'
 import { getCoreLiteralValue } from '../combinators/choice.ts'
 import { deriveExpected } from '../combinators/expect.ts'
 import { assertionFailureExpected, directTerminalFailureExpected } from '../combinators/expected.ts'
@@ -733,9 +733,15 @@ class Encoder {
   /** TOKEN bodies are an all-program decision. A complete occurrence inside an
    * otherwise incomplete final graph stays on CHARACTER with every sibling. */
   readonly selectLexicalBodies: boolean
-  constructor(settings: TableSettings, selectLexicalBodies: boolean, winners: Readonly<Record<string, Combinator<unknown>>>) {
+  constructor(
+    settings: TableSettings,
+    selectLexicalBodies: boolean,
+    winners: Readonly<Record<string, Combinator<unknown>>>,
+    targets: RefTargets,
+  ) {
     this.winners = winners
     this.rr = name => winners[name]
+    this.targets = targets
     this.settings = settings
     this.track = settings.trackLines === true
     this.selectLexicalBodies = selectLexicalBodies
@@ -863,6 +869,13 @@ class Encoder {
   private readonly rr: RefResolver
 
   /**
+   * What each reference reads as, recorded once by the capability walk
+   * (`resolvedLazyTarget`) with the same by-name rule as `case 'lazy'` below. The
+   * rollback census reads references through it (`RefTargets`).
+   */
+  private readonly targets: RefTargets
+
+  /**
    * Whether a failed ordered-choice arm can leave state that the enclosing
    * choice must restore before trying its successor.
    *
@@ -879,19 +892,18 @@ class Encoder {
   ): boolean {
     const refName = (p as unknown as { _ruleName?: string })._ruleName
     if (refName === undefined) {
-      return mayLeavePartialCapture(p, new Set(), true, throughNodes, this.restoresArms, this.commits, this.rr) || this.reachesSideWriter(p)
-        || ((autoNot?.length ?? 0) > 0 && capturesLeaf(p))
+      return mayLeavePartialCapture(p, new Set(), true, throughNodes, this.restoresArms, this.targets, this.commits) || this.reachesSideWriter(p)
+        || ((autoNot?.length ?? 0) > 0 && capturesLeaf(p, undefined, this.targets))
     }
     // A rule is asked about from every site that references it, so its walk is kept.
-    const winner = this.winners[refName]
-    const root = winner !== undefined && !winnerWrapsReference(winner, p) ? winner : p
+    const root = this.targets.get(p) ?? p
     const memo = this.leavesState[Number(throughNodes)]!
     let leaves = memo.get(root)
     if (leaves === undefined) {
-      leaves = mayLeavePartialCapture(root, new Set(), true, throughNodes, this.restoresArms, this.commits, this.rr) || this.reachesSideWriter(root)
+      leaves = mayLeavePartialCapture(root, new Set(), true, throughNodes, this.restoresArms, this.targets, this.commits) || this.reachesSideWriter(root)
       memo.set(root, leaves)
     }
-    return leaves || ((autoNot?.length ?? 0) > 0 && capturesLeaf(root))
+    return leaves || ((autoNot?.length ?? 0) > 0 && capturesLeaf(root, undefined, this.targets))
   }
 
   /** The rollback census of an `optional()` or `attempt()` row at `ip` over `child`. */
@@ -924,11 +936,8 @@ class Encoder {
       case 'unknown':
         return true
       case 'lazy': {
-        const name = (node as unknown as { _ruleName?: string })._ruleName
-        const winner = name === undefined ? undefined : this.winners[name]
-        if (winner !== undefined && !winnerWrapsReference(winner, node)) return [winner]
-        try { return [def.thunk()] }
-        catch { return true }
+        const target = this.targets.get(node)
+        return target === undefined ? true : [target]
       }
       default:
         return childrenOf(def)
@@ -1373,7 +1382,7 @@ class Encoder {
     if (follow === undefined || follow === 'end') return undefined
     const rr = this.rr
     const { next, boundary } = follow
-    if (matchesEmpty(next, new Set(), rr) || mayCommitFailure(next, rr, this.commitFailureMemo)) return undefined
+    if (matchesEmpty(next, new Set(), rr) || mayCommitFailure(next, this.targets, this.commitFailureMemo)) return undefined
     // A miss reports the set `next` fails with at its start, so only a row with
     // one such set is gated: a terminal, which fails with its own spelling
     // (`directTerminalFailureExpected` — `keywords()` and `word()` say `keyword`,
@@ -1556,7 +1565,7 @@ class Encoder {
         // Arms that differ in one term are that term's choice (`factor-choice.ts`).
         // Not under a coverage plan, which credits the arms as written.
         if (this.plan === undefined) {
-          const shared = factorSharedEnds(d)
+          const shared = factorSharedEnds(d, this.targets, this.commitFailureMemo)
           if (shared !== undefined) {
             // Factored as an `attempt`, which restores what the choice would have.
             this.restoringChoices.add(p)
@@ -1789,7 +1798,7 @@ class Encoder {
             if (logMask !== 0) this.choiceLogRollbackMasks.set(head, logMask)
           })
         }
-        const nonCommitting = arms.every(arm => !mayCommitFailure(arm, rr, this.commitFailureMemo))
+        const nonCommitting = arms.every(arm => !mayCommitFailure(arm, this.targets, this.commitFailureMemo))
         if (nonCommitting) this.nonCommittingChoiceSites.add(head)
         ;(!exclusive && nonCommitting ? this.restoringChoices : this.leakingChoices).add(p)
         return head
@@ -2432,12 +2441,8 @@ class Encoder {
     for (const c of this.restoringChoices) if (!this.leakingChoices.has(c)) restores.add(c)
     this.restoresArms = restores
     const memo = this.commitFailureMemo
-    // A named child is asked about as the rule the map binds to its name, as emission
-    // reads it: in a merged map a base piece's thunk reaches the rule an override replaced.
-    this.commits = child => {
-      const rule = child._def.tag === 'lazy' ? winnerForRef(child, this.rr) ?? child : child
-      return memo.get(rule) ?? mayCommitFailure(rule, this.rr, memo)
-    }
+    const targets = this.targets
+    this.commits = child => memo.get(child) ?? mayCommitFailure(child, targets, memo)
     for (const census of this.logCensus) census()
     return ownTableProgram({
       code: this.code, k: this.k, fns: this.fns, cc: this.cc,
@@ -2556,9 +2561,11 @@ export function encodeTableProgram(
   // Collect once from the FINAL winner-resolved graph. Sorting affects only
   // content-id discovery; ordinary rule/code order remains the caller's order.
   const lexicalRoots = [...names].sort().map(name => ruleMap[name]!)
-  const resolveLexical = (name: string): Combinator<unknown> | undefined => ruleMap[name]
+  // The walk records what each reference it resolves reads as (`resolvedLazyTarget`).
+  const targets = new Map<Combinator<unknown>, Combinator<unknown>>()
+  const resolveLexical = Object.assign((name: string): Combinator<unknown> | undefined => ruleMap[name], { targets })
   const capabilities = collectLexicalCapabilities(lexicalRoots, resolveLexical)
-  const enc = new Encoder(resolvedSettings, capabilities.capabilityComplete, ruleMap)
+  const enc = new Encoder(resolvedSettings, capabilities.capabilityComplete, ruleMap, targets)
   for (const name of names) enc.encodeRule(name, ruleMap[name]!)
   const prog = enc.finish()
   return { prog, fnSrcs: enc.fnSrcs }

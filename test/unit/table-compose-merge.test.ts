@@ -137,6 +137,45 @@ describe('a MERGED rule map encodes to the parser compose() means', () => {
     expect((table.value as { children: Array<{ value: unknown }> }).children.map(c => c.value)).toEqual(['-', 'foo'])
   })
 
+  // The overridden reference is inside the repeated item, not the item itself.
+  const nestedOverride = (): Entries[] => [
+    entriesOf(rules<Record<string, Combinator<unknown>>>(g => ({
+      Item: sequence(literal('-'), regex(/[a-z]+/), literal('?')) as Combinator<unknown>,
+      R: node('N', choice(
+        attempt(optional(sequence(literal('+'), g.Item!)), { contain: true }),
+        sequence(literal('+'), literal('-'), regex(/[a-z]+/)),
+      )) as Combinator<unknown>,
+    }))),
+    entriesOf(rules<Record<string, Combinator<unknown>>>(() => ({
+      Item: sequence(literal('-'), dispatch(regex(/[a-z]+/), when('foo', sequence(routed(), literal('!'))))) as Combinator<unknown>,
+    }))),
+  ]
+
+  it('takes back the captures when the override sits inside the repeated item', () => {
+    const table = expectIdentical(nestedOverride, 'R', '+-foo')
+    expect((table.value as { children: Array<{ value: unknown }> }).children.map(c => c.value)).toEqual(['+', '-', 'foo'])
+  })
+
+  // The override makes a later term of a sequence fallible, after an earlier term
+  // captured. The override is a node, so it keeps its own captures to itself.
+  const fallibleOverride = (): Entries[] => [
+    entriesOf(rules<Record<string, Combinator<unknown>>>(g => ({
+      Item: literal('?') as Combinator<unknown>,
+      R: node('N', choice(
+        attempt(sequence(literal('-'), optional(g.Item!)), { contain: true }),
+        sequence(literal('-'), regex(/[a-z]+/)),
+      )) as Combinator<unknown>,
+    }))),
+    entriesOf(rules<Record<string, Combinator<unknown>>>(() => ({
+      Item: node('M', dispatch(regex(/[a-z]+/), when('foo', sequence(routed(), literal('!'))))) as Combinator<unknown>,
+    }))),
+  ]
+
+  it('takes back an earlier term when the override makes a later one fail', () => {
+    const table = expectIdentical(fallibleOverride, 'R', '-foo')
+    expect((table.value as { children: Array<{ value: unknown }> }).children.map(c => c.value)).toEqual(['-', 'foo'])
+  })
+
   /**
    * A HOLE FILLED BY A LATER PIECE — the shape `compileLinkableTable` keeps IR
    * for. Neither piece is a parser alone; the merge is what makes one.

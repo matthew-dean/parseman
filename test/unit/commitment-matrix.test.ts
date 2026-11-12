@@ -231,10 +231,10 @@ describe('commitment proof predicates', () => {
 
     const imported = throwingRef() as Combinator<unknown> & { _ruleName?: string }
     imported._ruleName = 'Imported'
-    expect(mayCommitFailure(imported, name =>
-      name === 'Imported' ? literal('x') : undefined)).toBe(false)
-    expect(mayCommitFailure(imported, name =>
-      name === 'Imported' ? cut : undefined)).toBe(true)
+    // A reference reads as what `targets` records for it, even one whose thunk throws.
+    expect(mayCommitFailure(imported, new Map([[imported, literal('x')]]))).toBe(false)
+    expect(mayCommitFailure(imported, new Map([[imported, cut]]))).toBe(true)
+    expect(mayCommitFailure(imported, new Map())).toBe(true)
   })
 
   it('answers every node of a cycle exactly from one shared memo, whichever is asked first', () => {
