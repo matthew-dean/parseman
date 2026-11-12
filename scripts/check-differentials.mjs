@@ -177,6 +177,18 @@ const REGISTRY = [
     plants: [{ defect: 'scan-class-narrow', expect: 'moves' }],
   },
   {
+    id: 'table-fuzz',
+    needs: 'repo',
+    file: 'test/parity/table-fuzz.test.ts',
+    legs: 'seeded generated grammars and inputs through execRules, closure and emitted tableRules, a bare table with no assembly, emitted and closure mixes at three size budgets, and the macro, whole results and leaf sinks compared',
+    cleanExit: 0,
+    run: () => runCmd(['node_modules/vitest/vitest.mjs', 'run', '--reporter=dot', 'test/parity/table-fuzz.test.ts']),
+    plants: [
+      { defect: 'list-min-rollback-off', expect: 'moves' },
+      { defect: 'uncommitted-fallback-clean', expect: 'moves' },
+    ],
+  },
+  {
     id: 'table-lowering-identity',
     needs: 'repo',
     file: 'test/unit/table-identity.test.ts (bench/table-lowering-identity.ts)',
