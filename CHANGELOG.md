@@ -58,6 +58,12 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   Against 0.61.9, branch tests per parse fall 1.8% to 10.8% on every call-count row (Less
   `app.less` AST −8.46%, CSS `site.css` AST −10.81%) and calls by up to 3.7% (Less AST −3.74%);
   no row rises, on the first parse or after warmup.
+- **A failed choice inside another choice, an `optional` or an `attempt` no longer leaves its
+  arm's captures in `compile()` and generated code.** A choice whose openers are disjoint runs
+  its one arm with nothing of its own to restore, and the analysis told the enclosing site there
+  was nothing to restore either, so
+  `node('N', choice(choice(sequence(literal('a'), literal('b')), literal('x')), literal('a')))`
+  on `a` built `N` with `a` twice.
 - **A sequence that opens with `attempt(x)` or `field(name, x)` no longer expects what follows
   it.** The expected set read either as able to match empty, so an arm a first-character gate
   declined named a token that could only come after `x`.

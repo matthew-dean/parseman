@@ -136,12 +136,14 @@ describe('commitment proof predicates', () => {
       literal('x'), regex(/x/), keywords(['x']), gate(() => true), adjacent(),
       not(literal('x')), peek(literal('x')), trivia(literal('x')), token(literal('x')),
       leaf(literal('x'), value => value), scanTo(literal(';')), unknown(), structuralNode(),
-      choice(sequence(literal('x'), literal('!')), literal('y')), attempt(sequence(literal('x'), literal('!'))),
+      choice(literal('x'), literal('y')), attempt(sequence(literal('x'), literal('!'))),
       optional(sequence(literal('x'), literal('!'))), many(sequence(literal('x'), literal('!'))),
       oneOrMore(sequence(literal('x'), literal('!'))), sepBy(literal('x'), literal(','), { min: 1 }),
     ]) expect(mayLeavePartialCapture(isolated)).toBe(false)
 
     expect(mayLeavePartialCapture(sequence(literal('x'), literal('!')))).toBe(true)
+    // Disjoint openers lower to an exclusive dispatch, which restores nothing itself.
+    expect(mayLeavePartialCapture(choice(sequence(literal('x'), literal('!')), literal('y')))).toBe(true)
     expect(mayLeavePartialCapture(sequence(gate(() => true), literal('!')), new Set(), false)).toBe(false)
     expect(mayLeavePartialCapture(sequence(gate(() => true), literal('!')), new Set(), true)).toBe(true)
     expect(mayLeavePartialCapture(transform(sequence(literal('x'), literal('!')), value => value))).toBe(true)
