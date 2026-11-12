@@ -14,13 +14,18 @@
  * also build a `Stylesheet` with no recovered error or diagnostic: a count over a
  * failed parse measures how early it failed. A jess AST parse passes the options jess's `parse` passes, and runs its
  * reducers over the vendored `@jesscss/core`, so the count is of the path jess ships.
+ *
+ * `cold` (workloads only) counts instead what a new parser costs before it settles:
+ * compiling the grammar (`make()`) and its first parse, together. The workloads run in
+ * one process, so a later one can find a module-level cache an earlier one filled; both
+ * sides run them in the same order.
  */
 import { readFileSync } from 'node:fs'
 import { assertWorkloadFullyConsumed } from '../workloads/consumption.ts'
 import { COUNTER, instrumentFunctionBody } from './instrument.ts'
 
 export type WorkerArgs =
-  | { kind: 'workloads'; module: string; engine: 'emitted' | 'closure' }
+  | { kind: 'workloads'; module: string; engine: 'emitted' | 'closure'; cold?: boolean }
   | { kind: 'jess'; module: string; cases: Array<{ id: string; dialect: string; input: string; cst: boolean }> }
 
 export type Counts = { calls: number; branches: number }
@@ -65,13 +70,23 @@ const parseState = (dialect: string, source: string): ParseState => {
 
 type Case = { id: string; input: string; parse: () => unknown; accept: (result: unknown) => void }
 const cases: Case[] = []
+const out: Record<string, Counts> = {}
 const mod = await import(args.module) as Record<string, unknown>
 
 if (args.kind === 'workloads') {
   const buildWorkloads = mod['buildWorkloads'] as () => Array<{ id: string; input: string; make: () => { parse: () => unknown } }>
   for (const w of buildWorkloads()) {
+    k.c = 0
+    k.b = 0
     const built = w.make()
-    cases.push({ id: w.id, input: w.input, parse: built.parse, accept: r => assertWorkloadFullyConsumed('call-count', w.id, w.input, r) })
+    const accept = (r: unknown): void => assertWorkloadFullyConsumed('call-count', w.id, w.input, r)
+    if (args.cold === true) {
+      const result = built.parse()
+      out[w.id] = { calls: k.c, branches: k.b }
+      accept(result)
+      continue
+    }
+    cases.push({ id: w.id, input: w.input, parse: built.parse, accept })
   }
 } else {
   type Run = (entry: unknown, input: string, opts: object) => unknown
@@ -101,10 +116,9 @@ if (args.kind === 'workloads') {
   }
 }
 
-if (cases.length === 0) throw new Error('nothing to count: no workloads or cases were given')
+if (cases.length === 0 && Object.keys(out).length === 0) throw new Error('nothing to count: no workloads or cases were given')
 
 const SETTLE_LIMIT = 20
-const out: Record<string, Counts> = {}
 for (const c of cases) {
   if (c.input.trim().length === 0) throw new Error(`${c.id}: the input is empty, so its count would measure nothing`)
   c.accept(c.parse())
