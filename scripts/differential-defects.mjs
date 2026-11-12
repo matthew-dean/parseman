@@ -55,6 +55,23 @@ export const DEFECTS = {
     }],
   },
   /**
+   * The emitted engine stops marking a rollback for an optional or many whose item
+   * can commit a failure, so a contained attempt around it keeps the item's captures
+   * and the next arm builds a tree holding them twice. Shipped as #303.
+   */
+  'repeat-commit-rollback-off': {
+    why: 'emitted table engine: an optional or many passes on a committed failure with its captures',
+    edits: [{
+      file: 'src/analysis/commitment.ts',
+      find: 'return commits(d.parser) && mayLeavePartialCapture(d.parser, seen, triviaActive, throughNodes, restores, commits)',
+      replace: 'return false',
+    }, {
+      file: 'src/analysis/commitment.ts',
+      find: "case 'many':\n      return commits(d.parser)\n",
+      replace: "case 'many':\n      return false\n",
+    }],
+  },
+  /**
    * The closure engine reads an uncommitted dispatch fallback as failing clean,
    * so a site around it takes no mark and the selector's leaf stays. Shipped as #280.
    */

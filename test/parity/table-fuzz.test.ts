@@ -157,13 +157,20 @@ function term(r: Rng, depth: number, rule: number, rules: number, nodes: { n: nu
       const d = `dispatch(${selector}, when('foo', sequence(routed(), ${x.src}))${fallback})`
       const word = 'regex(/[a-z]+/)', ty = type()
       const words: Term['gen'] = g => g(2) ? ['foo', ...x.gen(g)] : [pick(g, ['q', 'bar'])]
+      const shapes = [
+        `choice(${d}, ${word})`, `choice(label('l', ${d}), ${word})`, `choice(choice(${d}, literal('1')), ${word})`, `choice(expect(${d}), ${word})`,
+        `sequence(optional(${d}), ${word})`, `sequence(expect(${d}), ${word})`, `sequence(many(${d}), ${word})`,
+        `sequence(not(${d}), ${word})`, `sequence(peek(${d}), ${word})`, `sepBy(${d}, literal(','))`,
+      ]
+      const k = r(shapes.length + 2)
+      if (k < shapes.length) return { src: `node(${ty}, ${shapes[k]!})`, gen: words, nullable: true }
+      // A repetition passes on the committed failure of an item that captured before
+      // it; a contained attempt makes that failure ordinary, and the next arm reads the
+      // same input again (issue #303).
+      const a = atom(), rep = k === shapes.length ? 'optional' : 'many'
       return {
-        src: `node(${ty}, ${pick(r, [
-          `choice(${d}, ${word})`, `choice(label('l', ${d}), ${word})`, `choice(choice(${d}, literal('1')), ${word})`, `choice(expect(${d}), ${word})`,
-          `sequence(optional(${d}), ${word})`, `sequence(expect(${d}), ${word})`, `sequence(many(${d}), ${word})`,
-          `sequence(not(${d}), ${word})`, `sequence(peek(${d}), ${word})`, `sepBy(${d}, literal(','))`,
-        ])})`,
-        gen: words,
+        src: `node(${ty}, choice(attempt(${rep}(sequence(${a.src}, ${d})), { contain: true }), sequence(${a.src}, ${word})))`,
+        gen: g => [...a.gen(g), 'foo'],
         nullable: true,
       }
     }

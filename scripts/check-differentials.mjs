@@ -185,6 +185,7 @@ const REGISTRY = [
     run: () => runCmd(['node_modules/vitest/vitest.mjs', 'run', '--reporter=dot', 'test/parity/table-fuzz.test.ts']),
     plants: [
       { defect: 'list-min-rollback-off', expect: 'moves' },
+      { defect: 'repeat-commit-rollback-off', expect: 'moves' },
       { defect: 'uncommitted-fallback-clean', expect: 'moves' },
     ],
   },

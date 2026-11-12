@@ -478,4 +478,29 @@ describe('a contained attempt over a repetition whose child commits a failure', 
       expect(leaves(agreed(g, input, { build: host }).value)).toEqual({ N: ['-', 'foo'] })
     })
   }
+
+  it('sepBy: a separator that commits a failure, under an item that cannot', () => {
+    const separator = sequence(literal(','), dispatch(regex(/[a-z]+/), when('x', literal('!'))))
+    const g = rules({}, () => ({
+      R: node('N', choice(attempt(sepBy(literal('a'), separator), { contain: true }), sequence(literal('a'), literal(','), regex(/[a-z]+/)))),
+    })) as G
+    expect(leaves(agreed(g, 'a,x', { build: host }).value)).toEqual({ N: ['a', ',', 'x'] })
+  })
+
+  it('many: the hybrid readers take the captures back too', () => {
+    const g = rules({}, () => ({
+      R: node('N', choice(attempt(many(committing()), { contain: true }), sequence(literal('-'), regex(/[a-z]+/)))),
+    })) as G
+    expect(leaves(agreed(g, '-foo!-foo').value)).toEqual({ N: ['-', 'foo'] })
+  })
+
+  it('optional over a node: the trivia the failed node recorded leaves the root log', () => {
+    // The node keeps its captures to itself, so only the trivia log needs the rollback.
+    const g = rules({ trivia: comments() }, () => ({
+      R: node('N', choice(attempt(optional(node('C', committing())), { contain: true }), sequence(literal('-'), regex(/[a-z]+/)))),
+    })) as G
+    const r = agreed(g, '- /*c*/ foo', { rootTrivia: { select: ['comment'] } })
+    expect(leaves(r.value)).toEqual({ N: ['-', 'foo'] })
+    expect(r.rootTrivia, 'one row for /*c*/').toEqual([1, 8, 2, 7, 0])
+  })
 })
