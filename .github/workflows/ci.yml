@@ -223,6 +223,12 @@ jobs:
           set -o pipefail
           node scripts/release.mjs plan | tee -a "$GITHUB_OUTPUT"
 
+      - name: Rebuild at the source version
+        # `plan` builds dist/ stamped with the latest release's version to compare it
+        # with that tarball. With nothing to release, put back the build of this tree.
+        if: steps.plan.outputs.release == 'false'
+        run: pnpm build
+
       - name: Stamp the version the release would publish
         id: stamp
         if: steps.plan.outputs.release == 'true'
