@@ -330,8 +330,8 @@ export const DEFECTS = {
     why: 'encoder: a tolerant list\'s separator sentinel is derived with no trivia, though the interpreter parses the separator under the live trivia',
     edits: [{
       file: 'src/table/encode.ts',
-      find: 'this.charClass(firstSetOf(d.separator, new Set(), this.refResolver(), this.activeTrivia, false)),',
-      replace: 'this.charClass(firstSetOf(d.separator, new Set(), this.refResolver(), undefined, false)),',
+      find: 'this.charClass(firstSetOf(d.separator, new Set(), this.rr, this.activeTrivia, false)),',
+      replace: 'this.charClass(firstSetOf(d.separator, new Set(), this.rr, undefined, false)),',
     }],
   },
 
