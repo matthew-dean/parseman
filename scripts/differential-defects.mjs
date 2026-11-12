@@ -46,8 +46,12 @@ export const DEFECTS = {
     why: 'emitted table engine: a list short of its minimum leaves its items behind',
     edits: [{
       file: 'src/analysis/commitment.ts',
-      find: 'return d.min > 1',
-      replace: 'return false',
+      find: "return d.min > 1 || commits(d.parser)\n    case 'sepBy':",
+      replace: "return commits(d.parser)\n    case 'sepBy':",
+    }, {
+      file: 'src/analysis/commitment.ts',
+      find: 'return d.min > 1 || commits(d.parser) || commits(d.separator)',
+      replace: 'return commits(d.parser) || commits(d.separator)',
     }],
   },
   /**
