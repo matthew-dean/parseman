@@ -38,6 +38,31 @@
 /** @type {Record<string, Defect>} */
 export const DEFECTS = {
   /**
+   * The emitted engine stops marking a rollback for a list that fails short of a
+   * minimum above one, so a choice around it keeps the items and the next arm
+   * builds a tree holding them twice. Shipped as #282.
+   */
+  'list-min-rollback-off': {
+    why: 'emitted table engine: a list short of its minimum leaves its items behind',
+    edits: [{
+      file: 'src/analysis/commitment.ts',
+      find: 'return d.min > 1',
+      replace: 'return false',
+    }],
+  },
+  /**
+   * The closure engine reads an uncommitted dispatch fallback as failing clean,
+   * so a site around it takes no mark and the selector's leaf stays. Shipped as #280.
+   */
+  'uncommitted-fallback-clean': {
+    why: 'closure table engine: a dispatch with an uncommitted fallback leaves its selector behind',
+    edits: [{
+      file: 'src/table/fail-clean.ts',
+      find: '((flags & 2) === 0 || (flags & 1) === 1) && ',
+      replace: '',
+    }],
+  },
+  /**
    * The emitted table engine puts every node's span one byte to the right.
    *
    * The defect class: a lowering that parses identically and produces a
