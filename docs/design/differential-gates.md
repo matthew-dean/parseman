@@ -192,6 +192,11 @@ Registered today:
 | `consumed-sweep` | bytes consumed per file, one build, appended as JSONL | `interp-many-cap`; BLIND to `tolerant-rec-off` |
 | `tolerant-sweep` | the RECOVERY assembly, errors/spans/value digest per file | `tolerant-rec-off` |
 
+`table-fuzz` takes two settings for a local run:
+
+- `TABLE_FUZZ_SEEDS=from-to` sweeps another seed range (the default is `1-61`), for example to reproduce a reported row on its own seed.
+- `TABLE_FUZZ_INTERPRETER=1` adds the interpreter as a leg. It still disagrees with the tables on about a quarter of the parses (#256, #258), so it is off by default and its rows fail the run when it is on.
+
 Rules the registry enforces on itself:
 
 - **A plant anchor that no longer matches is a hard failure**, never a skip. When
