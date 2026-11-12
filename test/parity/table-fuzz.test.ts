@@ -280,26 +280,40 @@ function outcome(entry: unknown, input: string, options: object): Outcome {
     }
     return { ok: r.ok, digest: digestValue(fields), shown: json(fields) }
   } catch (e) {
-    const m = String((e as Error).message).split('\n')[0]!
-    return { threw: /Maximum call stack/.test(m) ? 'stack' : /timed out/.test(m) ? 'timeout' : m }
+    return { threw: thrown(e) }
   }
 }
 
-/** What a caller-installed leaf sink holds after a parse, which `run()` cannot show. */
-function sunk(entry: unknown, input: string): string {
-  const ctx = createParseContext() as unknown as { _cstLeaves?: { value: unknown; span: { start: number; end: number } }[] }
+/** Why a parse threw, short enough to compare across readers. */
+function thrown(e: unknown): string {
+  const m = String((e as Error).message).split('\n')[0]!
+  return /Maximum call stack/.test(m) ? 'stack' : /timed out/.test(m) ? 'timeout' : m
+}
+
+/**
+ * What a caller-installed leaf sink holds after a parse, which `run()` cannot show,
+ * under the leg's host and line tracking.
+ */
+function sunk(entry: unknown, input: string, cst: boolean, lines: boolean): string {
+  const ctx = createParseContext() as unknown as { _cstLeaves?: { value: unknown; span: { start: number; end: number } }[]; build?: unknown; trackLines: boolean }
   const leaves: NonNullable<typeof ctx._cstLeaves> = []
   ctx._cstLeaves = leaves
+  if (cst) ctx.build = host
+  ctx.trackLines = lines
   try {
     const rule = entry as { parse?: (i: string, p: number, c: unknown) => unknown } & ((i: string, p: number, c: unknown) => unknown)
     bounded(() => typeof rule.parse === 'function' ? rule.parse(input, 0, ctx) : rule(input, 0, ctx))
-  } catch { return 'threw' }
+  } catch (e) { return `threw ${thrown(e)}` }
   return digestValue(leaves.map(l => [l.value, l.span.start, l.span.end]))
 }
 
 const key = (o: Outcome): string => 'threw' in o ? `threw ${o.threw}` : o.digest
 
-type Tally = { grammars: number; refused: number; macro: number; parses: number; ok: number; failed: number; allThrew: number; timedOut: number; rows: string[] }
+type Tally = {
+  grammars: number; macro: number; parses: number; ok: number; failed: number; allThrew: number; hostRefused: number; timedOut: number; rows: string[]
+  /** Per `table/cst/lines` configuration: its parses, and those that some reader answered. */
+  configs: Record<string, { parses: number; usable: number }>
+}
 
 function sweep(seed: number, tally: Tally): void {
   const g = grammarOf(seed)
@@ -309,15 +323,17 @@ function sweep(seed: number, tally: Tally): void {
     [false, 'ast', false], [false, 'ast', true], [true, 'cst', false], [true, 'cst', true], [true, 'ast', false],
   ] as const) {
     const options = declared(g, table === 'cst', lines)
+    const config = `${table}/${cst}/${lines}`
+    const where = `seed ${seed} ${config}\n  ${options}\n  ${g.body}`
+    // No grammar this generator builds is refused, so a throw here is a defect, not a skip.
     let legs: Legs
     try {
       const prog = encodeTable(interpreted(g.body, options) as never, { ...(table === 'cst' ? { hostMode: 'cst' } : {}), ...(lines ? { trackLines: true } : {}) })
       legs = { ...Object.fromEntries([...readers(prog), ...hybridReaders(prog)]), bare: tableRules(prog) } as Legs
-    } catch { tally.refused++; continue }
-    try {
       const m = macroLeg(g.body, options)
       if (m !== undefined) { legs.macro = m; tally.macro++ }
-    } catch { /* a grammar the macro refuses still runs on the other legs */ }
+    } catch (e) { throw new Error(`${where}\n  building the readers threw: ${String((e as Error).message).split('\n')[0]}`) }
+    const seen = tally.configs[config] ??= { parses: 0, usable: 0 }
     if (process.env.TABLE_FUZZ_INTERPRETER === '1') legs.interpreter = interpreted(g.body, options) as Record<string, unknown>
     tally.grammars++
     const names = Object.keys(legs)
@@ -326,13 +342,20 @@ function sweep(seed: number, tally: Tally): void {
     for (let i = 0; i < g.rules; i++) {
       for (const input of inputs[i]!) {
         const res = names.map(n => outcome(legs[n]![`R${i}`], input, opts))
+        const sinks = names.map(n => sunk(legs[n]![`R${i}`], input, cst, lines))
         tally.parses++
-        if (res.some(o => 'threw' in o && o.threw === 'timeout')) { tally.timedOut++; continue }
+        seen.parses++
+        if (res.some(o => 'threw' in o && o.threw === 'timeout') || sinks.includes('threw timeout')) { tally.timedOut++; continue }
         const first = res[0]!
-        if (res.every(o => 'threw' in o)) { if (!key(first).includes('compiled for host mode')) tally.allThrew++ }
-        else if ('ok' in first && first.ok) tally.ok++
-        else tally.failed++
-        const sinks = cst || lines ? [] : names.map(n => sunk(legs[n]![`R${i}`], input))
+        if (res.every(o => 'threw' in o)) {
+          // An `ast` table refuses a CST host; that refusal is expected, and counted apart.
+          if (key(first).includes('compiled for host mode')) tally.hostRefused++
+          else tally.allThrew++
+        } else {
+          seen.usable++
+          if ('ok' in first && first.ok) tally.ok++
+          else tally.failed++
+        }
         if (new Set(res.map(key)).size > 1 || new Set(sinks).size > 1) {
           tally.rows.push(`seed ${seed} R${i} table=${table} cst=${cst} lines=${lines} input=${json(input)}\n  ${options}\n  ${g.body}\n`
             + names.map((n, j) => `  ${n}: ${'threw' in res[j]! ? key(res[j]!) : (res[j] as { shown: string }).shown}${sinks[j] === undefined ? '' : ` sink ${sinks[j]}`}`).join('\n'))
@@ -347,7 +370,7 @@ const from = Number(range[1]), to = Number(range[2])
 
 describe('every reader of a table gives one answer', () => {
   it(`on the grammars and inputs of seeds ${from} to ${to}`, () => {
-    const tally: Tally = { grammars: 0, refused: 0, macro: 0, parses: 0, ok: 0, failed: 0, allThrew: 0, timedOut: 0, rows: [] }
+    const tally: Tally = { grammars: 0, macro: 0, parses: 0, ok: 0, failed: 0, allThrew: 0, hostRefused: 0, timedOut: 0, rows: [], configs: {} }
     for (let seed = from; seed < to; seed++) sweep(seed, tally)
     const { rows, ...counts } = tally
     console.log(`table fuzz: ${json(counts)}`)
@@ -360,5 +383,8 @@ describe('every reader of a table gives one answer', () => {
     expect(tally.failed).toBeGreaterThan(tally.parses / 20)
     expect(tally.allThrew).toBeLessThan(tally.parses / 10)
     expect(tally.timedOut).toBe(0)
+    // Every configuration compared something, not only the sweep as a whole.
+    expect(Object.keys(tally.configs)).toHaveLength(5)
+    for (const [config, c] of Object.entries(tally.configs)) expect(c.usable, config).toBeGreaterThan(c.parses / 10)
   }, 600_000)
 })
