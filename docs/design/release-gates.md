@@ -202,6 +202,23 @@ CI has passed on it; it does not wait for a CI run still in progress, whose succ
 a publish on its own. Locally, `node scripts/release.mjs plan` prints the same
 decision. It builds `dist/` and leaves tracked files as it found them.
 
+### Rehearsed on every pull request
+
+CI's `test (node lts/*)` leg runs the release's plan on the pull request's merge commit.
+When the plan would release, the leg stamps that version as a commit in the runner, which
+nothing pushes, and runs its checks on the stamped tree. It then runs the checks only the
+release ran before: `check-changelog --publish`, `check-main-release-state`, and the two
+packs with the pinned npm, the tested tree's and a fresh checkout's built with no install
+scripts, which must match. The step's comment in `ci.yml` lists what it still does not
+rehearse.
+
+This makes a required check depend on npm. The plan runs `npm view` and `npm pack`, so the
+leg fails while the registry is down, and while npm's newest version has no `v*` tag (a
+publish whose tag push failed, or the minutes between a publish and its tag). Every pull
+request and `main`'s own CI stay red until the tag is pushed. That is deliberate: the same
+state stops the next release (below), and a red check on every pull request makes it
+visible at once.
+
 ### If a step fails
 
 - **Before publish.** Nothing is out. Fix the cause; the next merge, or a re-run, plans

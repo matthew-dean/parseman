@@ -185,6 +185,9 @@ jobs:
           # The release rehearsal (lts/* only) reads the release tags and the previous
           # release's CHANGELOG, as publish.yml does.
           fetch-depth: ${{ matrix.node-version == 'lts/*' && '0' || '1' }}
+          # Nothing in this job pushes or fetches: the rehearsal's git calls are local
+          # and its npm calls read the public registry.
+          persist-credentials: false
 
       - name: Install pnpm
         # Version comes from the "packageManager" field in package.json, so CI
@@ -321,9 +324,27 @@ jobs:
         # tested tree packs is the one a build with no install scripts packs from the
         # same commit, re-stamped (publish.yml's `build` job).
         #
-        # Still not rehearsed: the commit main will be once this merges (main does not
-        # require a branch to be up to date), the registry and the tags at publish
-        # time, and the publish job itself (OIDC, provenance, the tag push).
+        # Still not rehearsed:
+        #  - the commit main will be once this merges (main does not require a branch
+        #    to be up to date);
+        #  - the version: this rehearses the latest release plus one as it stands now,
+        #    and the release may take a later number of another length (a gate that
+        #    read the version's length once passed here and failed there);
+        #  - the registry and the tags at publish time, and publish re-deciding the
+        #    version from them (`nextVersion`);
+        #  - `pnpm docs:verify` on the stamped tree (the docs job runs it unstamped);
+        #  - the actions themselves: publish.yml pins them by sha, this file uses @v4;
+        #  - the artifact hand-off between publish's jobs, the publish job (OIDC,
+        #    provenance, the tag push) and the record step (the deploy-key push of the
+        #    release onto main);
+        #  - a change to README.md alone, which skips this matrix (`changes`).
+        #
+        # A NEW DEPENDENCY, on purpose: the plan reads npm (`npm view`, `npm pack`), so
+        # this required leg fails while the registry is down, and while npm's newest
+        # version has no v* tag: a publish whose tag push failed, or the minutes
+        # between a publish and its tag. Every PR and main's CI then stay red until the
+        # tag is pushed. That state breaks the next release too, and this surfaces it
+        # (docs/design/release-gates.md, "Rehearsed on every pull request").
         if: steps.plan.outputs.release == 'true'
         env:
           VERSION: ${{ steps.plan.outputs.version }}
