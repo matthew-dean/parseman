@@ -20,6 +20,7 @@ import type { Combinator } from '../../src/types.ts'
 import { choice, classifiedTrivia, gate, leaf, literal, node, optional, regex, rules, sequence, withCtx } from '../../src/index.ts'
 import { createParseContext } from '../../src/parse-context.ts'
 import { skipDeferredTrivia } from '../../src/table/trivia-gap.ts'
+import { makeRootLog } from '../helpers/root-log.ts'
 
 type RuleMap = Record<string, Combinator<unknown>>
 
@@ -47,7 +48,10 @@ const g = rules<RuleMap>({ trivia: t }, () => ({
 const prog = encodeTable(g, { hostMode: 'ast' })
 const engines = { closure: tableRules({ ...prog, asm: [] }).Doc!, fast: tableRules(emitted(prog)).Doc! }
 
-const rows = (r: ReturnType<typeof run>) => (r as { rootTrivia?: { rows: unknown } }).rootTrivia?.rows
+const rows = (r: ReturnType<typeof run>): number[] | undefined => {
+  const kept = r.rootTrivia?.rows
+  return kept === undefined ? undefined : [...kept]
+}
 const opts = { rootTrivia: { select: ['blockComment'] } }
 
 describe('a labelled trivia gap under a root trivia selection', () => {
@@ -126,7 +130,7 @@ describe('a remembered trivia gap', () => {
     const rooted = (): ReturnType<typeof createParseContext> => {
       const ctx = createParseContext()
       ctx.trivia = t as Combinator<unknown>
-      ctx._rootTriviaLog = []
+      ctx._rootTriviaLog = makeRootLog()
       ctx._rootTriviaKindIndex = { blockComment: 0 }
       return ctx
     }

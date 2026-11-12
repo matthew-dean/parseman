@@ -26,11 +26,13 @@ import { expect } from 'vitest'
 import { compile, parse as runtimeParse, run } from '../../../src/index.ts'
 import { REC } from '../../../src/recovery/scan.ts'
 import type { Combinator, ParseContext } from '../../../src/index.ts'
+import type { RootTriviaLog } from '../../../src/cst/trivia-entries.ts'
+import { makeRootLog, rowsOf } from '../../helpers/root-log.ts'
 
 /** Sinks a parse can write besides its return value. All must match too. */
 type Sinks = {
   /** Every trivia chunk in the document: the root log `rootTrivia: { select: 'all' }` fills. */
-  triviaLog: number[]
+  triviaLog: RootTriviaLog
   cstLeaves: unknown[]
   errors: unknown[]
 }
@@ -57,12 +59,12 @@ function freshSinks(
   captures: boolean,
   ambient: Record<string, unknown>,
 ): { sinks: Sinks; ctx: ParseContext } {
-  const sinks: Sinks = { triviaLog: [], cstLeaves: [], errors: [] }
+  const sinks: Sinks = { triviaLog: makeRootLog(), cstLeaves: [], errors: [] }
   const ctx = {
     trackLines: false,
     ...ambient,
     ...(captures
-      ? { _rootTriviaLog: sinks.triviaLog, _rootTriviaKindIndex: allTriviaKinds(ambient), _cstLeaves: sinks.cstLeaves }
+      ? { _rootTriviaLog: sinks.triviaLog, _rootTriviaKindIndex: allTriviaKinds(ambient), _rootTriviaGapKind: allTriviaKinds(ambient)[''], _cstLeaves: sinks.cstLeaves }
       : {}),
     _errors: sinks.errors,
   } as unknown as ParseContext
@@ -156,8 +158,9 @@ export function assertEnginesAgree<T>(
   // WHOLE object — not a field checklist. See the header.
   expect(compiledResult, `compiled result must equal interpreted for ${JSON.stringify(input)}`)
     .toEqual(interpreted)
-  expect(k.sinks, `compiled context sinks must equal interpreted for ${JSON.stringify(input)}`)
-    .toEqual(i.sinks)
+  const rowsIn = (s: Sinks) => ({ ...s, triviaLog: rowsOf(s.triviaLog) })
+  expect(rowsIn(k.sinks), `compiled context sinks must equal interpreted for ${JSON.stringify(input)}`)
+    .toEqual(rowsIn(i.sinks))
 
   if (opts.tolerant) {
     // Both engines get the SAME tolerant ctx and are compared as WHOLE results.

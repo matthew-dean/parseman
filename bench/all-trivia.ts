@@ -1,6 +1,7 @@
 /**
- * The parse these benches measure: a compiled parser that records every trivia gap
- * in the document.
+ * The two parses these benches measure. `plainParse` records nothing past the tree, the
+ * same call on every release, so it is the one an A/B gates on. `allTriviaParse` also
+ * records every trivia gap in the document, which the gates report beside it.
  *
  * From parseman 0.62.0 that is `run(compiled, input, { rootTrivia: { select: 'all' } })`.
  * Before it, the same log was a `_triviaLog` array on the context. A cross-version
@@ -15,6 +16,10 @@ type RunLike = (entry: never, input: string, options: { rootTrivia: { select: 'a
 
 const COMPILED_ENTRY = Symbol.for('parseman.compiledEntry')
 const ALL = { rootTrivia: { select: 'all' } } as const
+
+export function plainParse(compiled: CompiledLike, input: string): () => unknown {
+  return () => compiled.parseWithContext(input, { trackLines: false } as never, 0)
+}
 
 export function allTriviaParse(run: RunLike, compiled: CompiledLike, input: string): () => unknown {
   if (COMPILED_ENTRY in compiled) return () => run(compiled as never, input, ALL)

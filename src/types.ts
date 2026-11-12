@@ -1,6 +1,7 @@
 import type { LineView } from './combinators/lines.ts'
 import type { LabeledTriviaSpec } from './cst/trivia-kinds.ts'
 import type { COMPILED_ENTRY } from './cst/host-mode.ts'
+import type { RootTriviaLog } from './cst/trivia-entries.ts'
 
 export type Span = {
   start: number
@@ -370,14 +371,18 @@ export type ParseContext = {
    * pair is the complete committed gap that owns the marker. With a label list, an
    * unselected chunk (ordinary whitespace, say) records nothing. With `select: 'all'`
    * every labelled chunk is selected, and a gap of unlabelled trivia is one row under
-   * `''` whose two pairs are both the gap. The fixed-width numeric log keeps rollback
-   * a length reset.
+   * `''` whose two pairs are both the gap. The rows live in a `RootTriviaLog`
+   * (`cst/trivia-entries.ts`), whose `length` is the cursor, so a rollback sets it.
    */
-  _rootTriviaLog?: number[] | undefined
+  _rootTriviaLog?: RootTriviaLog | undefined
   /** Grammar-label → selected-root-table index. Each trivia scope maps its local
    * label through this once-built table, so composed grammars may use different
    * label orders without a per-chunk linear selected-label search. */
   _rootTriviaKindIndex?: Readonly<Record<string, number>> | undefined
+  /** `_rootTriviaKindIndex['']`, read once per run: the kind of a gap of unlabelled
+   * trivia, which only `select: 'all'` defines. The index has no prototype, so V8 keeps
+   * it as a dictionary, and a lookup there per gap cost about 10 ns. */
+  _rootTriviaGapKind?: number | undefined
   /** Selected-root capture checks local trivia classification once per scope. */
   _rootTriviaStrictScopes?: boolean | undefined
   /**

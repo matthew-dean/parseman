@@ -28,6 +28,7 @@ import { reachableIps } from '../../src/table/inspect.ts'
 import { OP_CHOICE } from '../../src/table/ops.ts'
 import { choiceLogRollbackMask, choiceRollbackMask } from '../../src/table/program.ts'
 import { run } from '../../src/functional/run.ts'
+import { makeRootLog, rowsOf } from '../helpers/root-log.ts'
 
 type Comb = Combinator<unknown>
 
@@ -111,7 +112,7 @@ describe('a failed node arm leaves no trivia rows behind', () => {
  */
 describe('a program with no trivia, called with trivia', () => {
   // The log-only rollback `emitLogRollback` prints; a full mark restores through `rollbackTriviaAt`.
-  const logOnlyRollback = /\{const r=ctx\._rootTriviaLog;if\(r!==undefined\)while\(r\.length>_t\d+_rt\)r\.pop\(\)\}/
+  const logOnlyRollback = /\{const r=ctx\._rootTriviaLog;if\(r!==undefined&&r\.length>(_t\d+_rt)\)r\.length=\1\}/
   for (const [name, shape] of Object.entries(shapes)) {
     it(`records what the closure engine records through ${name}`, () => {
       const g = rules((g: Record<string, Comb>) => ({
@@ -130,10 +131,10 @@ describe('a program with no trivia, called with trivia', () => {
         for (const [engine, entry] of Object.entries(engines)) {
           const ctx = {
             trivia: t, triviaKindLabels: labels, trackLines: false,
-            _rootTriviaLog: [] as number[], _rootTriviaKindIndex: { comment: labels.indexOf('comment') },
+            _rootTriviaLog: makeRootLog(), _rootTriviaKindIndex: { comment: labels.indexOf('comment') },
           }
           const r = entry(input, 0, ctx)
-          logs[engine] = { ok: r.ok, rootTriviaLog: ctx._rootTriviaLog }
+          logs[engine] = { ok: r.ok, rootTriviaLog: rowsOf(ctx._rootTriviaLog) }
         }
         // One selected row per comment: the comparison below is not over empty logs.
         expect(logs.closure, input).toMatchObject({ ok: true, rootTriviaLog: { length: input.includes('/*') ? 5 : 0 } })

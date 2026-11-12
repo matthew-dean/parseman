@@ -1,5 +1,7 @@
 import { expect } from 'vitest'
 import type { Combinator, CompiledParser, ParseContext, ParseResult } from '../../../src/types.ts'
+import { makeRootLog, rowsOf } from '../../helpers/root-log.ts'
+import type { RootTriviaLog } from '../../../src/cst/trivia-entries.ts'
 
 /** Stride for flat trivia logs: 2 or 3 numbers per entry. */
 export function triviaLogStride(log: readonly number[], labels?: readonly string[]): number {
@@ -69,12 +71,12 @@ export function triviaLogFromRootRows(rows: readonly number[], labels: readonly 
 
 /** A context that records every trivia chunk in the document, as `run()` sets one up for
  * `rootTrivia: { select: 'all' }`: each label, then `''` for unlabelled trivia. */
-function allTriviaContext(base: ParseContext, labels: readonly string[] = []): { ctx: ParseContext; rows: number[] } {
-  const rows: number[] = []
+function allTriviaContext(base: ParseContext, labels: readonly string[] = []): { ctx: ParseContext; rows: RootTriviaLog } {
+  const rows = makeRootLog()
   const kinds: Record<string, number> = {}
   labels.forEach((label, i) => { kinds[label] ??= i })
   kinds[''] = labels.length
-  return { ctx: { ...base, _rootTriviaLog: rows, _rootTriviaKindIndex: kinds }, rows }
+  return { ctx: { ...base, _rootTriviaLog: rows, _rootTriviaKindIndex: kinds, _rootTriviaGapKind: labels.length }, rows }
 }
 
 /** Run interpreted + compiled, each recording the document's whole trivia log. */
@@ -89,8 +91,8 @@ export function runTriviaLogParity<T>(
   const k = allTriviaContext(baseCtx, labels)
   const interpreted = parser.parse(input, 0, i.ctx)
   const compiledResult = compiled.parseWithContext(input, k.ctx, 0)
-  const iLog = triviaLogFromRootRows(i.rows, labels)
-  const cLog = triviaLogFromRootRows(k.rows, labels)
+  const iLog = triviaLogFromRootRows(rowsOf(i.rows), labels)
+  const cLog = triviaLogFromRootRows(rowsOf(k.rows), labels)
   return { iLog, cLog, interpreted, compiled: compiledResult }
 }
 

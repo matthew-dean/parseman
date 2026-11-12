@@ -17,10 +17,11 @@ import { resolveTable } from '../../src/table/program.ts'
 import { createParseContext } from '../../src/parse-context.ts'
 import { reachableIps } from '../../src/table/inspect.ts'
 import { OP_OPT } from '../../src/table/ops.ts'
+import { RootTriviaLog } from '../../src/cst/trivia-entries.ts'
 
-function countingLog(): { log: number[]; reads: () => number } {
+function countingLog(): { log: RootTriviaLog; reads: () => number } {
   let n = 0
-  const log = new Proxy<number[]>([], {
+  const log = new Proxy<RootTriviaLog>(new RootTriviaLog(), {
     get(target, key, receiver) {
       if (key === 'length') n++
       return Reflect.get(target, key, receiver)

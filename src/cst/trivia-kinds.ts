@@ -1,5 +1,6 @@
 import type { CharRange, Combinator, ParseContext } from '../types.ts'
 import { pushCstTriviaEntry } from './capture-buffer.ts'
+import { growRootTriviaLog } from './trivia-entries.ts'
 import { startsFirstSet } from '../combinators/first-set.ts'
 import { createDetachedParseContext } from '../parse-context.ts'
 import {
@@ -272,7 +273,15 @@ export function recordTriviaChunks(ctx: ParseContext, chunks: readonly TriviaChu
       // Fill the enclosing committed gap after the scanner has consumed every
       // chunk. A selected marker therefore carries its exact authored context
       // without recording any whitespace-only chunk.
-      rootLog!.push(0, 0, ch.start, ch.end, rootKindIndex)
+      const n = rootLog!.length
+      if (n + 5 > rootLog!.buf.length) growRootTriviaLog(rootLog!, 5)
+      const b = rootLog!.buf
+      b[n] = 0
+      b[n + 1] = 0
+      b[n + 2] = ch.start
+      b[n + 3] = ch.end
+      b[n + 4] = rootKindIndex
+      rootLog!.length = n + 5
     }
     // Per-node CST log: honour the kind mask when both a mask and labels are
     // present, so a host can capture (e.g.) comments only without logging every
@@ -286,9 +295,10 @@ export function recordTriviaChunks(ctx: ParseContext, chunks: readonly TriviaChu
   if (rootLog !== undefined && rootLog.length !== rootMark && chunks.length > 0) {
     const start = chunks[0]!.start
     const end = chunks[chunks.length - 1]!.end
+    const b = rootLog.buf
     for (let offset = rootMark; offset < rootLog.length; offset += 5) {
-      rootLog[offset] = start
-      rootLog[offset + 1] = end
+      b[offset] = start
+      b[offset + 1] = end
     }
   }
 }

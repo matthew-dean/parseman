@@ -26,7 +26,7 @@ export function mk(
 }
 
 /** `rows` is `RunResult.rootTrivia.rows`: five numbers per trivia gap. */
-export function buildLazyTriviaMap(rows: readonly number[], _input: string): { entries: number } {
+export function buildLazyTriviaMap(rows: ArrayLike<number>, _input: string): { entries: number } {
   return { entries: Math.floor(rows.length / 5) }
 }
 

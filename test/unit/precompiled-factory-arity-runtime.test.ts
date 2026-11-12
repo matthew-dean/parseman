@@ -137,10 +137,10 @@ describe('a factory 0.61.9 printed, on this runtime', () => {
   })
 
   it('records the comment twice when its stamp is forged past the check', () => {
-    expect(run(g.Doc!, 'x/*c*/y', opts).rootTrivia?.rows).toEqual([1, 6, 1, 6, 0])
+    expect(run(g.Doc!, 'x/*c*/y', opts).rootTrivia?.rows).toEqual(Int32Array.of(1, 6, 1, 6, 0))
     const forged = run(tableRules(withPrinted({ abi: EMITTED_ABI })).Doc!, 'x/*c*/y', opts)
     expect(forged.ok).toBe(true)
-    expect(forged.rootTrivia?.rows).toEqual([1, 6, 1, 6, 0, 1, 6, 1, 6, 0])
+    expect(forged.rootTrivia?.rows).toEqual(Int32Array.of(1, 6, 1, 6, 0, 1, 6, 1, 6, 0))
   })
 })
 

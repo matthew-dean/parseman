@@ -12,6 +12,7 @@ import { OP_NOT } from '../../src/table/ops.ts'
 import { resolveTable, type PrecompiledAssembly, type TableProgram } from '../../src/table/program.ts'
 import { scalarTerminalNotChild } from '../../src/table/scalar-terminal.ts'
 import type { Combinator, ParseContext, ParseFail } from '../../src/types.ts'
+import { makeRootLog, rowsOf } from '../helpers/root-log.ts'
 
 type Entry = Runnable
 const STRICT = { hostCst: false, trackLines: false, tolerant: false, coverage: false, probe: false }
@@ -111,7 +112,7 @@ describe('direct-terminal not() scalar consumer', () => {
       ctx._fx = ['prior']
       ctx._probe = { offset: 7, best: probe }
       ctx._cstLeaves = [{ seed: true }]
-      ctx._rootTriviaLog = [1, 2, 1, 2, 0]
+      ctx._rootTriviaLog = makeRootLog([1, 2, 1, 2, 0])
       ctx._fields = [{ name: 'seed', value: 1, span: { start: 0, end: 0 } }]
       ctx._errors = []
       return true
@@ -132,7 +133,7 @@ describe('direct-terminal not() scalar consumer', () => {
         expect(ctx._fc, name).toBe(true)
         expect(ctx._probe!.best, name).toBe(seed)
         expect(ctx._cstLeaves, name).toEqual([{ seed: true }])
-        expect(ctx._rootTriviaLog, name).toEqual([1, 2, 1, 2, 0])
+        expect(rowsOf(ctx._rootTriviaLog), name).toEqual([1, 2, 1, 2, 0])
         expect(ctx._fields, name).toHaveLength(1)
         expect(ctx._errors, name).toEqual([])
         if (input === 'y') {

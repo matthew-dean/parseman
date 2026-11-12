@@ -40,7 +40,7 @@ import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { compile, run, type Combinator } from '../../src/index.ts'
-import { allTriviaParse } from '../all-trivia.ts'
+import { allTriviaParse, plainParse } from '../all-trivia.ts'
 import { Stylesheet as LessStylesheet } from './less.ts'
 import { Stylesheet as CssStylesheet } from '../../examples/css/parser.ts'
 import { graphqlDoc } from '../../examples/graphql/parser.ts'
@@ -99,8 +99,12 @@ export type Workload = {
   id: string
   /** Bytes of input, reported so a reader can see the sample behind every number. */
   bytes: number
-  /** Built fresh per side: compiling is part of neither side's measurement. */
+  /** Built fresh per side: compiling is part of neither side's measurement. The plain
+   * parse (`plainParse`), the one an A/B gates on. */
   make: () => { parse: () => unknown }
+  /** The same parse recording every trivia gap (`allTriviaParse`), where the workload
+   * has trivia worth recording: counted, and reported beside the gate. */
+  capture?: () => { parse: () => unknown }
   input: string
 }
 
@@ -111,7 +115,7 @@ const withCapture = (c: Combinator<unknown>, input: string): (() => { parse: () 
 
 const withoutCapture = (c: Combinator<unknown>, input: string): (() => { parse: () => unknown }) => () => {
   const compiled = compile(c)
-  return { parse: () => compiled.parseWithContext(input, { trackLines: false }, 0) }
+  return { parse: plainParse(compiled, input) }
 }
 
 export function buildWorkloads(): Workload[] {
@@ -125,9 +129,9 @@ export function buildWorkloads(): Workload[] {
   const jsonInput = jsonPayload(48)
 
   return [
-    { id: 'less/stylesheet', bytes: lessInput.length, make: withCapture(LessStylesheet, lessInput), input: lessInput },
-    { id: 'less/mixins', bytes: mixinInput.length, make: withCapture(LessStylesheet, mixinInput), input: mixinInput },
-    { id: 'css/stylesheet', bytes: cssInput.length, make: withCapture(CssStylesheet, cssInput), input: cssInput },
+    { id: 'less/stylesheet', bytes: lessInput.length, make: withoutCapture(LessStylesheet, lessInput), capture: withCapture(LessStylesheet, lessInput), input: lessInput },
+    { id: 'less/mixins', bytes: mixinInput.length, make: withoutCapture(LessStylesheet, mixinInput), capture: withCapture(LessStylesheet, mixinInput), input: mixinInput },
+    { id: 'css/stylesheet', bytes: cssInput.length, make: withoutCapture(CssStylesheet, cssInput), capture: withCapture(CssStylesheet, cssInput), input: cssInput },
     { id: 'graphql/document', bytes: gqlInput.length, make: withoutCapture(graphqlDoc, gqlInput), input: gqlInput },
     { id: 'json/document', bytes: jsonInput.length, make: withoutCapture(jsonDoc, jsonInput), input: jsonInput },
   ]

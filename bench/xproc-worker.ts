@@ -11,11 +11,13 @@ import { createHash } from 'node:crypto'
 import { buildWorkloads } from './workloads/index.ts'
 import { DENSITY_CASES, caseGrammar, caseInput } from './grammar-density/grammar.ts'
 import { compile, run } from '../src/index.ts'
-import { allTriviaParse, parsedTree } from './all-trivia.ts'
+import { allTriviaParse, parsedTree, plainParse } from './all-trivia.ts'
 
 type Args = {
   suite: 'density' | 'workloads'
   id: string
+  /** Time the parse that records every trivia gap (`allTriviaParse`), not the plain one. */
+  capture: boolean
   heapPad: number
   rules: number
   warmup: number
@@ -49,11 +51,13 @@ if (a.suite === 'density') {
   if (c === undefined) throw new Error(`no density case ${a.id}`)
   const compiled = compile(caseGrammar(c))
   const input = caseInput(c, a.rules)
-  parse = allTriviaParse(run, compiled, input)
+  parse = a.capture ? allTriviaParse(run, compiled, input) : plainParse(compiled, input)
 } else {
   const w = buildWorkloads().find(x => x.id === a.id)
   if (w === undefined) throw new Error(`no workload ${a.id}`)
-  const built = w.make()
+  const make = a.capture ? w.capture : w.make
+  if (make === undefined) throw new Error(`workload ${a.id} records no trivia`)
+  const built = make()
   parse = () => built.parse()
 }
 

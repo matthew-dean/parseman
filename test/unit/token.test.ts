@@ -6,6 +6,8 @@ import {
 } from '../../src/index.ts'
 import type { CSTLeaf, ParseContext } from '../../src/index.ts'
 import { compile } from '../../src/table/compile.ts'
+import { makeRootLog, rowsOf } from '../helpers/root-log.ts'
+import type { RootTriviaLog } from '../../src/cst/trivia-entries.ts'
 
 type CstNode = {
   _tag: 'node'
@@ -41,7 +43,7 @@ const nestedScope = parser({ trivia: classifiedTrivia({ ws: regex(/[ \t\n]+/) })
 const nestedTriviaToken = token(sequence(literal('a'), nestedScope))
 const nestedTriviaCompiled = compile(nestedTriviaToken)
 /** A context whose root trivia log keeps whitespace rows. */
-function rootLogCtx(log: number[]): ParseContext {
+function rootLogCtx(log: RootTriviaLog): ParseContext {
   return { trackLines: false, triviaKindLabels: ['ws'], _rootTriviaLog: log, _rootTriviaKindIndex: { ws: 0 } }
 }
 const identOrFunctionToken = token(sequence(regex(/[a-z]+/), optional(literal('('))))
@@ -216,7 +218,7 @@ describe('token()', () => {
     ]) {
       const cstChildren: unknown[] = []
       const cstLeaves: unknown[] = []
-      const rootTriviaLog: number[] = []
+      const rootTriviaLog = makeRootLog()
       const ctx: ParseContext = {
         trackLines: false,
         trivia: ws,
@@ -238,16 +240,16 @@ describe('token()', () => {
       (ctx: ParseContext) => nestedTriviaToken.parse('a[ ]', 0, ctx),
       (ctx: ParseContext) => nestedTriviaCompiled.parseWithContext('a[ ]', ctx, 0),
     ]) {
-      const triviaLog: number[] = []
+      const triviaLog = makeRootLog()
       const ctx = rootLogCtx(triviaLog)
       expect(run(ctx)).toMatchObject({ ok: true, value: 'a[ ]', span: { start: 0, end: 4 } })
       expect(ctx._rootTriviaLog).toBe(triviaLog)
-      expect(triviaLog).toEqual([])
+      expect(rowsOf(triviaLog)).toEqual([])
     }
     // Outside a token the same scope records its gap, so the empty log above is the token's doing.
-    const outside: number[] = []
+    const outside = makeRootLog()
     expect(nestedScope.parse('[ ]', 0, rootLogCtx(outside)).ok).toBe(true)
-    expect(outside).toEqual([1, 2, 1, 2, 0])
+    expect(rowsOf(outside)).toEqual([1, 2, 1, 2, 0])
   })
 })
 

@@ -227,7 +227,7 @@ type RunResult = {
 }
 
 type RootTriviaCapture = {
-  rows: readonly number[]              // packed selected-root rows
+  rows: Int32Array                     // packed rows, five numbers each; a view of exactly the rows kept
   select: readonly string[]            // label table for the row kind column
   index: RootTriviaIndex               // lazy sparse gap index over rows
 }

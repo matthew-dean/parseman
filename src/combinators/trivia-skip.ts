@@ -14,6 +14,7 @@ import {
   saveCstMark,
 } from '../cst/capture-buffer.ts'
 import { recordLineRangeFromContext } from '../line-index.ts'
+import { growRootTriviaLog } from '../cst/trivia-entries.ts'
 import { createDetachedParseContext } from '../parse-context.ts'
 import { commonCssTriviaScanner } from '../cst/trivia-css-scanner.ts'
 
@@ -140,7 +141,11 @@ export function rollbackScannedTriviaAt(
     removeNumberRange(tlog, tlogStart, tlogEnd)
     if (tlog !== undefined && tlog.length === 0) b.tl = undefined
   }
-  removeNumberRange(ctx._rootTriviaLog, rootLogStart, rootLogEnd)
+  const root = ctx._rootTriviaLog
+  if (root !== undefined && rootLogEnd > rootLogStart) {
+    root.buf.copyWithin(rootLogStart, rootLogEnd, root.length)
+    root.length -= rootLogEnd - rootLogStart
+  }
 }
 
 function parseTriviaNoCapture(
@@ -216,7 +221,15 @@ function scanWithLabels(input: string, cur: number, ctx: ParseContext): CompactT
       commit: () => {
         if (rootRows !== undefined && rootLog !== undefined) {
           for (let i = 0; i < rootRows.length; i += 3) {
-            rootLog.push(cur, visitedEnd, rootRows[i]!, rootRows[i + 1]!, rootRows[i + 2]!)
+            const n = rootLog.length
+            if (n + 5 > rootLog.buf.length) growRootTriviaLog(rootLog, 5)
+            const b = rootLog.buf
+            b[n] = cur
+            b[n + 1] = visitedEnd
+            b[n + 2] = rootRows[i]!
+            b[n + 3] = rootRows[i + 1]!
+            b[n + 4] = rootRows[i + 2]!
+            rootLog.length = n + 5
           }
         }
         if (cstRows !== undefined) {
@@ -411,8 +424,18 @@ export function recordUnlabelledGap(ctx: ParseContext, start: number, end: numbe
   const rootLog = ctx._rootTriviaLog
   if (rootLog !== undefined) {
     if (ctx._rootTriviaCapture !== false) {
-      const kind = ctx._rootTriviaKindIndex?.['']
-      if (kind !== undefined) rootLog.push(start, end, start, end, kind)
+      const kind = ctx._rootTriviaGapKind
+      if (kind !== undefined) {
+        const n = rootLog.length
+        if (n + 5 > rootLog.buf.length) growRootTriviaLog(rootLog, 5)
+        const b = rootLog.buf
+        b[n] = start
+        b[n + 1] = end
+        b[n + 2] = start
+        b[n + 3] = end
+        b[n + 4] = kind
+        rootLog.length = n + 5
+      }
     }
   }
   if (ctx.captureTrivia === true && ctx._cstBuf !== undefined) pushCstTriviaEntry(ctx, start, end)

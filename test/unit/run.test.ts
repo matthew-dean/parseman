@@ -58,7 +58,7 @@ describe('run() — generic grammar-entry driver', () => {
     const result = run(entry, input, { trivia: rw as never, rootTrivia: { select: ['blockComment'] } })
 
     expect(result.ok).toBe(true)
-    expect(result.rootTrivia?.rows).toEqual([1, 8, 2, 7, 0])
+    expect(result.rootTrivia?.rows).toEqual(Int32Array.of(1, 8, 2, 7, 0))
     expect(result.rootTrivia?.select).toEqual(['blockComment'])
     expect(result.rootTrivia?.index.entries.kind(0)).toBe('blockComment')
     expect(result.rootTrivia?.index.gapAfter(1)?.entryIndices).toEqual([0])

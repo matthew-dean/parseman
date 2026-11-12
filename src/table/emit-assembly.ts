@@ -439,7 +439,7 @@ function emitLogMark(t: string): string {
   return `const ${t}rt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0`
 }
 function emitLogRollback(t: string): string {
-  return `{const r=ctx._rootTriviaLog;if(r!==undefined)while(r.length>${t}rt)r.pop()}`
+  return `{const r=ctx._rootTriviaLog;if(r!==undefined&&r.length>${t}rt)r.length=${t}rt}`
 }
 
 /**

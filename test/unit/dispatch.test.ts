@@ -36,6 +36,8 @@ import { compile } from '../../src/table/compile.ts'
 import { compileRuleMap } from '../../src/table/compile-rule-map.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 import { assertEnginesAgree } from '../parity/helpers/engine-parity.ts'
+import { makeRootLog, pushRows, rowsOf } from '../helpers/root-log.ts'
+import type { RootTriviaLog } from '../../src/cst/trivia-entries.ts'
 
 type ParseFn = (input: string, pos: number, ctx: ParseContext) => unknown
 
@@ -51,7 +53,7 @@ function expectEnginesResult<T>(parser: Combinator<T>, input: string, expected: 
 
 /** Labelled trivia whose whitespace rows the root trivia log keeps, for observing trivia rollback. */
 const ws = classifiedTrivia({ ws: regex(/[ ]+/) })
-function rootLogCtx(log: number[]): ParseContext {
+function rootLogCtx(log: RootTriviaLog): ParseContext {
   return { trackLines: false, triviaKindLabels: ['ws'], _rootTriviaLog: log, _rootTriviaKindIndex: { ws: 0 } }
 }
 
@@ -243,12 +245,12 @@ describe('dispatch()', () => {
     const compiledRoot = compile(root)
 
     // The sink records the gap where the tail commits it.
-    const kept: number[] = []
+    const kept = makeRootLog()
     expect(compiledRoot.parseWithContext('kx y', rootLogCtx(kept), 0).ok).toBe(true)
-    expect(kept).toEqual([2, 3, 2, 3, 0])
+    expect(rowsOf(kept)).toEqual([2, 3, 2, 3, 0])
 
-    const interpretedLog: number[] = []
-    const compiledLog: number[] = []
+    const interpretedLog = makeRootLog()
+    const compiledLog = makeRootLog()
     const interpreted = root.parse('kx z', 0, rootLogCtx(interpretedLog))
     const compiled = compiledRoot.parseWithContext('kx z', rootLogCtx(compiledLog), 0)
 
@@ -260,8 +262,8 @@ describe('dispatch()', () => {
     }
     expect(interpreted).toEqual(expected)
     expect(compiled).toEqual(expected)
-    expect(interpretedLog).toEqual([])
-    expect(compiledLog).toEqual([])
+    expect(rowsOf(interpretedLog)).toEqual([])
+    expect(rowsOf(compiledLog)).toEqual([])
   })
 
   it('supports grouped and object-unfriendly string keys', () => {
@@ -573,13 +575,13 @@ describe('dispatch()', () => {
       ),
     )
 
-    const interpretedLog: number[] = []
+    const interpretedLog = makeRootLog()
     const interpretedFields: NonNullable<ParseContext['_fields']> = []
     const interpreted = root.parse('a b!', 0, {
       ...rootLogCtx(interpretedLog),
       _fields: interpretedFields,
     })
-    const compiledLog: number[] = []
+    const compiledLog = makeRootLog()
     const compiledFields: NonNullable<ParseContext['_fields']> = []
     const compiled = compile(root).parseWithContext('a b!', {
       ...rootLogCtx(compiledLog),
@@ -593,8 +595,8 @@ describe('dispatch()', () => {
     }
     expect(interpreted).toEqual(expected)
     expect(compiled).toEqual(expected)
-    expect(interpretedLog).toEqual([])
-    expect(compiledLog).toEqual([])
+    expect(rowsOf(interpretedLog)).toEqual([])
+    expect(rowsOf(compiledLog)).toEqual([])
     expect(interpretedFields).toEqual([])
     expect(compiledFields).toEqual([])
   })
@@ -607,7 +609,7 @@ describe('dispatch()', () => {
       parse(_input: string, pos: number, ctx: ParseContext) {
         const span = { start: pos, end: pos + 2 }
         ctx._cstLeaves?.push({ _tag: 'leaf', value: 'selector-leaf-leak', span })
-        ctx._rootTriviaLog?.push(pos, pos + 1, pos, pos + 1, 0)
+        pushRows(ctx._rootTriviaLog, pos, pos + 1, pos, pos + 1, 0)
         ctx._fields?.push({ name: 'selector', value: 'field-leak', span })
         ctx._errors?.push({ _tag: 'parseError', span, expected: ['selector-leak'] } satisfies ParseError)
         return { ok: true, value: 'ab', span }
@@ -625,7 +627,7 @@ describe('dispatch()', () => {
       (input: string, ctx: ParseContext) => compile(parser).parseWithContext(input, ctx, 0),
     ]) {
       const leaves: unknown[] = []
-      const rootTriviaLog: number[] = []
+      const rootTriviaLog = makeRootLog()
       const fields: NonNullable<ParseContext['_fields']> = []
       const errors: ParseError[] = []
       const result = parse('ab!', {
@@ -638,7 +640,7 @@ describe('dispatch()', () => {
 
       expect(result).toEqual(expected)
       expect(leaves.map(leaf => (leaf as { value?: unknown }).value)).not.toContain('selector-leaf-leak')
-      expect(rootTriviaLog).toEqual([])
+      expect(rowsOf(rootTriviaLog)).toEqual([])
       expect(fields).toEqual([])
       expect(errors).toEqual([])
     }

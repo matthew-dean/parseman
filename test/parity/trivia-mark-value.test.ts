@@ -70,7 +70,7 @@ describe('the _rootTriviaLog rollback mark carries a SAVED length, not a hard ze
         literal('z'),
       ),
     }))) {
-      expect(run(root, input, SELECTED).rootTrivia?.rows, engine).toEqual(rows)
+      expect(run(root, input, SELECTED).rootTrivia?.rows, engine).toEqual(Int32Array.from(rows))
     }
   })
 
@@ -90,7 +90,7 @@ describe('the _rootTriviaLog rollback mark carries a SAVED length, not a hard ze
         literal('z'),
       ),
     }))) {
-      expect(run(root, input, SELECTED).rootTrivia?.rows, engine).toEqual(rows)
+      expect(run(root, input, SELECTED).rootTrivia?.rows, engine).toEqual(Int32Array.from(rows))
     }
   })
 })

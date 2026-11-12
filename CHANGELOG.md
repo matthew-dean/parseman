@@ -37,6 +37,15 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   On the CSS example, the five bench workloads and the Jess corpora in all four dialects,
   the rows give the same spans as 0.61.9's `_triviaLog`, and in Jess the same labels except
   two block comments in a nested CSS scope, which the old log named `whitespace`.
+- **Breaking: `RunResult.rootTrivia.rows` is an `Int32Array`, not a `number[]`.** The layout
+  and indexing don't change: five numbers per row, read as `rows[5 * i + k]`, and `length`
+  covers exactly the rows the parse kept. The array is a view of the log the parse wrote, so
+  no row is copied out. `Array.isArray(rows)` is now `false`; use `Array.from(rows)` for a
+  plain array. A document's rows outgrow V8's largest regular object, about 3.2k rows, and
+  past that every growth of a `number[]` copied the whole log. On 4,399 gaps, recording the
+  rows for `select: 'all'` took 340 to 390 µs and now takes 68 to 140 µs (x64, Node 24).
+  `buildRootTriviaIndex(rows, select)` takes any array-like of numbers, so rows kept as a
+  plain array still build an index.
 - **Breaking: `ParseContext` no longer has `_cstTriviaLog` or `_cstRawChildren`.** No engine
   read them back. A node's trivia reaches its builder as the fifth argument (`triviaLog`), and
   raw children come from the node's own capture. Every engine stops saving, clearing and

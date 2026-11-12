@@ -15,6 +15,7 @@ import {
   keywords, literal, makeWhen, many, matches, node, not, otherwise, optional, parse, parser, peek, ref, regex, routed, rules, scanTo,
   run, sepBy, sequence, startsWith, token, transform, when, withCtx,
 } from '../../src/index.ts'
+import { makeRootLog } from '../helpers/root-log.ts'
 
 function synthetic<T>(inner: Combinator<T>, def: ParserDef): Combinator<T> {
   return { ...inner, _def: def }
@@ -1259,7 +1260,7 @@ describe('derived lexical-token families', () => {
     ] as const
     const makeTarget = (): ParseContext => ({
       trivia: literal(' '), triviaKindLabels: ['ws'], _cstBuf: undefined,
-      _cstChildren: [], _cstLeaves: [], _rootTriviaLog: [], trackLines: false,
+      _cstChildren: [], _cstLeaves: [], _rootTriviaLog: makeRootLog(), trackLines: false,
     })
     const run = (mode: 'fail' | 'throw', abrupt?: { phase: 'get' | 'set'; key: string; setCount?: number }) => {
       const log: string[] = []

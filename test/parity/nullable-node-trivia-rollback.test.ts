@@ -20,6 +20,7 @@ import { execRules } from '../../src/table/exec.ts'
 import { AssemblyCache, tableRules } from '../../src/table/assemble.ts'
 import { expandCompact } from '../../src/table/program.ts'
 import { rollbackScannedTriviaAt } from '../../src/combinators/trivia-skip.ts'
+import { makeRootLog, rowsOf } from '../helpers/root-log.ts'
 
 const emptyValue = () => ({ kind: 'empty' as const })
 const buildRoot = (
@@ -93,13 +94,13 @@ describe('nullable node after an ambient trivia boundary', () => {
         { name: 'child', value: 2, span: { start: 2, end: 2 } },
       ],
       _errors: [scanError, childError],
-      _rootTriviaLog: [0, 1, 0, 1, 0, 10, 11, 10, 11, 1, 20, 21, 20, 21, 2],
+      _rootTriviaLog: makeRootLog([0, 1, 0, 1, 0, 10, 11, 10, 11, 1, 20, 21, 20, 21, 2]),
     } as unknown as ParseContext
 
     rollbackScannedTriviaAt(ctx, 3, 6, 5, 10)
 
     expect(ctx._cstBuf?.tl).toEqual([0, 1, 0, 20, 21, 2])
-    expect(ctx._rootTriviaLog).toEqual([0, 1, 0, 1, 0, 20, 21, 20, 21, 2])
+    expect(rowsOf(ctx._rootTriviaLog)).toEqual([0, 1, 0, 1, 0, 20, 21, 20, 21, 2])
     expect(ctx._cstLeaves).toEqual(['before', 'child'])
     expect(ctx._cstBuf?.raw).toEqual(['before-raw', 'child-raw'])
     expect(ctx._fields?.map(f => f.name)).toEqual(['before', 'child'])

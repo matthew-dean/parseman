@@ -668,7 +668,8 @@ flat `triviaLog` into a lookup table for whitespace-sensitive analysis.
 
 Build the same sparse root trivia-gap view that `run()` exposes as
 `result.rootTrivia.index`. Each row is
-`[ownedRangeStart, ownedRangeEnd, markerStart, markerEnd, selectedLabelIndex]`.
+`[ownedRangeStart, ownedRangeEnd, markerStart, markerEnd, selectedLabelIndex]`. `rows` is
+any array-like of numbers: `result.rootTrivia.rows` (an `Int32Array`) or a plain array.
 The view is lazy: maps are built on first lookup and values are entry indices into
 `view.entries` rather than materialized strings.
 
@@ -863,7 +864,7 @@ instead: every labelled chunk under its label, and each gap of unlabelled trivia
 row under `''`. `select` is then the labels reachable from the entry, the root's first,
 followed by `''`. Without `rootTrivia`, `run()` retains no document trivia log.
 `result.rootTrivia.index` provides the gap-query API, and raw rows are in
-`result.rootTrivia.rows`. Their label index is into `select`, which remains stable when
+`result.rootTrivia.rows`, an `Int32Array` read as `rows[5 * i + k]`. Their label index is into `select`, which remains stable when
 a composed grammar changes its local trivia-label order.
 
 Use `classifiedTrivia()` for this grammar. Selected capture rejects a broad

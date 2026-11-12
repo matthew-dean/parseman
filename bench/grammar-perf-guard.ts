@@ -103,7 +103,7 @@ import { readFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { allTriviaParse, parsedTree } from './all-trivia.ts'
+import { parsedTree, plainParse } from './all-trivia.ts'
 import {
   assertIndependentLegs, materialise, calibrate, assertSameParse, measurePasses, verdicts, git, fail, median, sign, SCORE_METHOD, freshGraph, previousRelease, summary, summaryTable, reportAgainstMergeBase, sameSource, identicalSourceNote,
   type Case, type Thresholds,
@@ -163,7 +163,6 @@ const COPY = ['bench/grammar-density'] as const
 type DensityCase = { id: string; kind: string; n: number }
 type Side = {
   compile: (c: unknown) => { parseWithContext: (input: string, ctx: never, pos?: number) => unknown }
-  run: Parameters<typeof allTriviaParse>[0]
   grammar: (c: DensityCase) => unknown
   cases: ReadonlyArray<DensityCase>
   input: (c: DensityCase, rules: number) => string
@@ -172,21 +171,23 @@ type Side = {
 /** Every call is a FRESH module graph, shared by the compiler and the grammar — see `freshGraph`. */
 async function loadSide(dir: string): Promise<Side> {
   const load = freshGraph()
-  const pm = await load(path.join(dir, 'src', 'index.ts')) as { compile: Side['compile']; run: Side['run'] }
+  const pm = await load(path.join(dir, 'src', 'index.ts')) as { compile: Side['compile'] }
   const g = await load(path.join(dir, 'bench', 'grammar-density', 'grammar.ts')) as {
     caseGrammar: Side['grammar']
     caseInput: Side['input']
     DENSITY_CASES: Side['cases']
   }
-  return { compile: pm.compile, run: pm.run, grammar: g.caseGrammar, cases: g.DENSITY_CASES, input: g.caseInput }
+  return { compile: pm.compile, grammar: g.caseGrammar, cases: g.DENSITY_CASES, input: g.caseInput }
 }
 
 function toCases(side: Side): Case[] {
   return side.cases.map(c => {
     const compiled = side.compile(side.grammar(c))
     const input = side.input(c, CONFIG.input.rules)
-    const parseAll = allTriviaParse(side.run, compiled, input)
-    const parse = (): unknown => parsedTree(parseAll())
+    // The plain parse, the same call on both releases; `perf:xproc:gate` reports the
+    // parse that records every trivia gap beside it.
+    const parsePlain = plainParse(compiled, input)
+    const parse = (): unknown => parsedTree(parsePlain())
     return {
       id: c.id,
       detail: `${c.n} ${c.kind === 'expected' ? 'opt/arm' : 'probes/val'}`,

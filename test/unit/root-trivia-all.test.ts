@@ -9,7 +9,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import {
-  choice, classifiedTrivia, compile, lines, literal, node, parser, ref, regex, rules, sequence, trivia,
+  choice, classifiedTrivia, compile, lines, literal, many, node, parser, ref, regex, rules, sequence, trivia,
   type Combinator,
 } from '../../src/index.ts'
 import { run } from '../../src/functional/run.ts'
@@ -23,8 +23,9 @@ const plain = (): Combinator<unknown> => trivia(regex(/(?:[ \n]+|\/\*[^*]*\*\/)+
 const classified = (): Combinator<unknown> =>
   classifiedTrivia({ whitespace: regex(/[ \n]+/), comment: regex(/\/\*[^*]*\*\//) })
 
-/** What a run's root trivia says: its rows, and the labels they index. */
-const capture = (r: ReturnType<typeof run>): object => ({ rows: r.rootTrivia?.rows, select: r.rootTrivia?.select })
+/** What a run's root trivia says: its rows (as numbers to compare), and the labels they index. */
+const capture = (r: ReturnType<typeof run>): object =>
+  ({ rows: r.rootTrivia === undefined ? undefined : [...r.rootTrivia.rows], select: r.rootTrivia?.select })
 
 /** `[markerStart, markerEnd, label]` per row, after checking every engine agrees on the rows. */
 function allRows(g: G, input: string): Array<[number, number, string]> {
@@ -49,7 +50,7 @@ describe("rootTrivia: { select: 'all' }", () => {
     expect(run(g['R']!, input, ALL).rootTrivia?.select).toEqual([''])
     expect(allRows(g, input)).toEqual([[1, 8, ''], [9, 11, '']])
     const rows = run(g['R']!, input, ALL).rootTrivia!.rows
-    expect(rows.slice(0, 5)).toEqual([1, 8, 1, 8, 0])
+    expect(rows.slice(0, 5)).toEqual(Int32Array.of(1, 8, 1, 8, 0))
   })
 
   it('records every labelled chunk under its label, whitespace included', () => {
@@ -58,8 +59,8 @@ describe("rootTrivia: { select: 'all' }", () => {
     expect(run(g['R']!, input, ALL).rootTrivia?.select).toEqual(['whitespace', 'comment', ''])
     expect(allRows(g, input)).toEqual([[1, 2, 'whitespace'], [2, 7, 'comment'], [7, 8, 'whitespace']])
     // Each row carries the gap that owns it, as a label list's rows do.
-    expect(run(g['R']!, input, ALL).rootTrivia!.rows.slice(5, 10)).toEqual([1, 8, 2, 7, 1])
-    expect(run(g['R']!, input, { rootTrivia: { select: ['comment'] } }).rootTrivia!.rows).toEqual([1, 8, 2, 7, 0])
+    expect(run(g['R']!, input, ALL).rootTrivia!.rows.slice(5, 10)).toEqual(Int32Array.of(1, 8, 2, 7, 1))
+    expect(run(g['R']!, input, { rootTrivia: { select: ['comment'] } }).rootTrivia!.rows).toEqual(Int32Array.of(1, 8, 2, 7, 0))
   })
 
   it('names a chunk by its label in a scope that orders the labels differently', () => {
@@ -85,7 +86,7 @@ describe("rootTrivia: { select: 'all' }", () => {
     for (const [name, table] of [...readers(prog), ...hybridReaders(prog)]) {
       const r = run(table['Used']!, input, ALL)
       expect(r.rootTrivia?.select, name).toEqual(select)
-      expect(r.rootTrivia?.rows.slice(5, 10), name).toEqual([3, 7, 3, 6, 2])
+      expect(r.rootTrivia?.rows.slice(5, 10), name).toEqual(Int32Array.of(3, 7, 3, 6, 2))
     }
   })
 
@@ -125,6 +126,17 @@ describe("rootTrivia: { select: 'all' }", () => {
     expect(capture(run(g['R']!, 'a/*1*/c', ALL))).toEqual({ rows: [1, 6, 1, 6, 1], select: ['whitespace', 'comment', ''] })
   })
 
+  it('returns its rows as an Int32Array of exactly the rows kept, past the log\'s first growth', () => {
+    const g = rules({ trivia: plain() }, () => ({ R: node('R', many(literal('a'))) })) as G
+    const input = Array.from({ length: 200 }, () => 'a').join(' ')
+    const want: number[] = []
+    for (let i = 1; i < 200; i++) want.push(2 * i - 1, 2 * i, 2 * i - 1, 2 * i, 0)
+    expect(allRows(g, input)).toHaveLength(199)
+    const rows = run(g['R']!, input, ALL).rootTrivia!.rows
+    expect(rows).toBeInstanceOf(Int32Array)
+    expect(rows).toEqual(Int32Array.from(want))
+  })
+
   it('keeps no row for trivia a failed alternative scanned', () => {
     const g = rules({ trivia: plain() }, () => ({
       R: choice(sequence(literal('a'), literal('x')), sequence(literal('a'), literal('y'))),
@@ -141,7 +153,7 @@ describe("rootTrivia: { select: 'all' }", () => {
       [1, 2, 'whitespace'], [2, 7, 'comment'], [7, 8, 'whitespace'],
       [9, 10, 'whitespace'], [10, 15, 'comment'], [15, 16, 'whitespace'],
     ])
-    expect(run(g['R']!, input, { rootTrivia: { select: ['comment'] } }).rootTrivia!.rows).toEqual([9, 16, 10, 15, 0])
+    expect(run(g['R']!, input, { rootTrivia: { select: ['comment'] } }).rootTrivia!.rows).toEqual(Int32Array.of(9, 16, 10, 15, 0))
   })
 
   it('names a label only a nested scope uses', () => {

@@ -1,7 +1,7 @@
 import type { Combinator, ParseContext, ParseError, ParseResult, Span } from '../types.ts'
 import { REC } from '../recovery/scan.ts'
 import { createParseContext } from '../parse-context.ts'
-import { allTriviaLabels, buildRootTriviaIndex, type RootTriviaIndex } from '../cst/trivia-entries.ts'
+import { allTriviaLabels, buildRootTriviaIndex, RootTriviaLog, type RootTriviaIndex } from '../cst/trivia-entries.ts'
 import { edgesOf } from '../analysis/children.ts'
 /* `cst/host-mode.ts` and `cst/trivia-entries.ts` are import-free by design, so
  * this keeps the `parseman/run` closure minimal — see
@@ -95,8 +95,9 @@ export type RunOptions = {
 }
 
 export type RootTriviaCapture = {
-  /** Packed `[gapStart, gapEnd, markerStart, markerEnd, selectedKindIndex]` rows. */
-  readonly rows: readonly number[]
+  /** Packed `[gapStart, gapEnd, markerStart, markerEnd, selectedKindIndex]` rows: a view of
+   * exactly the rows the parse kept, read as `rows[5 * i + k]`. */
+  readonly rows: Int32Array
   /** Labels requested by this caller; row kind indices refer to this array. For
    * `select: 'all'`, the grammar's labels followed by `''` (unlabelled trivia). */
   readonly select: readonly string[]
@@ -488,7 +489,7 @@ export function runRule(given: Runnable | CompiledEntry, input: string, options:
       )
     }
   }
-  const selectedRootLog = captureRootTrivia ? [] as number[] : undefined
+  const selectedRootLog = captureRootTrivia ? new RootTriviaLog() : undefined
   /*
    * Refuse an artifact/host mismatch ONCE per parse, exactly as `parseDoc` and a
    * compiled parser's `parseWithContext` already do. `run()` is handed a RULE, not the
@@ -521,6 +522,7 @@ export function runRule(given: Runnable | CompiledEntry, input: string, options:
   if (captureRootTrivia) {
     ctx._rootTriviaLog = selectedRootLog!
     ctx._rootTriviaKindIndex = makeSelectedRootLabelIndex(rootTriviaSelection)
+    ctx._rootTriviaGapKind = ctx._rootTriviaKindIndex['']
     // A label list is answered only by classified scopes; `'all'` takes unlabelled
     // scopes too, under `''`.
     ctx._rootTriviaStrictScopes = !allTrivia
@@ -575,7 +577,10 @@ export function runRule(given: Runnable | CompiledEntry, input: string, options:
   // two shapes the contract calls for, which is what the spread was silently
   // doing anyway, and a conditional spread is the shape hazard this repo has
   // an incident over.
-  return selectedRootLog !== undefined && selectedRootLog.length > 0
+  const rows = selectedRootLog !== undefined && selectedRootLog.length > 0
+    ? selectedRootLog.buf.subarray(0, selectedRootLog.length)
+    : undefined
+  return rows !== undefined
     ? new RunResultWithRootTrivia(
         r.ok,
         value,
@@ -583,9 +588,9 @@ export function runRule(given: Runnable | CompiledEntry, input: string, options:
         expected,
         errors,
         {
-          rows: selectedRootLog,
+          rows,
           select: rootTriviaSelection!,
-          index: buildRootTriviaIndex(selectedRootLog, rootTriviaSelection!),
+          index: buildRootTriviaIndex(rows, rootTriviaSelection!),
         },
         unconsumedFrom,
       )

@@ -68,9 +68,11 @@ const cases: Case[] = []
 const mod = await import(args.module) as Record<string, unknown>
 
 if (args.kind === 'workloads') {
-  const buildWorkloads = mod['buildWorkloads'] as () => Array<{ id: string; input: string; make: () => { parse: () => unknown } }>
+  type Built = () => { parse: () => unknown }
+  const buildWorkloads = mod['buildWorkloads'] as () => Array<{ id: string; input: string; make: Built; capture?: Built }>
   for (const w of buildWorkloads()) {
-    const built = w.make()
+    // The recording parse where the workload has one: the rows count the trivia recorders too.
+    const built = (w.capture ?? w.make)()
     cases.push({ id: w.id, input: w.input, parse: built.parse, accept: r => assertWorkloadFullyConsumed('call-count', w.id, w.input, r) })
   }
 } else {

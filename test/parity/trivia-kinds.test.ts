@@ -176,7 +176,7 @@ describe('selected root trivia scopes', () => {
     const result = run(parser({ trivia: overlapping }, sequence(literal('a'), literal('b'))), 'a / b', {
       rootTrivia: { select: ['broad'] },
     })
-    expect(result.rootTrivia).toMatchObject({ rows: [1, 4, 2, 4, 0], select: ['broad'] })
+    expect(result.rootTrivia).toMatchObject({ rows: Int32Array.of(1, 4, 2, 4, 0), select: ['broad'] })
     expect(() => classifiedTrivia({
       optionalWhitespace: regex(/[ \t]*/),
     })).toThrow(/non-nullable/)
@@ -222,7 +222,7 @@ describe('selected root trivia scopes', () => {
       const result = run(root, 'a #*x*# b', options)
       expect(result.ok, engine).toBe(true)
       expect(result.rootTrivia, engine).toMatchObject({
-        rows: [1, 8, 2, 7, 0],
+        rows: Int32Array.of(1, 8, 2, 7, 0),
         select: ['whitespace'],
       })
     }
@@ -349,7 +349,7 @@ describe('labeled trivia kinds — macro metadata', () => {
     })
 
     expect(result.rootTrivia).toMatchObject({
-      rows: [1, 8, 2, 7, 0],
+      rows: Int32Array.of(1, 8, 2, 7, 0),
       select: ['blockComment', 'blockComment'],
     })
   })
@@ -372,7 +372,7 @@ describe('labeled trivia kinds — macro metadata', () => {
     const cst = compose([base, delta], { hostMode: 'cst' }) as { Doc?: Runnable }
     const input = 'x a /*x*/ b y'
     const opts = { rootTrivia: { select: ['blockComment'] as const } }
-    const expected = { rows: [3, 10, 4, 9, 0], select: ['blockComment'] }
+    const expected = { rows: Int32Array.of(3, 10, 4, 9, 0), select: ['blockComment'] }
 
     expect(run(ast.Doc!, input, opts).rootTrivia).toMatchObject(expected)
     expect(run(cst.Doc!, input, { ...opts, build: cstBuildHost() }).rootTrivia).toMatchObject(expected)
@@ -388,7 +388,7 @@ describe('labeled trivia kinds — macro metadata', () => {
 
     expect(result.ok).toBe(true)
     expect(result.rootTrivia).toMatchObject({
-      rows: [1, 8, 2, 7, 0],
+      rows: Int32Array.of(1, 8, 2, 7, 0),
       select: ['blockComment'],
     })
     expect(result.rootTrivia?.index.entries.length).toBe(1)
@@ -428,7 +428,7 @@ describe('labeled trivia kinds — macro metadata', () => {
 
     const interpreted = run(grammar.Root, input, selected)
     const macro = run(compiledGrammar.Root, input, selected)
-    const expected = { rows: [1, 8, 2, 7, 0], select: ['blockComment'] }
+    const expected = { rows: Int32Array.of(1, 8, 2, 7, 0), select: ['blockComment'] }
     expect(interpreted.rootTrivia).toMatchObject(expected)
     expect(macro.rootTrivia).toMatchObject(expected)
   })
@@ -441,31 +441,31 @@ describe('labeled trivia kinds — macro metadata', () => {
         name: 'ordered choice arm',
         root: choice(sequence(literal('a'), literal('b')), sequence(literal('a'), literal('c'))),
         input: 'a /*x*/ c',
-        rows: [1, 8, 2, 7, 0],
+        rows: Int32Array.of(1, 8, 2, 7, 0),
       },
       {
         name: 'attempt arm',
         root: choice(attempt(sequence(literal('a'), literal('b'))), sequence(literal('a'), literal('c'))),
         input: 'a /*x*/ c',
-        rows: [1, 8, 2, 7, 0],
+        rows: Int32Array.of(1, 8, 2, 7, 0),
       },
       {
         name: 'optional tail',
         root: sequence(literal('a'), optional(literal('b'))),
         input: 'a /*x*/ c',
-        rows: [],
+        rows: Int32Array.of(),
       },
       {
         name: 'repeat tail',
         root: sequence(literal('a'), many(literal('b'))),
         input: 'a /*x*/ c',
-        rows: [],
+        rows: Int32Array.of(),
       },
       {
         name: 'separator plus missing item',
         root: sepBy(literal('a'), literal(',')),
         input: 'a /*x*/, /*y*/',
-        rows: [],
+        rows: Int32Array.of(),
       },
     ] as const
 
@@ -476,7 +476,7 @@ describe('labeled trivia kinds — macro metadata', () => {
       for (const [engine, root] of [['interpreter', grammar.Root], ['compiled', compiledGrammar.Root]] as const) {
         const result = run(root, testCase.input, selected)
         if (testCase.rows.length === 0) expect(result.rootTrivia, `${testCase.name}: ${engine}`).toBeUndefined()
-        else expect(result.rootTrivia?.rows, `${testCase.name}: ${engine}`).toEqual(testCase.rows)
+        else expect(result.rootTrivia?.rows, `${testCase.name}: ${engine}`).toEqual(Int32Array.from(testCase.rows))
       }
     }
   })

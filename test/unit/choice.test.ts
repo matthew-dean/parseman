@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { literal, choice, parse, regex, transform } from '../../src/index.ts'
+import { makeRootLog, rowsOf } from '../helpers/root-log.ts'
 
 describe('choice', () => {
   it('matches first alternative', () => {
@@ -114,12 +115,12 @@ describe('choice — firstMatch auto-not (overlapping arms force a rollback)', (
     // just CST capture) — the interpreter must truncate it back to the mark taken
     // before the losing arm ran, same as it does for the plain-failure path.
     const p = choice(literal('foo'), regex(/[a-z]+/), regex(/[0-9]+/))
-    const log: number[] = [1, 2, 3, 4, 5]
+    const log = makeRootLog([1, 2, 3, 4, 5])
     const ctx = { trackLines: false, _rootTriviaLog: log }
     const r = p.parse('fooz', 0, ctx)
     expect(r.ok).toBe(true)
     if (r.ok) expect(r.value).toBe('fooz')
-    expect(ctx._rootTriviaLog).toEqual([1, 2, 3, 4, 5])
+    expect(rowsOf(ctx._rootTriviaLog)).toEqual([1, 2, 3, 4, 5])
   })
 
   it('greedyClassify applies a wrapping transform on the winning literal arm', () => {

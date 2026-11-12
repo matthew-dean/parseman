@@ -102,7 +102,7 @@ export const g = compose([base, rules({ trivia: outerTrivia }, (g) => ({ Doc: se
     const result = run(g.Doc, 'x a /*x*/ b y', { rootTrivia: { select: ['blockComment'] } })
 
     expect(result.rootTrivia).toMatchObject({
-      rows: [3, 10, 4, 9, 0],
+      rows: Int32Array.of(3, 10, 4, 9, 0),
       select: ['blockComment'],
     })
   })
@@ -127,7 +127,7 @@ export const g = compose([base, rules({ trivia: outerTrivia }, (g) => ({ Doc: se
       rootTrivia: { select: ['blockComment'] },
     })
     expect(result.rootTrivia).toMatchObject({
-      rows: [3, 10, 4, 9, 0],
+      rows: Int32Array.of(3, 10, 4, 9, 0),
       select: ['blockComment'],
     })
   })
@@ -148,7 +148,7 @@ export const g = composeLeaf([syntax, rules({ trivia: rw }, g => ({ Doc: sequenc
     const result = run(g.Doc, 'x a /*x*/ b y', { rootTrivia: { select: ['blockComment'] } })
 
     expect(result.rootTrivia).toMatchObject({
-      rows: [3, 10, 4, 9, 0],
+      rows: Int32Array.of(3, 10, 4, 9, 0),
       select: ['blockComment'],
     })
   })

@@ -198,7 +198,7 @@ describe('node({ trailingTrivia: true }) with a reducer that does not read trivi
   it('still records that trivia in the root trivia table, in every engine', () => {
     for (const [name, entry] of engines()) {
       const result = run(entry, SOURCE, { rootTrivia: { select: ['comment'] } })
-      expect(result.rootTrivia?.rows, name).toEqual([3, 12, 4, 11, 0])
+      expect(result.rootTrivia?.rows, name).toEqual(Int32Array.of(3, 12, 4, 11, 0))
     }
   })
 

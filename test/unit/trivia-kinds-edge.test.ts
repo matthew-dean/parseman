@@ -3,6 +3,7 @@ import { trivia, label, regex, oneOrMore, choice } from '../../src/index.ts'
 import { analyzeLabeledTrivia, labeledTriviaSpec, triviaKindLabels, scanLabeledTriviaChunks, scanLabeledTriviaEnd, visitLabeledTrivia, recordTriviaChunks } from '../../src/cst/trivia-kinds.ts'
 import type { ParseContext } from '../../src/types.ts'
 import type { CstCaptureBuf } from '../../src/cst/capture-buffer.ts'
+import { makeRootLog, rowsOf } from '../helpers/root-log.ts'
 
 describe('analyzeLabeledTrivia() — single labeled arm', () => {
   it('accepts oneOrMore of a single labeled regex (non-choice shape)', () => {
@@ -67,7 +68,7 @@ describe('scanLabeledTriviaChunks()', () => {
 
 describe('recordTriviaChunks()', () => {
   it('records selected markers with their shared complete trivia gap', () => {
-    const rootLog: number[] = []
+    const rootLog = makeRootLog()
     const buf: CstCaptureBuf = {}
     const ctx: ParseContext = {
       trackLines: false,
@@ -84,12 +85,12 @@ describe('recordTriviaChunks()', () => {
       { start: 12, end: 13, kindIndex: 0 },
     ])
 
-    expect(rootLog).toEqual([4, 13, 5, 12, 0])
+    expect(rowsOf(rootLog)).toEqual([4, 13, 5, 12, 0])
     expect(buf.tl).toEqual([4, 5, 0, 0, 5, 12, 0, 1, 12, 13, 0, 0])
   })
 
   it('does not write a root marker when its scope is opaque', () => {
-    const rootLog: number[] = []
+    const rootLog = makeRootLog()
     const ctx: ParseContext = {
       trackLines: false,
       triviaKindLabels: ['annotation'],
@@ -100,7 +101,7 @@ describe('recordTriviaChunks()', () => {
 
     recordTriviaChunks(ctx, [{ start: 0, end: 7, kindIndex: 0 }])
 
-    expect(rootLog).toEqual([])
+    expect(rowsOf(rootLog)).toEqual([])
   })
 })
 

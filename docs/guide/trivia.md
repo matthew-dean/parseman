@@ -162,7 +162,7 @@ formatter's policy, but don't select broad `whitespace` just to make line layout
 observable. Without `rootTrivia.select`, `run()` retains no root trivia at all. With it,
 a result still omits `rootTrivia` when no selected marker occurred; otherwise
 `result.rootTrivia.index` is the normal API, and `result.rootTrivia.rows` exposes the
-raw compact rows when you need them.
+raw compact rows when you need them, as an `Int32Array` of five numbers per row.
 
 `select: 'all'` asks for the document's whole trivia log, labelled or not:
 

@@ -63,6 +63,31 @@ const EMPTY_GAPS: readonly RootTriviaGap[] = Object.freeze([])
 /** Number of packed fields in one selected-root trivia row. */
 const SELECTED_ROOT_STRIDE = 5
 
+/**
+ * The root trivia log of one `run()`: five-number rows (`buildRootTriviaIndex`) in an
+ * `Int32Array`, with `length` as the cursor. A row is written in place and `length`
+ * moved past it, a rollback sets `length`, and `RunResult.rootTrivia.rows` is the
+ * `subarray` up to `length`, so no row is copied out.
+ *
+ * Not a `number[]`: a document's rows outgrow V8's largest regular object (128 KB, about
+ * 3.2k five-number rows), and past that every growth of an array's backing store is a
+ * large-object allocation and copy, about 45 ns a row on the grammar-density cases.
+ * Doubling here pays that a handful of times per parse.
+ */
+export class RootTriviaLog {
+  length = 0
+  buf = new Int32Array(320)
+}
+
+/** Make room for `n` more numbers in `log`. The one growth path; the pushes are inline. */
+export function growRootTriviaLog(log: RootTriviaLog, n: number): void {
+  let size = log.buf.length * 2
+  while (size < log.length + n) size *= 2
+  const buf = new Int32Array(size)
+  buf.set(log.buf.subarray(0, log.length))
+  log.buf = buf
+}
+
 type RootTriviaMaps = {
   before: Map<number, number[]>
   after: Map<number, number[]>
@@ -130,7 +155,7 @@ export function triviaEntries(
  * rows without constructing document-wide maps.
  */
 export function buildRootTriviaIndex(
-  log: readonly number[],
+  log: ArrayLike<number>,
   labels: readonly string[],
 ): RootTriviaIndex {
   const length = Math.floor(log.length / SELECTED_ROOT_STRIDE)
