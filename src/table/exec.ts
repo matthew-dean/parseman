@@ -632,7 +632,7 @@ function makeDriver(
         // caller was capturing BEFORE the sinks were cleared.
         const sTrivia = ctx.trivia, sKinds = ctx.triviaKindLabels
         const sBuf = ctx._cstBuf, sChildren = ctx._cstChildren, sLeaves = ctx._cstLeaves
-        const sRootTl = ctx._rootTriviaLog
+        const sRootTl = ctx._rootTriviaLog, sGapTl = ctx._rootGapLog
         const wasCapturing = cstCaptureActive(ctx)
 
         const sScan = SCAN
@@ -643,6 +643,7 @@ function makeDriver(
         ctx._cstChildren = undefined
         ctx._cstLeaves = undefined
         ctx._rootTriviaLog = undefined
+        ctx._rootGapLog = undefined
 
         let v: unknown
         try {
@@ -655,6 +656,7 @@ function makeDriver(
           ctx._cstChildren = sChildren
           ctx._cstLeaves = sLeaves
           ctx._rootTriviaLog = sRootTl
+          ctx._rootGapLog = sGapTl
         }
         if (v === FAIL) return FAIL
         const end = EC.e
@@ -707,7 +709,7 @@ function makeDriver(
         // cannot publish into the outer collector; this row publishes one leaf.
         const sTrivia = ctx.trivia, sKinds = ctx.triviaKindLabels
         const sBuf = ctx._cstBuf, sChildren = ctx._cstChildren, sLeaves = ctx._cstLeaves
-        const sRootTl = ctx._rootTriviaLog
+        const sRootTl = ctx._rootTriviaLog, sGapTl = ctx._rootGapLog
         const wasCapturing = cstCaptureActive(ctx)
         const sScan = SCAN
         SCAN = null
@@ -717,6 +719,7 @@ function makeDriver(
         ctx._cstChildren = undefined
         ctx._cstLeaves = undefined
         ctx._rootTriviaLog = undefined
+        ctx._rootGapLog = undefined
         let end: number
         try { end = run(input, pos, ctx, scans[scanId]) }
         finally {
@@ -727,6 +730,7 @@ function makeDriver(
           ctx._cstChildren = sChildren
           ctx._cstLeaves = sLeaves
           ctx._rootTriviaLog = sRootTl
+          ctx._rootGapLog = sGapTl
         }
         if (end < 0) return FAIL
         const value = input.slice(pos, end)

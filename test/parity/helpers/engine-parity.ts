@@ -60,11 +60,12 @@ function freshSinks(
   ambient: Record<string, unknown>,
 ): { sinks: Sinks; ctx: ParseContext } {
   const sinks: Sinks = { triviaLog: makeRootLog(), cstLeaves: [], errors: [] }
+  sinks.triviaLog.gapKind = allTriviaKinds(ambient)['']!
   const ctx = {
     trackLines: false,
     ...ambient,
     ...(captures
-      ? { _rootTriviaLog: sinks.triviaLog, _rootTriviaKindIndex: allTriviaKinds(ambient), _rootTriviaGapKind: allTriviaKinds(ambient)[''], _cstLeaves: sinks.cstLeaves }
+      ? { _rootTriviaLog: sinks.triviaLog, _rootTriviaKindIndex: allTriviaKinds(ambient), _rootGapLog: sinks.triviaLog, _cstLeaves: sinks.cstLeaves }
       : {}),
     _errors: sinks.errors,
   } as unknown as ParseContext

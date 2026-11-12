@@ -379,10 +379,10 @@ export type ParseContext = {
    * label through this once-built table, so composed grammars may use different
    * label orders without a per-chunk linear selected-label search. */
   _rootTriviaKindIndex?: Readonly<Record<string, number>> | undefined
-  /** `_rootTriviaKindIndex['']`, read once per run: the kind of a gap of unlabelled
-   * trivia, which only `select: 'all'` defines. The index has no prototype, so V8 keeps
-   * it as a dictionary, and a lookup there per gap cost about 10 ns. */
-  _rootTriviaGapKind?: number | undefined
+  /** The root log when it takes gaps of unlabelled trivia (`select: 'all'`), else
+   * undefined; its `gapKind` is the row kind. Decided once at run start and cleared
+   * wherever `_rootTriviaLog` is, so recording a gap is one test and the stores. */
+  _rootGapLog?: RootTriviaLog | undefined
   /** Selected-root capture checks local trivia classification once per scope. */
   _rootTriviaStrictScopes?: boolean | undefined
   /**

@@ -73,10 +73,11 @@ export function triviaLogFromRootRows(rows: readonly number[], labels: readonly 
  * `rootTrivia: { select: 'all' }`: each label, then `''` for unlabelled trivia. */
 function allTriviaContext(base: ParseContext, labels: readonly string[] = []): { ctx: ParseContext; rows: RootTriviaLog } {
   const rows = makeRootLog()
+  rows.gapKind = labels.length
   const kinds: Record<string, number> = {}
   labels.forEach((label, i) => { kinds[label] ??= i })
   kinds[''] = labels.length
-  return { ctx: { ...base, _rootTriviaLog: rows, _rootTriviaKindIndex: kinds, _rootTriviaGapKind: labels.length }, rows }
+  return { ctx: { ...base, _rootTriviaLog: rows, _rootTriviaKindIndex: kinds, _rootGapLog: rows }, rows }
 }
 
 /** Run interpreted + compiled, each recording the document's whole trivia log. */

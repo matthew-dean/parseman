@@ -76,7 +76,12 @@ const SELECTED_ROOT_STRIDE = 5
  */
 export class RootTriviaLog {
   length = 0
-  buf = new Int32Array(320)
+  buf: Int32Array
+  /** The row kind of a gap of unlabelled trivia: `select`'s `''`, or -1 without one. */
+  gapKind = -1
+  constructor(capacity = 320) {
+    this.buf = new Int32Array(capacity)
+  }
 }
 
 /** Make room for `n` more numbers in `log`. The one growth path; the pushes are inline. */

@@ -421,22 +421,18 @@ export function scanTriviaCompact(input: string, cur: number, ctx: ParseContext)
  * trivia, `trackLines` off), where the gap is a single row and there is nothing to defer.
  */
 export function recordUnlabelledGap(ctx: ParseContext, start: number, end: number): void {
-  const rootLog = ctx._rootTriviaLog
+  // `_rootTriviaCapture` needs no test: an opaque region sets it to `true` under `'all'`.
+  const rootLog = ctx._rootGapLog
   if (rootLog !== undefined) {
-    if (ctx._rootTriviaCapture !== false) {
-      const kind = ctx._rootTriviaGapKind
-      if (kind !== undefined) {
-        const n = rootLog.length
-        if (n + 5 > rootLog.buf.length) growRootTriviaLog(rootLog, 5)
-        const b = rootLog.buf
-        b[n] = start
-        b[n + 1] = end
-        b[n + 2] = start
-        b[n + 3] = end
-        b[n + 4] = kind
-        rootLog.length = n + 5
-      }
-    }
+    const n = rootLog.length
+    if (n + 5 > rootLog.buf.length) growRootTriviaLog(rootLog, 5)
+    const b = rootLog.buf
+    b[n] = start
+    b[n + 1] = end
+    b[n + 2] = start
+    b[n + 3] = end
+    b[n + 4] = rootLog.gapKind
+    rootLog.length = n + 5
   }
   if (ctx.captureTrivia === true && ctx._cstBuf !== undefined) pushCstTriviaEntry(ctx, start, end)
 }

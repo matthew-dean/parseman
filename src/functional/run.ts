@@ -489,7 +489,10 @@ export function runRule(given: Runnable | CompiledEntry, input: string, options:
       )
     }
   }
-  const selectedRootLog = captureRootTrivia ? new RootTriviaLog() : undefined
+  const selectedRootLog = captureRootTrivia
+    // Room for a row per 8 input characters, so a document rarely grows the log.
+    ? new RootTriviaLog(Math.max(320, (input.length >> 3) * 5))
+    : undefined
   /*
    * Refuse an artifact/host mismatch ONCE per parse, exactly as `parseDoc` and a
    * compiled parser's `parseWithContext` already do. `run()` is handed a RULE, not the
@@ -522,7 +525,10 @@ export function runRule(given: Runnable | CompiledEntry, input: string, options:
   if (captureRootTrivia) {
     ctx._rootTriviaLog = selectedRootLog!
     ctx._rootTriviaKindIndex = makeSelectedRootLabelIndex(rootTriviaSelection)
-    ctx._rootTriviaGapKind = ctx._rootTriviaKindIndex['']
+    if (allTrivia) {
+      selectedRootLog!.gapKind = ctx._rootTriviaKindIndex['']!
+      ctx._rootGapLog = selectedRootLog
+    }
     // A label list is answered only by classified scopes; `'all'` takes unlabelled
     // scopes too, under `''`.
     ctx._rootTriviaStrictScopes = !allTrivia

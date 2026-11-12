@@ -37,6 +37,7 @@ export function token(root: Combinator<unknown>): Combinator<string> {
       const savedChildren = ctx._cstChildren
       const savedLeaves = ctx._cstLeaves
       const savedRootTriviaLog = ctx._rootTriviaLog
+      const savedRootGapLog = ctx._rootGapLog
       const wasCapturing = cstCaptureActive(ctx)
 
       ctx.trivia = undefined
@@ -45,6 +46,7 @@ export function token(root: Combinator<unknown>): Combinator<string> {
       ctx._cstChildren = undefined
       ctx._cstLeaves = undefined
       ctx._rootTriviaLog = undefined
+      ctx._rootGapLog = undefined
 
       let result: ParseResult<unknown>
       try {
@@ -56,6 +58,7 @@ export function token(root: Combinator<unknown>): Combinator<string> {
         ctx._cstChildren = savedChildren
         ctx._cstLeaves = savedLeaves
         ctx._rootTriviaLog = savedRootTriviaLog
+        ctx._rootGapLog = savedRootGapLog
       }
 
       if (!result.ok) return result
