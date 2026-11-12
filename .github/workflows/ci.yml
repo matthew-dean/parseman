@@ -337,13 +337,19 @@ jobs:
         #  - the artifact hand-off between publish's jobs, the publish job (OIDC,
         #    provenance, the tag push) and the record step (the deploy-key push of the
         #    release onto main);
-        #  - a change to README.md alone, which skips this matrix (`changes`).
+        #  - a change to README.md alone, which skips this matrix (`changes`);
+        #  - a build with no install scripts and no cache: the rebuild below runs on
+        #    this runner, with the restored pnpm cache and a store the scripted install
+        #    filled, where publish's build job has neither. It shows the build is
+        #    reproducible, not that it needs no install scripts.
         #
         # A NEW DEPENDENCY, on purpose: the plan reads npm (`npm view`, `npm pack`), so
         # this required leg fails while the registry is down, and while npm's newest
-        # version has no v* tag: a publish whose tag push failed, or the minutes
-        # between a publish and its tag. Every PR and main's CI then stay red until the
-        # tag is pushed. That state breaks the next release too, and this surfaces it
+        # version has no v* tag: a publish whose tag push failed, or the gap between a
+        # publish and its tag, which is the record step and one git push (usually
+        # seconds, longer when record retries). A run that fails then stays red until
+        # it is re-run or something new is pushed: pushing the tag starts no CI run.
+        # That state breaks the next release too, and this surfaces it
         # (docs/design/release-gates.md, "Rehearsed on every pull request").
         if: steps.plan.outputs.release == 'true'
         env:

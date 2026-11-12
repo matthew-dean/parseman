@@ -214,10 +214,11 @@ rehearse.
 
 This makes a required check depend on npm. The plan runs `npm view` and `npm pack`, so the
 leg fails while the registry is down, and while npm's newest version has no `v*` tag (a
-publish whose tag push failed, or the minutes between a publish and its tag). Every pull
-request and `main`'s own CI stay red until the tag is pushed. That is deliberate: the same
-state stops the next release (below), and a red check on every pull request makes it
-visible at once.
+publish whose tag push failed, or the gap between a publish and its tag: the record step
+and one git push, usually seconds, longer when record retries). Pushing the tag starts no
+CI run, so a pull request's or `main`'s run that failed in that state stays red until it
+is re-run or something new is pushed. That is deliberate: the same state stops the next
+release (below), and a red check on every pull request makes it visible at once.
 
 ### If a step fails
 
