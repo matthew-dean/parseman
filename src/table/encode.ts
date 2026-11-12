@@ -369,7 +369,7 @@ class Encoder {
     lineFlags: number
   } | { kind: 'program'; program: number } | undefined {
     if (!this.selectLexicalBodies) return undefined
-    const body = directExecutableTokenBody(p, name => this.winners?.[name])
+    const body = directExecutableTokenBody(p, this.rr)
     if (body === undefined) return undefined
     const tokenDef = p._def
     if (tokenDef.tag !== 'token') throw new Error('parseman: selected lexical body lost token boundary')
@@ -883,7 +883,7 @@ class Encoder {
         || ((autoNot?.length ?? 0) > 0 && capturesLeaf(p))
     }
     // A rule is asked about from every site that references it, so its walk is kept.
-    const winner = this.winners?.[refName]
+    const winner = this.winners[refName]
     const root = winner !== undefined && !winnerWrapsReference(winner, p) ? winner : p
     const memo = this.leavesState[Number(throughNodes)]!
     let leaves = memo.get(root)
@@ -925,7 +925,7 @@ class Encoder {
         return true
       case 'lazy': {
         const name = (node as unknown as { _ruleName?: string })._ruleName
-        const winner = name === undefined ? undefined : this.winners?.[name]
+        const winner = name === undefined ? undefined : this.winners[name]
         if (winner !== undefined && !winnerWrapsReference(winner, node)) return [winner]
         try { return [def.thunk()] }
         catch { return true }
@@ -2126,7 +2126,7 @@ class Encoder {
         // encoded — see `winners` for why a thunk is the wrong resolver for a
         // merged (composed) map, and why the identity guard is required.
         const refName = (p as unknown as { _ruleName?: string })._ruleName
-        const winner = refName === undefined ? undefined : this.winners?.[refName]
+        const winner = refName === undefined ? undefined : this.winners[refName]
         if (winner !== undefined && !winnerWrapsReference(winner, p)) return this.scopedRef(p, winner)
         let resolved: Combinator<unknown>
         try { resolved = d.thunk() }
