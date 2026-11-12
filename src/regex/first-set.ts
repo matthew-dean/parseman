@@ -38,6 +38,7 @@ type Node =
   | { t: 'rep'; node: Node; min: number }     // quantified; min 0 ⇒ nullable
 
 const ANY: Node = { t: 'any' }
+const GROUP_NAME = /^(?:[\p{ID_Continue}$\u200C\u200D]|\\u[\da-fA-F]{4}|\\u\{[\da-fA-F]+\})+$/u
 const EMPTY: Node = { t: 'empty' }
 
 function charNode(set: FirstSet, nl: boolean): Node {
@@ -166,6 +167,18 @@ function parseRegex(src: string, unicode = false, sets = false): Node {
     return inner
   }
 
+  // Whether the `\q{…}` members starting at `at` include an empty one.
+  const hasEmptyMember = (at: number): boolean => {
+    let len = 0
+    for (let j = at; j < src.length; j++) {
+      const c = src[j]
+      if (c === '\\') { len++; j++; continue }
+      if (c === '|' || c === '}') { if (len === 0) return true; if (c === '}') return false; len = 0; continue }
+      len++
+    }
+    return true
+  }
+
   const parseClass = (): Node => {
     // Read `[ ... ]`, honoring `\]`; detect leading `^` negation.
     let k = i + 1
@@ -177,16 +190,22 @@ function parseRegex(src: string, unicode = false, sets = false): Node {
       // match one character (or string) of a set this does not compute.
       let depth = 1
       let nested = false
+      let emptyString = false
       while (k < src.length && depth > 0) {
         const c = src[k]!
-        if (c === '\\') { if (src[k + 1] === 'q') nested = true; k += 2; continue }
+        if (c === '\\') {
+          if (src[k + 1] === 'q') { nested = true; if (src[k + 2] === '{' && hasEmptyMember(k + 3)) emptyString = true }
+          k += 2
+          continue
+        }
         if (c === '[') { depth++; nested = true }
         else if (c === ']') { depth--; if (depth === 0) break }
         else if ((c === '-' || c === '&') && src[k + 1] === c) nested = true
         k++
       }
       if (src[k] !== ']') throw BAIL
-      if (nested) { i = k + 1; return charNode(any(), true) }
+      // An empty string member (`\q{}`, `\q{a|}`) lets the class match nothing.
+      if (nested) { i = k + 1; return emptyString ? ANY : charNode(any(), true) }
       k = i + 1 + (negated ? 1 : 0)
     }
     let body = ''
@@ -259,7 +278,14 @@ function parseRegex(src: string, unicode = false, sets = false): Node {
       // A property escape (`\p{…}`/`\P{…}`) matches one character of a class this
       // analyzer does not enumerate; `\k<name>` is a backreference, which may match empty.
       case 'p': case 'P': return charNode(any(), true)
-      case 'k': return ANY
+      // Its `<name>` goes with it when that is a group name. Without `u`/`v` and named
+      // groups it is a literal `k<…>`, which reading it as a backreference only
+      // over-approximates; anything else between `<` and `>` (`\k<x|b>`) stays regex.
+      case 'k': {
+        const close = src[i] === '<' ? src.indexOf('>', i) : -1
+        if (close > 0 && GROUP_NAME.test(src.slice(i + 1, close))) i = close + 1
+        return ANY
+      }
       default:
         // A digit escape is a backreference we don't resolve → widen.
         if (e >= '1' && e <= '9') return ANY
@@ -347,9 +373,10 @@ function canConsumeNewline(n: Node): boolean {
  *
  * Errs toward `true` (nullable) — an unparseable pattern is assumed able to
  * match empty, so callers that delete code on a `false` keep their proof.
+ * `flags` reads atoms as `firstSetFromRegex` does.
  */
-export function regexCanMatchEmpty(source: string): boolean {
-  try { return nullable(parseRegex(source)) } catch { return true }
+export function regexCanMatchEmpty(source: string, flags = ''): boolean {
+  try { return nullable(parseRegex(source, flags.includes('u') || flags.includes('v'), flags.includes('v'))) } catch { return true }
 }
 
 /**

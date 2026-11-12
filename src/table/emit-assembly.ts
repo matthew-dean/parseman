@@ -467,16 +467,40 @@ ${scanned}
 }`
 }
 
+const TRIVIA_LOG_LENGTH = 'ctx._cstBuf!==undefined?(ctx._cstBuf.tl!==undefined?ctx._cstBuf.tl.length:0):(ctx._cstTriviaLog!==undefined?ctx._cstTriviaLog.length:0)'
+
 /**
  * A lookahead term that HOLDS its gap (`hold-gap.ts`): the gap is scanned and
  * kept, the lookahead runs at its end, and the cursor stays there for the next
- * term, which cannot match empty.
+ * term, which cannot match empty unless it `recovers`. Then the marks stay in
+ * scope for `emitHeldGapUndo`, which follows the next term.
  */
-function emitHoldTerm(callee: string, dst: string, t: string, l: SiteLabel, skip: string): string {
+function emitHoldTerm(callee: string, dst: string, t: string, l: SiteLabel, skip: string, recovers: boolean): string {
   const fast = `const ${t}v=${callee}(input,cur,ctx)
 if(${t}v===FAIL)return FAIL
 ${dst}=${t}v
 cur=EC.e`
+  if (recovers) {
+    const marked = `let ${t}c=cur,${t}s=cur,${t}tl=0,${t}stl=0,${t}lg=0,${t}slg=0,${t}rt=0,${t}srt=0`
+    if (l.tri === TRI_NONE) return `${marked}\n${fast}`
+    const held = `${t}tl=${TRIVIA_LOG_LENGTH}
+${t}lg=ctx._triviaLog!==undefined?ctx._triviaLog.length:0
+${t}rt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0
+${t}s=${skip}(input,cur,ctx)
+${t}stl=${TRIVIA_LOG_LENGTH}
+${t}slg=ctx._triviaLog!==undefined?ctx._triviaLog.length:0
+${t}srt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0
+const ${t}v=${callee}(input,${t}s,ctx)
+if(${t}v===FAIL)return FAIL
+${dst}=${t}v
+cur=${t}s`
+    return l.tri !== TRI_UNKNOWN ? `${marked}\n${held}` : `${marked}
+if(ctx.trivia===undefined){
+${fast}
+}else{
+${held}
+}`
+  }
   if (l.tri === TRI_NONE) return fast
   const held = `const ${t}s=${skip}(input,cur,ctx)
 const ${t}v=${callee}(input,${t}s,ctx)
@@ -489,6 +513,11 @@ ${fast}
 }else{
 ${held}
 }`
+}
+
+/** The next term recovered at zero width, so the gap held for it was never consumed. */
+function emitHeldGapUndo(t: string): string {
+  return `if(cur===${t}s&&${t}s!==${t}c){rollbackScannedTriviaAt(ctx,${t}tl,${t}stl,${t}lg,${t}slg,${t}rt,${t}srt);cur=${t}c}`
 }
 
 /**
@@ -2019,6 +2048,7 @@ return v
         }
         parts.push('let cur=EC.e')
         const names: string[] = ['v0']
+        let heldUndo: string | undefined
         for (let i = 1; i < n; i++) {
           const vn = `v${i}`
           parts.push(`let ${vn}`)
@@ -2038,9 +2068,16 @@ return v
             // The callee expression hands it over AFTER the scan statement, right
             // before the call, so a field inside the trivia grammar cannot take it.
             const callee = leadingTriviaFieldAt(code, k, childIp) ? `(LEAD.at=cur,${kids[i]!})` : kids[i]!
-            parts.push(holdsGap(code, k, base, n, i, nullable)
-              ? emitHoldTerm(callee, vn, tmp(), L, skipFor(L))
-              : emitTerm(callee, vn, tmp(), L, skipFor(L), L.tri >= 0 ? triviaMiss(L.tri) : undefined))
+            if (holdsGap(code, k, base, n, i, nullable)) {
+              const t = tmp()
+              const recovers = rowNullable(code, k, code[base + i + 1]!, nullable)
+              parts.push(emitHoldTerm(callee, vn, t, L, skipFor(L), recovers))
+              heldUndo = recovers ? t : undefined
+            } else {
+              parts.push(emitTerm(callee, vn, tmp(), L, skipFor(L), L.tri >= 0 ? triviaMiss(L.tri) : undefined))
+              if (heldUndo !== undefined) parts.push(emitHeldGapUndo(heldUndo))
+              heldUndo = undefined
+            }
           }
           names.push(vn)
         }

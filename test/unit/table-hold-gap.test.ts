@@ -7,7 +7,7 @@
  * The trivia counts the gaps it consumes: its gate runs only after a match.
  */
 import { describe, expect, it } from 'vitest'
-import { gate, literal, node, not, optional, peek, regex, rules, sequence, trivia } from '../../src/index.ts'
+import { expect as expectOr, gate, literal, node, not, optional, peek, regex, rules, sequence, trivia } from '../../src/index.ts'
 import type { Combinator } from '../../src/types.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { tableRules } from '../../src/table/assemble.ts'
@@ -22,6 +22,9 @@ function grammar(counter: { n: number }): Record<string, Combinator<unknown>> {
     // A word, a gap, a lookahead, the next word: the shape of a value run's boundary.
     Root: node('Pair', sequence(g.Word!, not(literal('!')), g.Word!, peek(regex(/[;]/)), literal(';'), optional(literal('?'))),
       children => ({ pair: children })),
+    // An expect() matches empty only by recovering, so valid text still holds the gap.
+    Recovers: node('Recovers', sequence(g.Word!, not(literal('!')), expectOr(g.Word!, 'word'), optional(literal('?'))),
+      children => ({ recovers: children })),
     // A lookahead before a term that CAN match empty keeps the gap unconsumed.
     Tail: node('Tail', sequence(g.Word!, not(literal('!')), optional(literal('x'))), (children, _fields, span) => ({ tail: children, span })),
     Word: node('Word', regex(/[a-z]+/), children => ({ word: children[0] })),
@@ -42,6 +45,16 @@ describe('a gap held over a lookahead', () => {
       expect(run(entry as Runnable, 'a b ;').ok, engine).toBe(true)
       // The gap after `a` and the gap after `b`, once each.
       expect(counter.n, engine).toBe(2)
+    }
+  })
+
+  it('is consumed once when the next term matches empty only by recovering', () => {
+    const counter = { n: 0 }
+    const prog = encodeTable(grammar(counter))
+    for (const [engine, entry] of [['emitted', tableRules(emittedOf(prog)).Recovers!], ['closure', tableRules({ ...prog, asm: [] }).Recovers!]] as const) {
+      counter.n = 0
+      expect(run(entry as Runnable, 'a b').ok, engine).toBe(true)
+      expect(counter.n, engine).toBe(1)
     }
   })
 

@@ -503,3 +503,30 @@ describe('the size probe is deterministic', { timeout: TWO_SPAWN_MS }, () => {
     expect(JSON.stringify(a.rows)).toBe(JSON.stringify(b.rows))
   })
 })
+
+describe('the size probe does not weigh the version stamp', () => {
+  it('takes the version out of what a unit lowers to', async () => {
+    // The release tree is stamped with the version it publishes, and `0.61.9` to
+    // `0.61.10` added 2 B to every unit: ten fixtures went past their ceiling there
+    // and nowhere else.
+    const { buildUnits, loadLowerer, withoutVersionStamp } = await import('../../bench/size/probe.ts')
+    const { PARSEMAN_VERSION } = await import('../../src/version.ts')
+    const lower = await loadLowerer()
+    const unit = buildUnits().find(u => u.id === 'node-scale-4')!
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pm-stamp-'))
+    try {
+      fs.writeFileSync(path.join(dir, 'package.json'), '{}')
+      for (const [name, text] of Object.entries(unit.files)) fs.writeFileSync(path.join(dir, name), text)
+      const out = lower(unit.files[unit.entry]!, path.join(dir, unit.entry), new Set(['parseman']))
+      const code = typeof out === 'string' ? out : out!.code
+      expect(code).toContain(PARSEMAN_VERSION)
+      expect(withoutVersionStamp(code)).not.toContain(PARSEMAN_VERSION)
+      // So a longer or shorter version weighs the same.
+      for (const v of ['0.61.10', '0.62.10', '1.0.0-alpha.12', '1.0.0']) {
+        expect(withoutVersionStamp(code.replaceAll(PARSEMAN_VERSION, v))).toBe(withoutVersionStamp(code))
+      }
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
