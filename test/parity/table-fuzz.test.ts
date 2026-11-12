@@ -311,8 +311,8 @@ const key = (o: Outcome): string => 'threw' in o ? `threw ${o.threw}` : o.digest
 
 type Tally = {
   grammars: number; macro: number; parses: number; ok: number; failed: number; allThrew: number; hostRefused: number; timedOut: number; rows: string[]
-  /** Per `table/cst/lines` configuration: its parses, and those that some reader answered. */
-  configs: Record<string, { parses: number; usable: number }>
+  /** Per `table/cst/lines` configuration: its parses, those refused for the host, and those some reader answered. */
+  configs: Record<string, { parses: number; hostRefused: number; usable: number }>
 }
 
 function sweep(seed: number, tally: Tally): void {
@@ -333,7 +333,7 @@ function sweep(seed: number, tally: Tally): void {
       const m = macroLeg(g.body, options)
       if (m !== undefined) { legs.macro = m; tally.macro++ }
     } catch (e) { throw new Error(`${where}\n  building the readers threw: ${String((e as Error).message).split('\n')[0]}`) }
-    const seen = tally.configs[config] ??= { parses: 0, usable: 0 }
+    const seen = tally.configs[config] ??= { parses: 0, hostRefused: 0, usable: 0 }
     if (process.env.TABLE_FUZZ_INTERPRETER === '1') legs.interpreter = interpreted(g.body, options) as Record<string, unknown>
     tally.grammars++
     const names = Object.keys(legs)
@@ -349,7 +349,7 @@ function sweep(seed: number, tally: Tally): void {
         const first = res[0]!
         if (res.every(o => 'threw' in o)) {
           // An `ast` table refuses a CST host; that refusal is expected, and counted apart.
-          if (key(first).includes('compiled for host mode')) tally.hostRefused++
+          if (key(first).includes('compiled for host mode')) { tally.hostRefused++; seen.hostRefused++ }
           else tally.allThrew++
         } else {
           seen.usable++
@@ -383,8 +383,13 @@ describe('every reader of a table gives one answer', () => {
     expect(tally.failed).toBeGreaterThan(tally.parses / 20)
     expect(tally.allThrew).toBeLessThan(tally.parses / 10)
     expect(tally.timedOut).toBe(0)
-    // Every configuration compared something, not only the sweep as a whole.
+    // Every configuration compared something, not only the sweep as a whole. A grammar
+    // with a direct builder rightly refuses a CST host on an ast table, so the floor is
+    // over the parses a configuration could answer: a narrowed seed range may have none.
     expect(Object.keys(tally.configs)).toHaveLength(5)
-    for (const [config, c] of Object.entries(tally.configs)) expect(c.usable, config).toBeGreaterThan(c.parses / 10)
+    for (const [config, c] of Object.entries(tally.configs)) {
+      const answerable = c.parses - c.hostRefused
+      if (answerable > 0) expect(c.usable, config).toBeGreaterThan(answerable / 10)
+    }
   }, 600_000)
 })
