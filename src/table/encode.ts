@@ -248,6 +248,8 @@ class Encoder {
    * Read only by the census, once `restoresArms` is final.
    */
   private leavesState = [new Map<Combinator<unknown>, boolean>(), new Map<Combinator<unknown>, boolean>()] as const
+  /** `mayCommitFailure` over this grammar's rules, for the census. Set when the census runs. */
+  private commits: (child: Combinator<unknown>) => boolean = () => true
   /**
    * `reachesSideWriter`'s answers, shared by every `failureNeedsRollback` call
    * for the lifetime of this `Encoder`. Every entry is exact — it depends only on
@@ -878,7 +880,7 @@ class Encoder {
   ): boolean {
     const refName = (p as unknown as { _ruleName?: string })._ruleName
     if (refName === undefined) {
-      return mayLeavePartialCapture(p, new Set(), true, throughNodes, this.restoresArms) || this.reachesSideWriter(p)
+      return mayLeavePartialCapture(p, new Set(), true, throughNodes, this.restoresArms, this.commits) || this.reachesSideWriter(p)
         || ((autoNot?.length ?? 0) > 0 && capturesLeaf(p))
     }
     // A rule is asked about from every site that references it, so its walk is kept.
@@ -887,7 +889,7 @@ class Encoder {
     const memo = this.leavesState[Number(throughNodes)]!
     let leaves = memo.get(root)
     if (leaves === undefined) {
-      leaves = mayLeavePartialCapture(root, new Set(), true, throughNodes, this.restoresArms) || this.reachesSideWriter(root)
+      leaves = mayLeavePartialCapture(root, new Set(), true, throughNodes, this.restoresArms, this.commits) || this.reachesSideWriter(root)
       memo.set(root, leaves)
     }
     return leaves || ((autoNot?.length ?? 0) > 0 && capturesLeaf(root))
@@ -2430,6 +2432,9 @@ class Encoder {
     const restores = new Set<Combinator<unknown>>()
     for (const c of this.restoringChoices) if (!this.leakingChoices.has(c)) restores.add(c)
     this.restoresArms = restores
+    const rr = this.refResolver()
+    const memo = this.commitFailureMemo
+    this.commits = child => memo.get(child) ?? mayCommitFailure(child, rr, memo)
     for (const census of this.logCensus) census()
     return ownTableProgram({
       code: this.code, k: this.k, fns: this.fns, cc: this.cc,

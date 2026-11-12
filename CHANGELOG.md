@@ -5,6 +5,14 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## Unreleased
 
+- **A contained `attempt` over an `optional`, `many` or list whose child commits a failure
+  takes back what that child captured.** These pass a committed failure of their child on
+  without restoring it, but the analysis said they never fail, so in generated code an
+  `attempt(..., { contain: true })` around one restored nothing and the next choice arm's tree
+  held the failed captures. `node('N', choice(attempt(optional(sequence(literal('-'),
+  dispatch(w, when('foo', sequence(routed(), literal('!')))))), { contain: true }),
+  sequence(literal('-'), w)))`, with `w` a `regex(/[a-z]+/)`, now builds `N` with `-` once on
+  `-foo` (#303).
 - **A failed choice inside another choice, an `optional` or an `attempt` no longer leaves its
   arm's captures in `compile()` and generated code.** A choice whose openers are disjoint runs
   its one arm with nothing of its own to restore, and the analysis told the enclosing site there

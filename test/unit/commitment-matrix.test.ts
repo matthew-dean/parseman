@@ -149,6 +149,12 @@ describe('commitment proof predicates', () => {
     expect(mayLeavePartialCapture(transform(sequence(literal('x'), literal('!')), value => value))).toBe(true)
     expect(mayLeavePartialCapture(recover(sequence(literal('x'), literal('!'))))).toBe(true)
     expect(mayLeavePartialCapture(throwingRef())).toBe(true)
+    // A child that can commit a failure is passed on unrestored (issue #303).
+    const committing = sequence(literal('x'), dispatch(literal('y'), when('y', literal('!'))))
+    for (const passing of [optional(committing), many(committing), oneOrMore(committing), sepBy(committing, literal(','))]) {
+      expect(mayLeavePartialCapture(passing)).toBe(true)
+    }
+    expect(mayLeavePartialCapture(sepBy(literal('x'), dispatch(literal(','), when(',', literal('!')))))).toBe(true)
 
     expect(mayLeavePartialCapture(dispatch(literal('x'), when('x', literal('!'))))).toBe(true)
     expect(mayLeavePartialCapture(dispatch(gate(() => true) as unknown as Combinator<string>, when('x', literal('!'))))).toBe(true)
