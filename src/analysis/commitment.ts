@@ -187,8 +187,8 @@ export function alwaysConsumes(p: Combinator<unknown>, seen: Set<Combinator<unkn
  */
 export function mayLeavePartialCapture(
   p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set(), triviaActive = true,
-  throughNodes: boolean | ((choice: Combinator<unknown>) => boolean) = false,
-  restores?: (choice: Combinator<unknown>) => boolean,
+  throughNodes = false,
+  restores?: ReadonlySet<Combinator<unknown>>,
 ): boolean {
   if (seen.has(p)) return false
   seen.add(p)
@@ -227,11 +227,12 @@ export function mayLeavePartialCapture(
     // arm with no mark of its own (`emit-assembly.ts`, `table.exclusive`), and an
     // ordered choice returns a committed arm's failure before restoring. So
     // whatever holds this choice has to restore for it, unless the encoder has
-    // lowered it to restore each arm it enters: `restores` for captures,
-    // `throughNodes` as a function for the trivia logs.
+    // lowered it to restore each arm it enters (`restores`), captures and trivia
+    // logs alike.
     case 'choice':
-      return !(typeof throughNodes === 'function' ? throughNodes(p) : restores?.(p) === true)
-        && d.parsers.some(arm => mayLeavePartialCapture(arm, new Set(seen), triviaActive, throughNodes, restores))
+      if (restores?.has(p) === true) return false
+      for (const arm of d.parsers) if (mayLeavePartialCapture(arm, new Set(seen), triviaActive, throughNodes, restores)) return true
+      return false
     case 'dispatch':
       // These are independent graph predicates. Sharing one mutable `seen` set
       // between them made the first walk hide the arm from the second: an atomic
