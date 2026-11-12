@@ -879,7 +879,7 @@ class Encoder {
   ): boolean {
     const refName = (p as unknown as { _ruleName?: string })._ruleName
     if (refName === undefined) {
-      return mayLeavePartialCapture(p, new Set(), true, throughNodes, this.restoresArms, this.commits) || this.reachesSideWriter(p)
+      return mayLeavePartialCapture(p, new Set(), true, throughNodes, this.restoresArms, this.commits, this.rr) || this.reachesSideWriter(p)
         || ((autoNot?.length ?? 0) > 0 && capturesLeaf(p))
     }
     // A rule is asked about from every site that references it, so its walk is kept.
@@ -888,7 +888,7 @@ class Encoder {
     const memo = this.leavesState[Number(throughNodes)]!
     let leaves = memo.get(root)
     if (leaves === undefined) {
-      leaves = mayLeavePartialCapture(root, new Set(), true, throughNodes, this.restoresArms, this.commits) || this.reachesSideWriter(root)
+      leaves = mayLeavePartialCapture(root, new Set(), true, throughNodes, this.restoresArms, this.commits, this.rr) || this.reachesSideWriter(root)
       memo.set(root, leaves)
     }
     return leaves || ((autoNot?.length ?? 0) > 0 && capturesLeaf(root))
@@ -2432,7 +2432,12 @@ class Encoder {
     for (const c of this.restoringChoices) if (!this.leakingChoices.has(c)) restores.add(c)
     this.restoresArms = restores
     const memo = this.commitFailureMemo
-    this.commits = child => memo.get(child) ?? mayCommitFailure(child, this.rr, memo)
+    // A named child is asked about as the rule the map binds to its name, as emission
+    // reads it: in a merged map a base piece's thunk reaches the rule an override replaced.
+    this.commits = child => {
+      const rule = child._def.tag === 'lazy' ? winnerForRef(child, this.rr) ?? child : child
+      return memo.get(rule) ?? mayCommitFailure(rule, this.rr, memo)
+    }
     for (const census of this.logCensus) census()
     return ownTableProgram({
       code: this.code, k: this.k, fns: this.fns, cc: this.cc,

@@ -12,7 +12,8 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   held the failed captures. `node('N', choice(attempt(optional(sequence(literal('-'),
   dispatch(w, when('foo', sequence(routed(), literal('!')))))), { contain: true }),
   sequence(literal('-'), w)))`, with `w` a `regex(/[a-z]+/)`, now builds `N` with `-` once on
-  `-foo` (#303).
+  `-foo` (#303). In a merged rule map, the rollback analysis now reads a reference to an
+  overridden rule as the override, as the generated code does, not as the base piece's rule.
 - **A failed choice inside another choice, an `optional` or an `attempt` no longer leaves its
   arm's captures in `compile()` and generated code.** A choice whose openers are disjoint runs
   its one arm with nothing of its own to restore, and the analysis told the enclosing site there

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { choice, compile, compose, literal, many, regex, rules, sequence, transform } from '../../src/index.ts'
+import { attempt, choice, compile, compose, dispatch, literal, many, node, optional, regex, routed, rules, sequence, transform, when } from '../../src/index.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { tableRules } from '../../src/table/assemble.ts'
 import { fuseInterpreted } from '../../src/compiler/linker.ts'
@@ -115,6 +115,26 @@ describe('a MERGED rule map encodes to the parser compose() means', () => {
     for (const input of ['<b>', '<a', '<', '', 'a>']) {
       expectIdentical(overridden, 'Doc', input)
     }
+  })
+
+  /**
+   * An override that can commit a failure where the base's rule cannot. The rollback
+   * census has to read the override, as emission does, or a contained attempt over an
+   * optional of it keeps what the failed item captured.
+   */
+  const committingOverride = (): Entries[] => [
+    entriesOf(rules<Record<string, Combinator<unknown>>>(g => ({
+      Item: sequence(literal('-'), regex(/[a-z]+/), literal('?')) as Combinator<unknown>,
+      R: node('N', choice(attempt(optional(g.Item!), { contain: true }), sequence(literal('-'), regex(/[a-z]+/)))) as Combinator<unknown>,
+    }))),
+    entriesOf(rules<Record<string, Combinator<unknown>>>(() => ({
+      Item: sequence(literal('-'), dispatch(regex(/[a-z]+/), when('foo', sequence(routed(), literal('!'))))) as Combinator<unknown>,
+    }))),
+  ]
+
+  it('takes back what an overriding rule captured before it committed a failure', () => {
+    const table = expectIdentical(committingOverride, 'R', '-foo')
+    expect((table.value as { children: Array<{ value: unknown }> }).children.map(c => c.value)).toEqual(['-', 'foo'])
   })
 
   /**

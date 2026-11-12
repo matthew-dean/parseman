@@ -17,7 +17,7 @@
  * the machinery.
  */
 import type { Combinator, ParserDef } from '../types.ts'
-import type { RefResolver } from '../combinators/first-set.ts'
+import { winnerForRef, type RefResolver } from '../combinators/first-set.ts'
 import { regexCanMatchEmpty } from '../regex/first-set.ts'
 import { childrenOf } from './gating.ts'
 
@@ -186,13 +186,15 @@ export function alwaysConsumes(p: Combinator<unknown>, seen: Set<Combinator<unkn
  * Delegating wrappers (transform/label/grammar/withCtx/expect) pass through to inner.
  *
  * `commits` answers `mayCommitFailure` for a child; a caller with a resolver and
- * a memo passes its own.
+ * a memo passes its own. With `resolve`, a named reference is read as the rule the
+ * map binds to that name, as emission reads it (`winnerForRef`), not as its thunk.
  */
 export function mayLeavePartialCapture(
   p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set(), triviaActive = true,
   throughNodes = false,
   restores?: ReadonlySet<Combinator<unknown>>,
   commits: (child: Combinator<unknown>) => boolean = child => mayCommitFailure(child),
+  resolve?: RefResolver,
 ): boolean {
   if (seen.has(p)) return false
   seen.add(p)
@@ -218,14 +220,14 @@ export function mayLeavePartialCapture(
       return false
     // A run's prefixes are probed detached; only its body can capture.
     case 'lines':
-      return mayLeavePartialCapture(d.body, seen, triviaActive, throughNodes, restores, commits)
+      return mayLeavePartialCapture(d.body, seen, triviaActive, throughNodes, restores, commits, resolve)
     // node() captures its children into a frame of its own and drops it on
     // failure. The trivia logs (`_triviaLog`, `_rootTriviaLog`) are not part of
     // that frame: trivia its body scanned before failing stays recorded. With
     // `throughNodes` (a program that installs trivia somewhere) a node leaves
     // what its body leaves; without, it leaves nothing.
     case 'node':
-      return throughNodes && mayLeavePartialCapture(d.parser, seen, triviaActive, throughNodes, restores, commits)
+      return throughNodes && mayLeavePartialCapture(d.parser, seen, triviaActive, throughNodes, restores, commits, resolve)
     // A choice leaves what one of its arms leaves. The table lowers a choice whose
     // openers are disjoint as an exclusive dispatch, which runs its one selected
     // arm with no mark of its own (`emit-assembly.ts`, `table.exclusive`), and an
@@ -235,7 +237,7 @@ export function mayLeavePartialCapture(
     // logs alike.
     case 'choice':
       if (restores?.has(p) === true) return false
-      for (const arm of d.parsers) if (mayLeavePartialCapture(arm, new Set(seen), triviaActive, throughNodes, restores, commits)) return true
+      for (const arm of d.parsers) if (mayLeavePartialCapture(arm, new Set(seen), triviaActive, throughNodes, restores, commits, resolve)) return true
       return false
     case 'dispatch':
       // These are independent graph predicates. Sharing one mutable `seen` set
@@ -245,9 +247,9 @@ export function mayLeavePartialCapture(
       // Fork the ancestor set for each proof so cycle protection remains, while
       // one proof cannot erase evidence needed by another.
       return capturesLeaf(d.selector, new Set(seen)) ||
-        d.cases.some(x => mayLeavePartialCapture(x.parser, new Set(seen), triviaActive, throughNodes, restores, commits) || capturesLeaf(x.parser, new Set(seen))) ||
-        (d.matchers ? d.matchers.some(x => mayLeavePartialCapture(x.parser, new Set(seen), triviaActive, throughNodes, restores, commits) || capturesLeaf(x.parser, new Set(seen))) : false) ||
-        (d.otherwise ? mayLeavePartialCapture(d.otherwise, new Set(seen), triviaActive, throughNodes, restores, commits) || capturesLeaf(d.otherwise, new Set(seen)) : false)
+        d.cases.some(x => mayLeavePartialCapture(x.parser, new Set(seen), triviaActive, throughNodes, restores, commits, resolve) || capturesLeaf(x.parser, new Set(seen))) ||
+        (d.matchers ? d.matchers.some(x => mayLeavePartialCapture(x.parser, new Set(seen), triviaActive, throughNodes, restores, commits, resolve) || capturesLeaf(x.parser, new Set(seen))) : false) ||
+        (d.otherwise ? mayLeavePartialCapture(d.otherwise, new Set(seen), triviaActive, throughNodes, restores, commits, resolve) || capturesLeaf(d.otherwise, new Set(seen)) : false)
     case 'attempt':
       return false
     // optional and many fail only by passing on a committed failure of their child,
@@ -255,7 +257,7 @@ export function mayLeavePartialCapture(
     // `emit-assembly.ts`). An optional then leaves what its child leaves; a many keeps
     // the items before the one that failed.
     case 'optional':
-      return commits(d.parser) && mayLeavePartialCapture(d.parser, seen, triviaActive, throughNodes, restores, commits)
+      return commits(d.parser) && mayLeavePartialCapture(d.parser, seen, triviaActive, throughNodes, restores, commits, resolve)
     case 'many':
       return commits(d.parser)
     // A list restores the item it failed on and keeps the ones before it, so a
@@ -296,7 +298,7 @@ export function mayLeavePartialCapture(
         const part = parts[i]!
         if (i > 0 && triviaActive) captured = true
         if (captured && mayFail(part)) return true
-        if (mayLeavePartialCapture(part, seen, triviaActive, throughNodes, restores, commits)) return true
+        if (mayLeavePartialCapture(part, seen, triviaActive, throughNodes, restores, commits, resolve)) return true
         if (capturesLeaf(part) || hasNodeDef(part)) captured = true
       }
       return false
@@ -308,11 +310,13 @@ export function mayLeavePartialCapture(
     case 'expect':
     case 'withCtx':
     case 'grammar':
-      return mayLeavePartialCapture(d.parser, seen, triviaActive, throughNodes, restores, commits)
+      return mayLeavePartialCapture(d.parser, seen, triviaActive, throughNodes, restores, commits, resolve)
     case 'recover':
-      return mayLeavePartialCapture(d.parser, seen, triviaActive, throughNodes, restores, commits)
+      return mayLeavePartialCapture(d.parser, seen, triviaActive, throughNodes, restores, commits, resolve)
     case 'lazy': {
-      try { return mayLeavePartialCapture(d.thunk(), seen, triviaActive, throughNodes, restores, commits) } catch { return true }
+      const winner = winnerForRef(p, resolve)
+      if (winner !== undefined) return mayLeavePartialCapture(winner, seen, triviaActive, throughNodes, restores, commits, resolve)
+      try { return mayLeavePartialCapture(d.thunk(), seen, triviaActive, throughNodes, restores, commits, resolve) } catch { return true }
     }
     // Unknown shapes: be safe and keep the rollback.
     default:
