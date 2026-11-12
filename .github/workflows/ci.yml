@@ -181,6 +181,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # The release rehearsal (lts/* only) reads the release tags and the previous
+          # release's CHANGELOG, as publish.yml does.
+          fetch-depth: ${{ matrix.node-version == 'lts/*' && '0' || '1' }}
 
       - name: Install pnpm
         # Version comes from the "packageManager" field in package.json, so CI
@@ -199,6 +203,41 @@ jobs:
         # (test fixtures import it as a real consumer would). No separate build
         # step needed here.
         run: pnpm install --frozen-lockfile
+
+      # THE RELEASE REHEARSAL, on the lts/* leg. publish.yml decides the version, stamps
+      # it into the tree, runs its preflight there and packs the tarball twice. This leg
+      # does the same before its own checks, so every step below runs on the tree the
+      # release would run on (a gate that read the version once failed only in the
+      # release). The stamp is a commit in this runner, which nothing pushes:
+      # check:differentials refuses an uncommitted `src/`, and the stamp writes
+      # src/version.ts.
+      - name: Use the npm that publishes
+        if: matrix.node-version == 'lts/*'
+        run: npm install -g npm@11.21.1
+
+      - name: Decide what the release would publish
+        id: plan
+        if: matrix.node-version == 'lts/*'
+        shell: bash
+        run: |
+          set -o pipefail
+          node scripts/release.mjs plan | tee -a "$GITHUB_OUTPUT"
+
+      - name: Stamp the version the release would publish
+        id: stamp
+        if: steps.plan.outputs.release == 'true'
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+        run: |
+          time=$(date -u +%s)
+          date=$(date -u -d "@$time" +%Y-%m-%d)
+          base=$(git rev-parse HEAD)
+          commit=$(RELEASE_DATE="$date" GIT_AUTHOR_DATE="@$time +0000" GIT_COMMITTER_DATE="@$time +0000" \
+            node scripts/release.mjs stamp "$VERSION")
+          { echo "base=$base"; echo "commit=$commit"; echo "date=$date"; echo "time=$time"; } >> "$GITHUB_OUTPUT"
+          echo "stamped $commit on $base as $VERSION"
+          pnpm build
+          grep -qF "\"$VERSION\"" dist/index.js || { echo "::error::dist/index.js does not stamp $VERSION"; exit 1; }
 
       - name: Typecheck
         run: pnpm typecheck
@@ -264,12 +303,52 @@ jobs:
 
       - name: The rest of the release preflight
         # publish.yml's preflight also runs test/perf, which the coverage run above
-        # leaves out, and `npm pack --dry-run`. Run them here so a PR cannot pass
-        # what the release then refuses. One leg is enough for both.
+        # leaves out, and `npm pack --dry-run`. One leg is enough for both.
         if: matrix.node-version == 'lts/*'
         run: |
           pnpm vitest run test/perf
           npm pack --dry-run
+
+      - name: The release's own checks
+        # What publish.yml checks on the stamped tree and nowhere else: the CHANGELOG
+        # and the version agree as a published release must, and the tarball the
+        # tested tree packs is the one a build with no install scripts packs from the
+        # same commit, re-stamped (publish.yml's `build` job).
+        #
+        # Still not rehearsed: the commit main will be once this merges (main does not
+        # require a branch to be up to date), the registry and the tags at publish
+        # time, and the publish job itself (OIDC, provenance, the tag push).
+        if: steps.plan.outputs.release == 'true'
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+          BASE: ${{ steps.stamp.outputs.base }}
+          COMMIT: ${{ steps.stamp.outputs.commit }}
+          RELEASE_DATE: ${{ steps.stamp.outputs.date }}
+          STAMP_TIME: ${{ steps.stamp.outputs.time }}
+        run: |
+          set -euo pipefail
+          node scripts/check-changelog.mjs --publish
+          node scripts/check-main-release-state.mjs --base-ref=main --head-ref=main
+          mkdir -p "$RUNNER_TEMP/prepare" "$RUNNER_TEMP/build"
+          npm pack --pack-destination "$RUNNER_TEMP/prepare"
+          prepared=$(sha256sum "$RUNNER_TEMP/prepare/parseman-$VERSION.tgz" | cut -d' ' -f1)
+          git worktree add --detach "$RUNNER_TEMP/rebuild" "$BASE"
+          cd "$RUNNER_TEMP/rebuild"
+          stamped=$(GIT_AUTHOR_DATE="@$STAMP_TIME +0000" GIT_COMMITTER_DATE="@$STAMP_TIME +0000" \
+            node scripts/release.mjs stamp "$VERSION")
+          if [ "$stamped" != "$COMMIT" ]; then
+            echo "::error::a fresh checkout stamps $stamped, but this leg tested $COMMIT."
+            exit 1
+          fi
+          pnpm install --frozen-lockfile --ignore-scripts
+          node scripts/build.mjs
+          npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP/build"
+          sha=$(sha256sum "$RUNNER_TEMP/build/parseman-$VERSION.tgz" | cut -d' ' -f1)
+          if [ "$sha" != "$prepared" ]; then
+            echo "::error::a build with no install scripts packs $sha, but the tested tree packed $prepared."
+            exit 1
+          fi
+          echo "parseman-$VERSION.tgz: both packs are $sha"
 
       - name: Upload coverage report
         if: always()
