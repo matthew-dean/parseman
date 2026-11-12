@@ -26,7 +26,9 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   (an old entry gave that scope's own index). A gap of unlabelled trivia is one row under `''`
   whose `start, end` are the gap, the `[start, end]` entry `_triviaLog` held. The label table
   holds the labels reachable from the entry, the root's first, built once per entry on its
-  first `'all'` run, so a parse that never asks for `'all'` pays nothing for it. A region declared `parser({ rootCapture: 'opaque' })` is recorded, as
+  first `'all'` run, so a parse that never asks for `'all'` pays nothing for it. While a
+  rule reachable from the entry is still undefined, each `'all'` run walks the labels again,
+  so a rule defined after an earlier run brings its labels. A region declared `parser({ rootCapture: 'opaque' })` is recorded, as
   `_triviaLog` recorded it; a label list still records nothing there. `run()` now accepts a
   `compile()` result and runs its entry rule. A context that still carries `_triviaLog` is
   refused when a `compile()` result's `parse` or `parseWithContext` starts, with an error that
@@ -41,7 +43,7 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   and indexing don't change: five numbers per row, read as `rows[5 * i + k]`, and `length`
   covers exactly the rows the parse kept. The array is a view of the log the parse wrote, so
   no row is copied out, and a result keeps that log's buffer alive: room for a row per 8
-  input characters, 164 KB for a 65 KB stylesheet. `Array.isArray(rows)` is now `false`;
+  input characters up to 65,536 rows, 164 KB for a 65 KB stylesheet. `Array.isArray(rows)` is now `false`;
   use `Array.from(rows)` for a plain array. A document's rows outgrow V8's largest regular
   object, about 3.2k rows, and past that every growth of a `number[]` copied the whole log.
   On 4,399 gaps, recording the rows for `select: 'all'` took 340 to 390 µs and now takes 28

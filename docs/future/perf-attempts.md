@@ -414,10 +414,13 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
       character performed the same, but each result retained 262 KB on a 65 KB stylesheet;
       the shipped size retains 164 KB, as the doubling log did. RSS did not tell the three
       apart. External `arrayBuffers` did: 8.6 MB of unreclaimed buffers after 50 parses,
-      against 12.7 to 13.7 MB at 4 bytes a character.
+      against 12.7 to 13.7 MB at 4 bytes a character. The presize stops at 65,536 rows
+      (1.25 MB); a larger document's log doubles from there.
     - Whether the root log takes unlabelled gaps, and under which kind, is decided at run
-      start. It's one field, `_rootGapLog`, cleared and restored with `_rootTriviaLog` at the
-      token and probe sites, so a gap is one test plus the stores. Before, every gap tested
+      start. It's one field, `_rootGapLog`, so a gap is one test plus the stores. The token
+      and probe sites don't touch it: every gap is recorded past a test of `_rootTriviaLog`
+      or of a CST buffer, which those sites clear, so saving and clearing `_rootGapLog` there
+      too only cost three property operations per token. Before, every gap tested
       the log, the capture mode and the kind, and the kind lookup hit a prototype-less index
       that V8 keeps as a dictionary.
   - Call counts: every row is below `main`, warm and cold. Jess label-list rows take +1 call
