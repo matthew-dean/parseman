@@ -395,10 +395,10 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
     branch tests per parse (closure and emitted × CSS stylesheet, Less stylesheet, Less
     mixins): the label-table lookup, the selection, and the closure choice. Their calls
     fall (emitted −1.8% to −2.4%), and the Jess rows do not move.
-  - Time, x64 mini PC, Node 24, marginal per parse, 5 rounds, each arm started at load < 1
-    (one Jess arm that started at 1.24 is dropped). The plain parse is within noise of
-    v0.61.9 (−3.1% to +5.0%, and −4.7% to +1.8% on an earlier run). Jess AST parses with
-    their comment label lists are 0.9% to 8.4% faster than v0.61.9.
+  - Time, x64 mini PC, Node 24, marginal per parse, interleaved in random order, every arm
+    started at load < 1, compared as per-round paired medians. The plain parse is within
+    noise of v0.61.9 (−8.8% to +3.0%). Jess AST parses with their comment label lists are
+    0.2% to 3.8% faster than v0.61.9.
   - The first cut stored `'all'` rows in a `number[]` and spent 340 to 390 µs recording 4,399
     rows. That's about 75 ns a row, against about 15 ns for 0.61.9's two-number log. Past
     V8's 128 KB regular-object limit (about 16k elements), every growth of the array's
@@ -407,19 +407,35 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
     doubling 46 to 52 µs, and `Array.from` of the result 520 µs.
   - Shipped: the root log is an `Int32Array` with a cursor (`RootTriviaLog`), with inline
     pushes, one out-of-line doubling helper, rollback as a cursor store, and `rows` as an
-    exact-length `subarray`. On the `'all'` rows, branch tests rise with the capacity test and
-    calls fall (closure CSS +9,258 branches, −1,385 calls per parse, against the `number[]`
-    cut). Every row stays below `main`, warm and cold.
-    The unlabelled-gap kind is read once per run (`_rootTriviaGapKind`) instead of per gap
-    from the prototype-less label index, which V8 keeps as a dictionary. That saved about
-    40 µs per 4,399 gaps in a variant run.
-  - Result: recording rows (`'all'` minus `run()` without trivia) costs 68 to 140 µs on the
-    density cases, against 43 to 129 µs for 0.61.9's `_triviaLog`. The whole `'all'` parse
-    is −2.3% to +8.3% against 0.61.9 with `_triviaLog` on the density cases, and −0.7% to
-    +0.8% on the three workloads. A variant with the five stores removed put the storage
-    at 88 to 146 µs of that, against about 50 µs in the microbenchmark. The xproc gate now
-    compares the plain parse on both sides, and reports the `'all'` rows without gating
-    them.
+    exact-length `subarray`. With that alone, `'all'` was still 70 to 101 µs (+8% to +12%)
+    slower than 0.61.9's log on the expected-set cases.
+  - Two more changes, both shipped:
+    - `run()` sizes the log for a row per 8 input characters. Sizing it to 4 bytes per input
+      character performed the same, but each result retained 262 KB on a 65 KB stylesheet;
+      the shipped size retains 164 KB, as the doubling log did. RSS did not tell the three
+      apart. External `arrayBuffers` did: 8.6 MB of unreclaimed buffers after 50 parses,
+      against 12.7 to 13.7 MB at 4 bytes a character.
+    - Whether the root log takes unlabelled gaps, and under which kind, is decided at run
+      start. It's one field, `_rootGapLog`, cleared and restored with `_rootTriviaLog` at the
+      token and probe sites, so a gap is one test plus the stores. Before, every gap tested
+      the log, the capture mode and the kind, and the kind lookup hit a prototype-less index
+      that V8 keeps as a dictionary.
+  - Call counts: every row is below `main`, warm and cold. Jess label-list rows take +1 call
+    and +1 branch test per parse for the run-start decision.
+  - Result, `'all'` against 0.61.9 with `_triviaLog`, paired:
+    - rollback cases: −5.2% to +1.4%;
+    - Less workloads: −1.6% and −2.0%;
+    - CSS workload: +0.1% to +0.5%;
+    - expected-set cases: +1.5% to +2.7% pooled over 10 rounds, with head at or below
+      0.61.9 in 3 or 4 of the 10.
+    - Recording rows (`'all'` minus `run()`) costs 28 to 139 µs on the density cases.
+    - Removing the capacity test or the five stores moves it within noise. The remainder is
+      the recorder call, its CST test and the `'all'` marks and rollbacks around attempts.
+    - The xproc gate compares the plain parse on both sides and reports the `'all'` rows
+      without gating them.
+  - Candidates, not tried: test `_rootGapLog` inline at the emitted and closure call sites
+    before calling the recorder (costs emitted bytes), and move the CST test off the gap
+    path.
   - Breaking for printed factories (two helper signatures), so it declares 0.62.0 with an
     `abi` lock on the record. Breaking for `rows` readers (`Int32Array`).
 
