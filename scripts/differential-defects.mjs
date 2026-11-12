@@ -63,7 +63,7 @@ export const DEFECTS = {
     why: 'emitted table engine: an optional or many passes on a committed failure with its captures',
     edits: [{
       file: 'src/analysis/commitment.ts',
-      find: 'return commits(d.parser) && mayLeavePartialCapture(d.parser, seen, triviaActive, throughNodes, restores, commits)',
+      find: 'return commits(d.parser) && mayLeavePartialCapture(d.parser, seen, triviaActive, throughNodes, restores, commits, resolve)',
       replace: 'return false',
     }, {
       file: 'src/analysis/commitment.ts',
