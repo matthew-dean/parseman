@@ -13,6 +13,9 @@ import { createParseContext } from '../../src/parse-context.ts'
 import { run } from '../../src/functional/run.ts'
 import { tableRules } from '../../src/table/assemble.ts'
 import { encodeTable } from '../../src/table/encode.ts'
+import { defaultAssemblyCfgs } from '../../src/table/emit.ts'
+import { emitAssemblySource } from '../../src/table/emit-assembly.ts'
+import { assemblyExtraIps, resolveTable } from '../../src/table/program.ts'
 import type { Combinator } from '../../src/types.ts'
 import { hybridReaders, readers } from '../helpers/table-readers.ts'
 
@@ -116,6 +119,46 @@ describe('rollback', () => {
       expect(leaves(agreed(g, 'k', { build: host }).value)).toEqual({ N: ['k'] })
       expect(leaves(agreed(g, 'k').value)).toEqual({ N: ['k'] })
     }
+  })
+
+  it('a choice that fails inside another takes back what its arm kept', () => {
+    const inner = (): Combinator<unknown> => choice(sequence(literal('a'), literal('b')), literal('x'))
+    const shapes: Record<string, () => Combinator<unknown>> = {
+      choice: () => choice(inner(), literal('a')),
+      optional: () => sequence(optional(inner()), literal('a')),
+      attempt: () => choice(attempt(inner()), literal('a')),
+    }
+    for (const shape of Object.values(shapes)) {
+      const g = rules({}, () => ({ R: node('N', shape()) })) as G
+      expect(leaves(agreed(g, 'a', { build: host }).value)).toEqual({ N: ['a'] })
+      expect(leaves(agreed(g, 'a').value)).toEqual({ N: ['a'] })
+      expect(leaves((compile(g.R as never).parse('a') as { value: unknown }).value)).toEqual({ N: ['a'] })
+    }
+  })
+
+  it('a choice factored as an attempt restores for itself, so the choice around it adds no mark', () => {
+    const g = rules({}, () => ({
+      R: node('N', many(choice(
+        choice(sequence(literal('a'), literal('b')), sequence(literal('a'), literal('c'))),
+        sequence(literal('a'), literal('d')),
+      ))),
+    })) as G
+    for (const input of ['ad', 'adab', 'abad', 'acad', 'ae', 'a', 'ab', 'ac', 'adae', 'abae']) {
+      agreed(g, input, { build: host })
+      agreed(g, input)
+    }
+    const prog = encodeTable(g, {})
+    const source = emitAssemblySource(resolveTable(prog), prog, defaultAssemblyCfgs(prog)[0]!, assemblyExtraIps(prog), true).source
+    expect(source.match(/_rbBuf\(/g)).toHaveLength(7)
+  })
+
+  it('a dispatch that fails inside a choice takes back its selector', () => {
+    const word = regex(/[a-z]+/)
+    const inner = choice(dispatch(word, when('foo', sequence(routed(), literal('x')))), literal('1'))
+    const g = rules({}, () => ({ R: node('N', choice(inner, word)) })) as G
+    expect(leaves(agreed(g, 'k', { build: host }).value)).toEqual({ N: ['k'] })
+    expect(leaves(agreed(g, 'k').value)).toEqual({ N: ['k'] })
+    expect(leaves((compile(g.R as never).parse('k') as { value: unknown }).value)).toEqual({ N: ['k'] })
   })
 
   it('a dispatch with no fallback leaves no selector behind for the next arm', () => {

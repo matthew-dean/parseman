@@ -50,7 +50,8 @@ const shapes: Record<string, (g: Record<string, Comb>) => Comb> = {
   // its one selected arm with no mark of its own: the site around it restores.
   'optional(choice())': g => sequence(optional(choice(g.Pair!, literal('q'))), literal('x'), literal('y')),
   'choice(choice())': g => sequence(choice(choice(g.Pair!, literal('q')), literal('x')), literal('y')),
-  // The same without a node: the arm's own sequence scans the trivia and fails.
+  // The same without a node: the arm's own sequence captures a leaf, scans the trivia
+  // and fails, so the site takes a full mark, which restores the logs too.
   'optional(choice()) of a sequence': () => sequence(optional(choice(sequence(literal('x'), literal('a')), literal('q'))), literal('x'), literal('y')),
   // A node arm beside an arm that takes the full mark restores the logs from it.
   'choice() with a full mark': g => sequence(choice(sequence(literal('x'), literal('q')), g.Pair!, literal('x')), literal('y')),
@@ -136,8 +137,9 @@ describe('a program with no trivia, called with trivia', () => {
       const plain = defaultAssemblyCfgs(prog)[0]!
       const source = (cfg: typeof plain) => emitAssemblySource(resolveTable(prog), prog, cfg, assemblyExtraIps(prog), true).source
       expect(source(plain)).not.toMatch(twoLogMark)
-      // The shape with a full mark restores the logs from that mark instead.
-      expect(twoLogMark.test(source({ ...plain, inheritedTrivia: true }))).toBe(name !== 'choice() with a full mark')
+      // A shape with a full mark restores the logs from that mark instead.
+      const fullMark = name === 'choice() with a full mark' || name === 'optional(choice()) of a sequence'
+      expect(twoLogMark.test(source({ ...plain, inheritedTrivia: true }))).toBe(!fullMark)
     })
   }
 })

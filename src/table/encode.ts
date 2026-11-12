@@ -234,14 +234,20 @@ class Encoder {
    * An exclusive dispatch runs its one arm with no mark, and an ordered choice
    * returns a committed arm's failure before restoring, so either leaves what an
    * arm leaves. A choice in neither set, or in both, is taken to leave rows. Both
-   * sets are complete only once every rule is encoded, so the trivia-log census
-   * runs then (`logCensus`).
+   * sets are complete only once every rule is encoded, so the census runs then
+   * (`logCensus`). Captures read them too: a restoring choice restores each arm its
+   * own census marks.
    */
   private restoringChoices = new Set<Combinator<unknown>>()
   private leakingChoices = new Set<Combinator<unknown>>()
   private logCensus: (() => void)[] = []
-  private readonly restoresArms = (choice: Combinator<unknown>): boolean =>
-    this.restoringChoices.has(choice) && !this.leakingChoices.has(choice)
+  /** The choices that restore each arm they enter: restoring and not leaking. Set when the census runs. */
+  private restoresArms: ReadonlySet<Combinator<unknown>> = new Set()
+  /**
+   * `failureNeedsRollback`'s graph answers per rule, indexed by `throughNodes` (0 or 1).
+   * Read only by the census, once `restoresArms` is final.
+   */
+  private leavesState = [new Map<Combinator<unknown>, boolean>(), new Map<Combinator<unknown>, boolean>()] as const
   /**
    * `reachesSideWriter`'s answers, shared by every `failureNeedsRollback` call
    * for the lifetime of this `Encoder`. Every entry is exact — it depends only on
@@ -868,22 +874,31 @@ class Encoder {
   private failureNeedsRollback(
     p: Combinator<unknown>,
     autoNot: readonly AutoNotCheck[] | null | undefined,
-    throughNodes: false | ((choice: Combinator<unknown>) => boolean),
+    throughNodes: boolean,
   ): boolean {
     const refName = (p as unknown as { _ruleName?: string })._ruleName
-    const winner = refName === undefined ? undefined : this.winners?.[refName]
+    if (refName === undefined) {
+      return mayLeavePartialCapture(p, new Set(), true, throughNodes, this.restoresArms) || this.reachesSideWriter(p)
+        || ((autoNot?.length ?? 0) > 0 && capturesLeaf(p))
+    }
+    // A rule is asked about from every site that references it, so its walk is kept.
+    const winner = this.winners?.[refName]
     const root = winner !== undefined && !winnerWrapsReference(winner, p) ? winner : p
-    return mayLeavePartialCapture(root, new Set(), true, throughNodes)
-      || this.reachesSideWriter(root)
-      || ((autoNot?.length ?? 0) > 0 && capturesLeaf(root))
+    const memo = this.leavesState[Number(throughNodes)]!
+    let leaves = memo.get(root)
+    if (leaves === undefined) {
+      leaves = mayLeavePartialCapture(root, new Set(), true, throughNodes, this.restoresArms) || this.reachesSideWriter(root)
+      memo.set(root, leaves)
+    }
+    return leaves || ((autoNot?.length ?? 0) > 0 && capturesLeaf(root))
   }
 
   /** The rollback census of an `optional()` or `attempt()` row at `ip` over `child`. */
   private censusTransaction(child: Combinator<unknown>, ip: number): void {
-    if (this.failureNeedsRollback(child, undefined, false)) return
-    this.failureRollbackCleanSites.add(ip)
     this.logCensus.push(() => {
-      if (this.failureNeedsRollback(child, undefined, this.restoresArms)) this.failureLogRollbackSites.add(ip)
+      if (this.failureNeedsRollback(child, undefined, false)) return
+      this.failureRollbackCleanSites.add(ip)
+      if (this.failureNeedsRollback(child, undefined, true)) this.failureLogRollbackSites.add(ip)
     })
   }
 
@@ -1541,7 +1556,11 @@ class Encoder {
         // Not under a coverage plan, which credits the arms as written.
         if (this.plan === undefined) {
           const shared = factorSharedEnds(d)
-          if (shared !== undefined) return this.node(shared).ip
+          if (shared !== undefined) {
+            // Factored as an `attempt`, which restores what the choice would have.
+            this.restoringChoices.add(p)
+            return this.node(shared).ip
+          }
           // The prefix arm reads `X` once only in a strict parse. Tolerant
           // recovery and a completions probe run the choice as written: inside
           // `sequence(X, optional(a))`, `X`'s own recovery would see `a`'s first
@@ -1743,12 +1762,6 @@ class Encoder {
         // assemblies and never serialized; tolerant assemblies retain the
         // universal rollback because repeat recovery can publish an error from
         // inside any arm. Arity >31 falls back to -1 rather than truncating.
-        let rollbackMask = kids.length > 31 ? -1 : 0
-        if (rollbackMask === 0) {
-          for (let i = 0; i < arms.length; i++) {
-            if (this.failureNeedsRollback(arms[i]!, d.autoNot[order[i]!], false)) rollbackMask |= 1 << i
-          }
-        }
         const head = this.emitHead(OP_CHOICE, 3 + 2 * kids.length)
         this.code[head + 1] = dispIdx
         this.code[head + 2] = kids.length
@@ -1760,13 +1773,17 @@ class Encoder {
           this.code[head + 4 + i] = kids[i]!
           this.code[head + 4 + kids.length + i] = this.expected(deriveExpected(arms[i]!))
         }
-        this.choiceRollbackMasks.set(head, rollbackMask)
-        if (rollbackMask !== -1) {
-          const full = rollbackMask
+        if (kids.length > 31) this.choiceRollbackMasks.set(head, -1)
+        else {
           this.logCensus.push(() => {
+            let full = 0
             let logMask = 0
             for (let i = 0; i < arms.length; i++) {
-              if ((full & (1 << i)) === 0 && this.failureNeedsRollback(arms[i]!, d.autoNot[order[i]!], this.restoresArms)) logMask |= 1 << i
+              if (this.failureNeedsRollback(arms[i]!, d.autoNot[order[i]!], false)) full |= 1 << i
+            }
+            this.choiceRollbackMasks.set(head, full)
+            for (let i = 0; i < arms.length; i++) {
+              if ((full & (1 << i)) === 0 && this.failureNeedsRollback(arms[i]!, d.autoNot[order[i]!], true)) logMask |= 1 << i
             }
             if (logMask !== 0) this.choiceLogRollbackMasks.set(head, logMask)
           })
@@ -2410,6 +2427,9 @@ class Encoder {
   finish(): TableProgram {
     if (this.code.length === 0) this.emit(OP_EMPTY)
     this.collapseIndirection()
+    const restores = new Set<Combinator<unknown>>()
+    for (const c of this.restoringChoices) if (!this.leakingChoices.has(c)) restores.add(c)
+    this.restoresArms = restores
     for (const census of this.logCensus) census()
     return ownTableProgram({
       code: this.code, k: this.k, fns: this.fns, cc: this.cc,
