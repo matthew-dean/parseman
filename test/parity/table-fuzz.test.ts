@@ -310,7 +310,7 @@ function sunk(entry: unknown, input: string, cst: boolean, lines: boolean): stri
 const key = (o: Outcome): string => 'threw' in o ? `threw ${o.threw}` : o.digest
 
 type Tally = {
-  grammars: number; macro: number; parses: number; ok: number; failed: number; allThrew: number; hostRefused: number; timedOut: number; rows: string[]
+  grammars: number; macro: number; parses: number; ok: number; failed: number; allThrew: number; hostRefused: number; timedOut: number; sinkThrew: number; rows: string[]
   /** Per `table/cst/lines` configuration: its parses, those refused for the host, and those some reader answered. */
   configs: Record<string, { parses: number; hostRefused: number; usable: number }>
 }
@@ -353,6 +353,8 @@ function sweep(seed: number, tally: Tally): void {
           else tally.allThrew++
         } else {
           seen.usable++
+          // A parse some reader answers must leave a sink to compare, not one shared throw.
+          if (sinks.every(x => x.startsWith('threw '))) tally.sinkThrew++
           if ('ok' in first && first.ok) tally.ok++
           else tally.failed++
         }
@@ -370,7 +372,7 @@ const from = Number(range[1]), to = Number(range[2])
 
 describe('every reader of a table gives one answer', () => {
   it(`on the grammars and inputs of seeds ${from} to ${to}`, () => {
-    const tally: Tally = { grammars: 0, macro: 0, parses: 0, ok: 0, failed: 0, allThrew: 0, hostRefused: 0, timedOut: 0, rows: [], configs: {} }
+    const tally: Tally = { grammars: 0, macro: 0, parses: 0, ok: 0, failed: 0, allThrew: 0, hostRefused: 0, timedOut: 0, sinkThrew: 0, rows: [], configs: {} }
     for (let seed = from; seed < to; seed++) sweep(seed, tally)
     const { rows, ...counts } = tally
     console.log(`table fuzz: ${json(counts)}`)
@@ -383,6 +385,7 @@ describe('every reader of a table gives one answer', () => {
     expect(tally.failed).toBeGreaterThan(tally.parses / 20)
     expect(tally.allThrew).toBeLessThan(tally.parses / 10)
     expect(tally.timedOut).toBe(0)
+    expect(tally.sinkThrew).toBe(0)
     // Every configuration compared something, not only the sweep as a whole. A grammar
     // with a direct builder rightly refuses a CST host on an ast table, so the floor is
     // over the parses a configuration could answer: a narrowed seed range may have none.
