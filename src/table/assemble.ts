@@ -81,7 +81,7 @@ import {
 } from '../combinators/trivia-skip.ts'
 import {
   cstCaptureActive, cstLeavesLen, cstTlLen,
-  demoteCapturedToRaw, pushCstChild, pushCstLeaf,
+  demoteCapturedToRaw, pushCstChild, pushCstLeaf, pushCstTriviaEntry,
   type CstCaptureBuf,
   popCstChild,
 } from '../cst/capture-buffer.ts'
@@ -4364,7 +4364,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         scalarRecognizers, t.lex, adjacencyHolds, t.lexPrograms,
         LEAD, triviaFieldCapture, skipDeferredTrivia,
         collapseEmpty, popCstChild,
-        PlainSpan, PlainLeaf, PlainNode, PlainField, PlainBuf, GAP, recordUnlabelledGap,
+        PlainSpan, PlainLeaf, PlainNode, PlainField, PlainBuf, GAP, recordUnlabelledGap, pushCstTriviaEntry,
       )
       emitReached = new Set(pre.reached)
       if (emitted.ext !== undefined) HYBRID = emitted
@@ -4449,7 +4449,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         scalarRecognizers, t.lex, adjacencyHolds, t.lexPrograms,
         LEAD, triviaFieldCapture, skipDeferredTrivia,
         collapseEmpty, popCstChild,
-        PlainSpan, PlainLeaf, PlainNode, PlainField, PlainBuf, GAP, recordUnlabelledGap,
+        PlainSpan, PlainLeaf, PlainNode, PlainField, PlainBuf, GAP, recordUnlabelledGap, pushCstTriviaEntry,
       )
       emitReached = em.reached
     } catch (e) {

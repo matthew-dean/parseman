@@ -151,6 +151,8 @@ export const EMITTED_PARAMS = [
   'GAP',
   // The one recording site for an unlabelled gap (`trivia-skip.ts`), 0.62/60.
   'recordUnlabelledGap',
+  // A gap's capture entry, written by the plain skip set, which never reads the root log, 0.62/61.
+  'pushCstTriviaEntry',
   // SLOTS ONLY APPEND. A factory binds its helpers by position, so giving an existing
   // slot a new meaning binds an older factory's calls to the wrong helper while the
   // count still matches. A retired helper keeps its slot, bound to `undefined`, and a
@@ -159,7 +161,7 @@ export const EMITTED_PARAMS = [
 
 /**
  * What a printed factory's record says it binds: the parseman minor that printed it and
- * the helper count, as `"0.62/60"`. The count alone misses a helper whose parameters
+ * the helper count, as `"0.62/61"`. The count alone misses a helper whose parameters
  * changed, which binds every argument after the change to the wrong name and runs. A
  * helper's parameters change only in a minor (`docs/design/artifact-format.md`), so the
  * minor covers that. The runtime refuses any record whose `abi` is not this string
@@ -172,6 +174,49 @@ export function emittedAbi(version: string, helperCount: number): string {
   const minor = /^\d+\.\d+/.exec(version)
   if (minor === null) throw new TypeError(`parseman: version ${JSON.stringify(version)} has no major.minor`)
   return `${minor[0]}/${helperCount}`
+}
+
+/**
+ * An INSTALLED SCANNER'S SKIP, the one template both skip sets print from. `record` is
+ * fixed when the text is printed, never tested on a parse:
+ *
+ * - the RECORDING set is installed for a run whose root log takes unlabelled gaps
+ *   (`rootTrivia: { select: 'all' }`, `gapKind >= 0`) and writes each gap through
+ *   `recordUnlabelledGap`. It still asks whether the log is there, because a token
+ *   clears `_rootTriviaLog` for its own span.
+ * - the PLAIN set is installed for every other run. It never reads the root log, and
+ *   pushes a gap only into a capture buffer that is open while capture is on.
+ *
+ * `capturing` is the capture test as far as the site's label resolves it.
+ * `_begin` installs one set per run (`_pfSkips`).
+ */
+function scannedSkip(sc: string, capturing: string, record: boolean): string {
+  if (!record) {
+    if (capturing === 'false') return `return ${sc}(input,cur)`
+    // `ctx.captureTrivia` is read even where the label says capture is on: a host's
+    // `_parsemanCaptureTrivia` can turn it off for a node type. `pushCstTriviaEntry`
+    // tests the buffer.
+    return `const e=${sc}(input,cur)
+if(e!==cur&&ctx.captureTrivia===true)pushCstTriviaEntry(ctx,cur,e)
+return e`
+  }
+  const quiet = capturing === 'true' ? ''
+    : `ctx._rootTriviaLog===undefined${capturing === 'false' ? '' : `&&!${capturing}`}`
+  return `${quiet === '' ? '' : `if(${quiet})return ${sc}(input,cur)\n`}const e=${sc}(input,cur)
+if(e!==cur)recordUnlabelledGap(ctx,cur,e)
+return e`
+}
+
+/** `_skipTrivia`, the skip of a site whose trivia the label leaves to the installed scanner, in one skip set. */
+function skipTriviaDef(name: string, record: boolean): string {
+  return `function ${name}(input,cur,ctx){
+const s=_pfScan
+if(s!==null){
+${scannedSkip('s', '(ctx.captureTrivia===true&&ctx._cstBuf!==undefined)', record)}
+}
+if(needsDeferredTriviaCommit(ctx))return skipDeferredTrivia(input,cur,ctx)
+return advanceTrivia(input,cur,ctx)
+}`
 }
 
 /**
@@ -203,17 +248,9 @@ let _pfTokArm=-1
 let _pfTokEnd=-1
 let _pfSeqEnd=-1
 function _asciiFoldCode(c){return c>=65&&c<=90?c+32:c}
-function _skipTrivia(input,cur,ctx){
-const s=_pfScan
-if(s!==null){
-if(ctx._rootTriviaLog===undefined&&!(ctx.captureTrivia===true&&ctx._cstBuf!==undefined))return s(input,cur)
-const e=s(input,cur)
-if(e!==cur)recordUnlabelledGap(ctx,cur,e)
-return e
-}
-if(needsDeferredTriviaCommit(ctx))return skipDeferredTrivia(input,cur,ctx)
-return advanceTrivia(input,cur,ctx)
-}
+let _pfRec=false
+${skipTriviaDef('_skipTrivia', false)}
+${skipTriviaDef('_skipTriviaR', true)}
 function _pushLeaf(ctx,value,s,e){pushCstLeaf(ctx,new _LF(value,new _SP(s,e)))}
 function _pushLeafBuf(ctx,value,s,e){
 const l=new _LF(value,new _SP(s,e))
@@ -872,6 +909,12 @@ export function emitAssemblySource(
   const skipDefs: string[] = []
   const choiceDefs: string[] = []
   const skipPool = new Map<string, string>()
+  // The two skip sets' swap, written as each pooled skip with a recording variant is
+  // printed (`_pfSkips`). `_skipTrivia` is always in both.
+  let plainSkips = '_skipTrivia'
+  let toRecording = '_skipTrivia=_skipTriviaR'
+  let toPlain = '_skipTrivia=_skPlain[0]'
+  let skipCount = 1
   const pool = new Map<string, string>()
   const masks: Uint32Array[] = []
   const classes: (ResolvedClass | null)[][] = []
@@ -1124,27 +1167,14 @@ return advanceTrivia(input,cur,ctx)}`)
       return nm
     }
     const sc = hoist('ts', `TRIVIASCAN[${ki}]`)
-    // `ctx.captureTrivia === true && (a sink is open)`, with both conjuncts
-    // resolved as far as the label takes them.
-    const sink = l.buf ? 'true' : 'ctx._cstBuf!==undefined'
-    const capturing = l.cap === CAP_OFF ? 'false' : l.cap === CAP_ON ? sink : `(ctx.captureTrivia===true&&${sink})`
-    if (capturing === 'true') {
-      // Capture is on and a sink is open: the bare-scanner arm is unreachable.
-      skipDefs.push(`function ${nm}(input,cur,ctx){const e=${sc}(input,cur)
-if(e!==cur)recordUnlabelledGap(ctx,cur,e)
-return e}`)
-      return nm
-    }
-    // A root log takes the recording path too: an unlabelled gap is one root row
-    // under `rootTrivia: { select: 'all' }` (`recordUnlabelledGap`).
-    const guard = capturing === 'false'
-      ? 'ctx._rootTriviaLog===undefined'
-      : `ctx._rootTriviaLog===undefined&&!${capturing}`
-    skipDefs.push(`function ${nm}(input,cur,ctx){
-if(${guard})return ${sc}(input,cur)
-const e=${sc}(input,cur)
-if(e!==cur)recordUnlabelledGap(ctx,cur,e)
-return e}`)
+    // `_sk<N>` is the plain set's, and the name every call site uses; `_sk<N>r` is the
+    // recording set's, which `_pfSkips` assigns over it for a run that records gaps.
+    const capturing = capturesHere(l)
+    skipDefs.push(`function ${nm}(input,cur,ctx){\n${scannedSkip(sc, capturing, false)}}`)
+    skipDefs.push(`function ${nm}r(input,cur,ctx){\n${scannedSkip(sc, capturing, true)}}`)
+    plainSkips += `,${nm}`
+    toRecording += `;${nm}=${nm}r`
+    toPlain += `;${nm}=_skPlain[${skipCount++}]`
     return nm
   }
 
@@ -3087,6 +3117,14 @@ ${externals.map(ip => `let _xp${ip}
 function _px${ip}(input,pos,ctx){const o=_xScan(${scannerFor(ip)});const v=_xp${ip}(input,pos,ctx);_xScan(o);return v}`).join('\n')}
 `
 
+  // THE TWO SKIP SETS. Whether a run records unlabelled gaps is known when it begins, so
+  // `_begin` installs a set then and no skip asks. The plain set is what the declarations
+  // hold; `_skPlain` keeps it for the swap back.
+  const skipSets = `const _skPlain=[${plainSkips}]
+function _pfSkips(r){_pfRec=r
+if(r){${toRecording}}
+else{${toPlain}}}
+`
   // The per-label trivia scans sit AFTER the hoisted pool they close over: they
   // are `function` declarations, so a body may call one that is textually below
   // it, but the `const _ts<N>` each one reads must be initialised before any
@@ -3096,10 +3134,12 @@ ${prelude.join('\n')}
 ${skipDefs.join('\n')}
 ${choiceDefs.join('\n')}
 ${bodies.join('\n')}
-${externalDefs}function _begin(ctx){
+${externalDefs}${skipSets}function _begin(ctx){
 const host=ctx.build
-if(_pfDepth>0)_pfFrames.push([_pfScan,_pfHost,EC.e])
+const r=ctx._rootTriviaLog!==undefined&&ctx._rootTriviaLog.gapKind>=0
+if(_pfDepth>0)_pfFrames.push([_pfScan,_pfHost,EC.e,_pfRec])
 _pfDepth++
+if(r!==_pfRec)_pfSkips(r)
 _pfScan=null
 _pfHost=host
 }
@@ -3117,6 +3157,7 @@ const prior=_pfFrames.pop()
 _pfScan=prior[0]
 _pfHost=prior[1]
 EC.e=prior[2]
+if(prior[3]!==_pfRec)_pfSkips(prior[3])
 }
 return{
 pieces:{${ruleEntries.join(',')}},

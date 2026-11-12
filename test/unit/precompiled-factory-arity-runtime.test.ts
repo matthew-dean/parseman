@@ -167,7 +167,7 @@ describe('the helpers a printed factory binds', () => {
   })
 
   it('have the parameter counts declared for this ABI', () => {
-    expect(EMITTED_ABI).toBe('0.62/60')
+    expect(EMITTED_ABI).toBe('0.62/61')
     const prog = encodeTable({ Entry: node('Pair', sequence(literal('a'), literal('b'))) })
     const em = emitAssemblySource(resolveTable(prog), prog, STRICT)
     const real = new Function(...EMITTED_PARAMS, em.source) as (...helpers: unknown[]) => unknown
@@ -199,6 +199,7 @@ describe('the helpers a printed factory binds', () => {
       demoteCapturedToRaw: 2,
       cstLeavesLen: 1,
       recordUnlabelledGap: 3,
+      pushCstTriviaEntry: 4,
       needsDeferredTriviaCommit: 1,
       advanceTrivia: 3,
       refuseUnclassifiedRootScope: 1,

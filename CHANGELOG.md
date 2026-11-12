@@ -12,11 +12,11 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   the wrong names and run: a
   `sequence(literal('x'), optional(node('E', optional(literal('z')))), literal('y'))` on
   `x/*c*/y` recorded its root trivia row twice and reported success. Each printed record now
-  carries `abi`, the printing minor and helper count (`"0.62/60"`), in place of `arity`. The
+  carries `abi`, the printing minor and helper count (`"0.62/61"`), in place of `arity`. The
   runtime refuses a record whose `abi` is not its own, naming both, and refuses a record
   printed before 0.62.0, which has no `abi`. A helper's parameters or order change only in a
   minor, and helper slots only append: `skipTriviaScanned` is retired and keeps its slot,
-  and `recordUnlabelledGap` is a new last slot (`docs/design/artifact-format.md`). A 0.61.x runtime refuses a 0.62.0 record because
+  and `recordUnlabelledGap` and `pushCstTriviaEntry` are new last slots (`docs/design/artifact-format.md`). A 0.61.x runtime refuses a 0.62.0 record because
   it carries no `arity`.
 - **Breaking: the document's trivia log moves from `ParseContext._triviaLog` to
   `run(parser, input, { rootTrivia: { select: 'all' } })`.** `RunResult.rootTrivia.rows` holds
