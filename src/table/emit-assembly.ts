@@ -61,7 +61,7 @@ import {
 import { emitShapeMatch, scanShapeFromRegex } from './scan-shapes.ts'
 import {
   CAP_OFF, CAP_ON, RAW_CAPTURE, RAW_OMIT, TRI_NONE, TRI_UNKNOWN,
-  computeSiteLabels, gatedPassCollapse, passCollapse, reachableSites, scopeIsIdentity, triviaLeadRanges, type SiteLabel,
+  computeSiteLabels, gatedPassCollapse, passCollapse, reachableSites, scopeIsIdentity, triviaLeadRanges, TOP, type SiteLabel,
 } from './site-labels.ts'
 import {
   largeChoiceLiteralPretest, leadingScalarSequence, leadingScalarTerminal,
@@ -176,6 +176,12 @@ export function emittedAbi(version: string, helperCount: number): string {
   return `${minor[0]}/${helperCount}`
 }
 
+/** `ctx.captureTrivia === true && (a sink is open)`, as far as the label resolves it. */
+function capturesHere(l: Pick<SiteLabel, 'cap' | 'buf'>): string {
+  const sink = l.buf ? 'true' : 'ctx._cstBuf!==undefined'
+  return l.cap === CAP_OFF ? 'false' : l.cap === CAP_ON ? sink : `(ctx.captureTrivia===true&&${sink})`
+}
+
 /**
  * An INSTALLED SCANNER'S SKIP, the one template both skip sets print from. `record` is
  * fixed when the text is printed, never tested on a parse:
@@ -187,17 +193,21 @@ export function emittedAbi(version: string, helperCount: number): string {
  * - the PLAIN set is installed for every other run. It never reads the root log, and
  *   pushes a gap only into a capture buffer that is open while capture is on.
  *
- * `capturing` is the capture test as far as the site's label resolves it.
+ * `l` is the site's label: its capture and buffer facts decide what each set tests.
  * `_begin` installs one set per run (`_pfSkips`).
  */
-function scannedSkip(sc: string, capturing: string, record: boolean): string {
+function scannedSkip(sc: string, l: Pick<SiteLabel, 'cap' | 'buf'>, record: boolean): string {
+  const capturing = capturesHere(l)
   if (!record) {
     if (capturing === 'false') return `return ${sc}(input,cur)`
-    // `ctx.captureTrivia` is read even where the label says capture is on: a host's
-    // `_parsemanCaptureTrivia` can turn it off for a node type. `pushCstTriviaEntry`
-    // tests the buffer.
-    return `const e=${sc}(input,cur)
-if(e!==cur&&ctx.captureTrivia===true)pushCstTriviaEntry(ctx,cur,e)
+    // The test the closure's plain skip makes, before the scan. `ctx.captureTrivia` is
+    // read even where the label says capture is on: a host's `_parsemanCaptureTrivia`
+    // can turn it off for a node type. The buffer is tested here and not left to
+    // `pushCstTriviaEntry`: with none open (an AST run, or inside `leaf()`), every gap
+    // would pay a call that returns at once.
+    return `if(!(ctx.captureTrivia===true${l.buf ? '' : '&&ctx._cstBuf!==undefined'}))return ${sc}(input,cur)
+const e=${sc}(input,cur)
+if(e!==cur)pushCstTriviaEntry(ctx,cur,e)
 return e`
   }
   const quiet = capturing === 'true' ? ''
@@ -212,7 +222,7 @@ function skipTriviaDef(name: string, record: boolean): string {
   return `function ${name}(input,cur,ctx){
 const s=_pfScan
 if(s!==null){
-${scannedSkip('s', '(ctx.captureTrivia===true&&ctx._cstBuf!==undefined)', record)}
+${scannedSkip('s', TOP, record)}
 }
 if(needsDeferredTriviaCommit(ctx))return skipDeferredTrivia(input,cur,ctx)
 return advanceTrivia(input,cur,ctx)
@@ -1131,11 +1141,6 @@ return 1
     return capturesHere(l)
   }
 
-  function capturesHere(l: SiteLabel): string {
-    const sink = l.buf ? 'true' : 'ctx._cstBuf!==undefined'
-    return l.cap === CAP_OFF ? 'false' : l.cap === CAP_ON ? sink : `(ctx.captureTrivia===true&&${sink})`
-  }
-
   function skipFor(l: SiteLabel): string {
     if (l.tri < 0) return '_skipTrivia'
     const ki = l.tri
@@ -1169,9 +1174,8 @@ return advanceTrivia(input,cur,ctx)}`)
     const sc = hoist('ts', `TRIVIASCAN[${ki}]`)
     // `_sk<N>` is the plain set's, and the name every call site uses; `_sk<N>r` is the
     // recording set's, which `_pfSkips` assigns over it for a run that records gaps.
-    const capturing = capturesHere(l)
-    skipDefs.push(`function ${nm}(input,cur,ctx){\n${scannedSkip(sc, capturing, false)}}`)
-    skipDefs.push(`function ${nm}r(input,cur,ctx){\n${scannedSkip(sc, capturing, true)}}`)
+    skipDefs.push(`function ${nm}(input,cur,ctx){\n${scannedSkip(sc, l, false)}}`)
+    skipDefs.push(`function ${nm}r(input,cur,ctx){\n${scannedSkip(sc, l, true)}}`)
     plainSkips += `,${nm}`
     toRecording += `;${nm}=${nm}r`
     toPlain += `;${nm}=_skPlain[${skipCount++}]`
