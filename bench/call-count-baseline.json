@@ -1,13 +1,25 @@
 {
   "emitted/less/stylesheet": {
+    "calls": 742502,
+    "branches": 3813607
+  },
+  "emitted/less/stylesheet/allTrivia": {
     "calls": 753390,
     "branches": 3838424
   },
   "emitted/less/mixins": {
+    "calls": 799791,
+    "branches": 4102378
+  },
+  "emitted/less/mixins/allTrivia": {
     "calls": 812455,
     "branches": 4133388
   },
   "emitted/css/stylesheet": {
+    "calls": 413223,
+    "branches": 2257933
+  },
+  "emitted/css/stylesheet/allTrivia": {
     "calls": 424863,
     "branches": 2294681
   },
@@ -32,14 +44,26 @@
     "branches": 80129
   },
   "closure/less/stylesheet": {
+    "calls": 1114003,
+    "branches": 5412980
+  },
+  "closure/less/stylesheet/allTrivia": {
     "calls": 1124891,
     "branches": 5467435
   },
   "closure/less/mixins": {
+    "calls": 1198239,
+    "branches": 5848715
+  },
+  "closure/less/mixins/allTrivia": {
     "calls": 1210903,
     "branches": 5912050
   },
   "closure/css/stylesheet": {
+    "calls": 605927,
+    "branches": 2982700
+  },
+  "closure/css/stylesheet/allTrivia": {
     "calls": 617567,
     "branches": 3038097
   },

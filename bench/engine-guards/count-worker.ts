@@ -76,11 +76,16 @@ const mod = await import(args.module) as Record<string, unknown>
 if (args.kind === 'workloads') {
   type Built = () => { parse: () => unknown }
   const buildWorkloads = mod['buildWorkloads'] as () => Array<{ id: string; input: string; make: Built; capture?: Built }>
-  for (const w of buildWorkloads()) {
+  // The plain parse every workload has, and the recording parse (`<id>/allTrivia`) where it
+  // has one: a row for each, so neither path goes uncounted.
+  const variants = buildWorkloads().flatMap(w => [
+    { id: w.id, input: w.input, make: w.make },
+    ...(w.capture === undefined ? [] : [{ id: `${w.id}/allTrivia`, input: w.input, make: w.capture }]),
+  ])
+  for (const w of variants) {
     k.c = 0
     k.b = 0
-    // The recording parse where the workload has one: the rows count the trivia recorders too.
-    const built = (w.capture ?? w.make)()
+    const built = w.make()
     const accept = (r: unknown): void => assertWorkloadFullyConsumed('call-count', w.id, w.input, r)
     if (args.cold === true) {
       const result = built.parse()
