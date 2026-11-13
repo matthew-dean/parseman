@@ -85,6 +85,71 @@ export const DEFECTS = {
     }],
   },
   /**
+   * The rollback question for a choice arm that is a reference reads the arm as its
+   * thunk, so an arm whose override captures and then fails is read as the base
+   * piece's rule and the next arm runs on top of the override's captures.
+   */
+  'ref-root-thunk-first': {
+    why: 'table census: a choice arm that is a reference reads as the base piece\'s rule',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: 'const root = this.targets.get(p) ?? p',
+      replace: 'const root = THUNK_TARGETS.get(p) ?? p',
+    }, {
+      file: 'src/table/encode.ts',
+      find: "import { capturesLeaf, mayCommitFailure, mayLeavePartialCapture, reachesMarked } from '../analysis/commitment.ts'",
+      replace: "import { capturesLeaf, mayCommitFailure, mayLeavePartialCapture, reachesMarked, THUNK_TARGETS } from '../analysis/commitment.ts'",
+    }],
+  },
+  /**
+   * The partial-capture walk reads a reference under a wrapper as its thunk, so an
+   * arm whose override captures and then fails is read as the base piece's rule.
+   */
+  'ref-capture-thunk-first': {
+    why: 'table census: a reference inside a choice arm reads as the base piece\'s rule',
+    edits: [{
+      file: 'src/analysis/commitment.ts',
+      find: 'const t = targets.get(p)\n      return t === undefined || mayLeavePartialCapture(',
+      replace: 'const t = THUNK_TARGETS.get(p)\n      return t === undefined || mayLeavePartialCapture(',
+    }],
+  },
+  /** The fallibility walk reads a reference as its thunk: an overridden later term reads as total. */
+  'ref-fallible-thunk-first': {
+    why: 'table census: a later sequence term that is a reference reads as the base piece\'s rule',
+    edits: [{
+      file: 'src/analysis/commitment.ts',
+      find: '{ const t = targets.get(p); return t === undefined || mayFail(',
+      replace: '{ const t = THUNK_TARGETS.get(p); return t === undefined || mayFail(',
+    }],
+  },
+  /** The capture walk reads a reference as its thunk: an overridden dispatch selector reads as capturing nothing. */
+  'ref-leaf-thunk-first': {
+    why: 'table census: a dispatch selector that is a reference reads as the base piece\'s rule',
+    edits: [{
+      file: 'src/analysis/commitment.ts',
+      find: 'const t = targets.get(p)\n      return t === undefined || capturesLeaf(',
+      replace: 'const t = THUNK_TARGETS.get(p)\n      return t === undefined || capturesLeaf(',
+    }],
+  },
+  /** The direct-builder question reads each reference as its thunk, so a shadowed base builder counts. */
+  'ref-builders-thunk-first': {
+    why: 'host mode: a merged map whose override drops a builder still reports a dropped CST branch',
+    edits: [{
+      file: 'src/analysis/commitment.ts',
+      find: 'hasDirectBuildDef(rule, undefined, targets)',
+      replace: 'hasDirectBuildDef(rule, undefined, THUNK_TARGETS)',
+    }],
+  },
+  /** The capability walk skips a `lines()` body, so a reference only there goes unrecorded. */
+  'token-children-skip-lines': {
+    why: 'table encoder: the capability walk misses a reference inside a lines body',
+    edits: [{
+      file: 'src/compiler/token-alphabet.ts',
+      find: "if (d.tag !== 'lazy') return childrenOf(d)",
+      replace: "if (d.tag !== 'lazy') return d.tag === 'lines' ? [] : childrenOf(d)",
+    }],
+  },
+  /**
    * The closure engine reads an uncommitted dispatch fallback as failing clean,
    * so a site around it takes no mark and the selector's leaf stays. Shipped as #280.
    */
@@ -475,8 +540,8 @@ export const DEFECTS = {
     why: 'encoder: the proof calls the thunk of a ref not defined yet uncaught, so a grammar that encoded before no longer does',
     edits: [{
       file: 'src/table/encode.ts',
-      find: 'if (target === undefined) { try { target = d.thunk() } catch { return false } }\n      return publishesOneNode',
-      replace: 'if (target === undefined) target = d.thunk()\n      return publishesOneNode',
+      find: 'const target = resolvedLazyTarget(p, rr)\n      return target !== undefined && publishesOneNode',
+      replace: 'const target = resolvedLazyTarget(p, rr) ?? d.thunk()\n      return publishesOneNode',
     }],
   },
 

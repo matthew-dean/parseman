@@ -196,7 +196,15 @@ const REGISTRY = [
     legs: 'a merged rule map encoded once (tableRules) vs fuseInterpreted, value, span and expected compared',
     cleanExit: 0,
     run: () => runCmd(['node_modules/vitest/vitest.mjs', 'run', '--reporter=dot', 'test/unit/table-compose-merge.test.ts']),
-    plants: [{ defect: 'ref-targets-thunk-first', expect: 'moves' }],
+    plants: [
+      { defect: 'ref-targets-thunk-first', expect: 'moves' },
+      { defect: 'ref-root-thunk-first', expect: 'moves' },
+      { defect: 'ref-capture-thunk-first', expect: 'moves' },
+      { defect: 'ref-fallible-thunk-first', expect: 'moves' },
+      { defect: 'ref-leaf-thunk-first', expect: 'moves' },
+      { defect: 'ref-builders-thunk-first', expect: 'moves' },
+      { defect: 'token-children-skip-lines', expect: 'moves' },
+    ],
   },
   {
     id: 'table-lowering-identity',
