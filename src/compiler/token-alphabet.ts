@@ -4718,3 +4718,85 @@ export function selectedLexicalOutcome(
   }
   return undefined
 }
+
+/** The id already assigned to this terminal, if it is one. */
+export function terminalId(alphabet: Alphabet, p: Combinator<unknown>): number | undefined {
+  const key = keyOf(p._def)
+  return key === undefined ? undefined : alphabet.byKey.get(key)
+}
+
+/**
+ * The LEADING terminal of an arm — the one a decision point would consult. Walks
+ * through the wrappers that do not consume input, and through a sequence's
+ * nullable/zero-width prefix. Returns undefined when the lead is not a single
+ * derived terminal, which is the signal to stay scannerless at that site.
+ */
+export function leadTerminal(
+  p: Combinator<unknown>,
+  alphabet: Alphabet,
+  resolve?: RefResolver,
+  depth = 0,
+): number | undefined {
+  if (depth > 24) return undefined
+  const direct = terminalId(alphabet, p)
+  if (direct !== undefined) return direct
+  const d = p._def
+  switch (d.tag) {
+    case 'sequence': {
+      for (const c of d.parsers) {
+        // CLASSIFY FIRST. The old order asked for the inner terminal and returned
+        // it before checking whether the term could consume anything, so:
+        //
+        //   sequence(optional(X), Y)  yielded X's terminal as THE lead -- but the
+        //                             input may legally start with Y's instead
+        //   sequence(not(X), Y)       yielded X's terminal -- from a NEGATIVE
+        //                             lookahead, which never consumes
+        //
+        // A single lead terminal cannot express "X's first set OR Y's", so a
+        // nullable prefix has no direct lead and the site must be REJECTED --
+        // scannerless gating handles it correctly. Zero-width prefixes are
+        // different: they consume nothing, so the next term genuinely leads.
+        const cd = c._def.tag
+        if (cd === 'not' || cd === 'peek' || cd === 'guard') continue
+        if (cd === 'optional' || cd === 'many') return undefined
+        return leadTerminal(c, alphabet, resolve, depth + 1)
+      }
+      return undefined
+    }
+    case 'sepBy':
+      return leadTerminal(d.parser, alphabet, resolve, depth + 1)
+    case 'lazy': {
+      const target = resolvedLazyTarget(p, resolve)
+      return target === undefined ? undefined : leadTerminal(target, alphabet, resolve, depth + 1)
+    }
+    case 'node': case 'field': case 'label': case 'transform': case 'leaf':
+    case 'token': case 'grammar': case 'attempt': case 'expect': case 'withCtx':
+    case 'oneOrMore': case 'trivia': case 'recover':
+      return leadTerminal(d.parser, alphabet, resolve, depth + 1)
+    default:
+      return undefined
+  }
+}
+
+/**
+ * The CANDIDATE SET for one decision point: the leading terminals of its arms.
+ * `complete` is false when any arm's lead is not a derived terminal — that site
+ * must stay scannerless, per-construct, exactly as `scanSkip` and first-set
+ * gating already apply per region rather than globally.
+ */
+export type CandidateSet = { ids: number[]; complete: boolean }
+
+export function candidateSet(
+  arms: ReadonlyArray<Combinator<unknown>>,
+  alphabet: Alphabet,
+  resolve?: RefResolver,
+): CandidateSet {
+  const ids: number[] = []
+  let complete = true
+  for (const a of arms) {
+    const t = leadTerminal(a, alphabet, resolve)
+    if (t === undefined) { complete = false; continue }
+    if (!ids.includes(t)) ids.push(t)
+  }
+  return { ids, complete }
+}
