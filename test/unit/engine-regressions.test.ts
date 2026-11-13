@@ -36,8 +36,11 @@ const outcome = (r: ReturnType<typeof run>): object => ({
   unconsumedFrom: r.unconsumedFrom,
   expected: [...(r.expected ?? [])].sort(),
   errors: r.errors,
-  rootTrivia: (r.rootTrivia as { rows?: unknown } | undefined)?.rows,
+  // The rows as plain numbers: `rows` is an `Int32Array` view of the log.
+  rootTrivia: rowsOrNone((r.rootTrivia as { rows?: ArrayLike<number> } | undefined)?.rows),
 })
+
+const rowsOrNone = (rows: ArrayLike<number> | undefined): number[] | undefined => rows === undefined ? undefined : Array.from(rows)
 
 /** The one answer every engine gives. A CST host in `options` builds the table for one. */
 function agreed(g: G, input: string, options: Options = {}, skip?: string): Record<string, unknown> {
