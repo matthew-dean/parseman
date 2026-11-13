@@ -25,7 +25,8 @@
  *
  *   emitted/<workload>   parseman's workloads (`bench/workloads/`, the corpus set and
  *                        `buildCaptureWorkloads`) under runtime `compile()`, which
- *                        emits the whole grammar as code
+ *                        emits the whole grammar as code; a workload with an
+ *                        all-trivia parse also counts it as `<workload>/allTrivia`
  *   closure/<workload>   the same, with `Function` refusing (a CSP), so the closure
  *                        assembler runs it
  *   macro/<dialect>/<variant>/<fixture>
