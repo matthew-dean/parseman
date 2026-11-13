@@ -26,7 +26,9 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   rollback analysis read what the encoder recorded for each reference when it walked the
   grammar, and a reference it did not record but could resolve stops the compile with an
   error. The walk now enters a `lines()` body and each rule's `scanSkip` set, so a reference
-  used only there is recorded.
+  used only there is recorded. Whether the table tracks lines is read the same way, so a
+  merged map no longer puts line fields in its spans because a rule an override replaced asked
+  for `trackLines`.
   In a merged rule map whose override replaces a base rule's `node(..., build)` with a
   structural node, the compiled artifact no longer reports a dropped positioned-CST branch it
   never had, so the host-mode check no longer refuses a CST host for it.

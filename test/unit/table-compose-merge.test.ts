@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { attempt, choice, compile, compose, dispatch, lines, literal, many, node, not, optional, peek, ref, regex, routed, rules, scanTo, sequence, transform, when } from '../../src/index.ts'
+import { attempt, choice, compile, compose, dispatch, lines, literal, many, node, not, optional, parser, peek, ref, regex, routed, rules, scanTo, sequence, transform, when } from '../../src/index.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { tableRules } from '../../src/table/assemble.ts'
 import { fuseInterpreted } from '../../src/compiler/linker.ts'
@@ -258,6 +258,21 @@ describe('a MERGED rule map encodes to the parser compose() means', () => {
       expect({ ok: table.ok, value: table.value, span: table.span }, input).toEqual({ ok: interp.ok, value: interp.value, span: interp.span })
     }
     expect(differential(linesBody, 'R', '> abc').table.ok).toBe(true)
+  })
+
+  // Line tracking is decided for the whole table. The base's `Item` asks for it,
+  // the override does not, and the merged map holds the override: no line fields.
+  const trackedBase = (): Entries[] => [
+    entriesOf(rules<Record<string, Combinator<unknown>>>(g => ({
+      Item: parser({ trackLines: true }, node('I', literal('x'))) as Combinator<unknown>,
+      Doc: node('D', sequence(literal('<'), g.Item!, literal('>'))) as Combinator<unknown>,
+    }))),
+    entriesOf(rules<Record<string, Combinator<unknown>>>(() => ({ Item: node('I', literal('x')) as Combinator<unknown> }))),
+  ]
+
+  it('tracks no lines when only a shadowed base rule asked for them', () => {
+    for (const input of ['<x>', '<y>', '']) expectIdentical(trackedBase, 'Doc', input)
+    expect((expectIdentical(trackedBase, 'Doc', '<x>').value as { span: object }).span).toEqual({ start: 0, end: 3 })
   })
 
   // A reference reached only through a rule's ambient `scanSkip`: the encoder

@@ -749,7 +749,9 @@ class Encoder {
     this.rr = Object.assign((name: string) => winners[name], { targets })
     this.targets = targets
     this.settings = settings
+    const trackSeen = new Set<Combinator<unknown>>()
     this.track = settings.trackLines === true
+      || Object.values(winners).some(rule => hasScopedTrackLines(rule, trackSeen, targets))
     this.selectLexicalBodies = selectLexicalBodies
     this.plan = settings.coverage
     this.cov = settings.coverage === undefined
@@ -2490,32 +2492,22 @@ class Encoder {
  * underneath, so a grammar that carries its own tracking compiled through
  * codegen and was rejected by the encoder. Same question, same answer.
  *
- * A `lazy` is followed, because a rule reference is how a grammar reaches most of
- * itself; an undefined one answers `false` rather than throwing, as codegen's does.
+ * A `lazy` is followed as the capability walk recorded it (`targets`), because a
+ * rule reference is how a grammar reaches most of itself, and in a merged map its
+ * thunk still reaches the rule an override replaced. An undefined one answers
+ * `false` rather than throwing, as codegen's does.
  */
-function hasScopedTrackLines(p: Combinator<unknown>, seen: Set<Combinator<unknown>>): boolean {
+function hasScopedTrackLines(p: Combinator<unknown>, seen: Set<Combinator<unknown>>, targets: RefTargets): boolean {
   if (seen.has(p)) return false
   seen.add(p)
   if (p._meta.grammarTrackLines === true) return true
   const d = p._def
-  switch (d.tag) {
-    case 'grammar':
-      if (d.trackLines === true) return true
-      break
-    case 'lazy':
-      try { return hasScopedTrackLines(d.thunk(), seen) }
-      catch { return false }
-    // Neither is covered by the shared `childrenOf`: it drops `dispatch` matcher
-    // arms and treats `routed()` as a leaf.
-    case 'dispatch':
-      for (const m of d.matchers ?? []) if (hasScopedTrackLines(m.parser, seen)) return true
-      break
-    case 'routed':
-      return d.fallback === undefined ? false : hasScopedTrackLines(d.fallback, seen)
-    default:
-      break
+  if (d.tag === 'grammar' && d.trackLines === true) return true
+  if (d.tag === 'lazy') {
+    const target = targets.get(p)
+    return target !== undefined && hasScopedTrackLines(target, seen, targets)
   }
-  for (const c of childrenOf(d)) if (hasScopedTrackLines(c, seen)) return true
+  for (const c of childrenOf(d)) if (hasScopedTrackLines(c, seen, targets)) return true
   return false
 }
 
@@ -2543,11 +2535,9 @@ export function encodeTableProgram(
   // Line tracking is decided ONCE for the whole artifact, as codegen does
   // (`opts.trackLines || grammarTrackLines || hasLineTrackingDef(combinator)`).
   // Reading only the SETTING made the table narrower than codegen and refused a
-  // `parser({ trackLines: true })` scope that codegen simply accepts.
+  // `parser({ trackLines: true })` scope that codegen simply accepts. The Encoder
+  // decides it (`hasScopedTrackLines`), once the walk has recorded every reference.
   const names = Object.keys(ruleMap)
-  const seen = new Set<Combinator<unknown>>()
-  const track = settings.trackLines === true
-    || names.some(n => hasScopedTrackLines(ruleMap[n]!, seen))
   // Same precedence as compileRuleMap/compose: an explicit lowering option wins;
   // otherwise a `rules({ hostMode: 'cst' })` declaration stamped on its entries
   // selects CST. (`'ast'` is the unstamped default.) Reading only `settings`
@@ -2558,7 +2548,6 @@ export function encodeTableProgram(
   const resolvedSettings = {
     ...settings,
     ...(hostMode === undefined ? {} : { hostMode }),
-    ...(track ? { trackLines: true } : {}),
   }
   // Collect once from the FINAL winner-resolved graph. Sorting affects only
   // content-id discovery; ordinary rule/code order remains the caller's order.

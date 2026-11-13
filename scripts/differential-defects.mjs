@@ -158,6 +158,19 @@ export const DEFECTS = {
       replace: 'for (const skipper of [] as Combinator<unknown>[]) recordSkip(skipper)',
     }],
   },
+  /** The line-tracking question reads a reference as its thunk, so a shadowed base rule's `trackLines` counts. */
+  'track-lines-thunk-first': {
+    why: 'table encoder: a merged map tracks lines because a rule an override replaced asked for them',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: 'const target = targets.get(p)\n    return target !== undefined && hasScopedTrackLines(target, seen, targets)',
+      replace: 'const target = THUNK_TARGETS.get(p)\n    return target !== undefined && hasScopedTrackLines(target, seen, targets)',
+    }, {
+      file: 'src/table/encode.ts',
+      find: "import { capturesLeaf, mayCommitFailure, mayLeavePartialCapture, reachesMarked } from '../analysis/commitment.ts'",
+      replace: "import { capturesLeaf, mayCommitFailure, mayLeavePartialCapture, reachesMarked, THUNK_TARGETS } from '../analysis/commitment.ts'",
+    }],
+  },
   /**
    * The fallibility walk reads a list with a minimum as failing only where its item
    * can, so a contained attempt around a list short of its minimum, or one whose

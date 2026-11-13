@@ -205,6 +205,7 @@ const REGISTRY = [
       { defect: 'ref-builders-thunk-first', expect: 'moves' },
       { defect: 'token-children-skip-lines', expect: 'moves' },
       { defect: 'scan-skip-refs-unrecorded', expect: 'moves' },
+      { defect: 'track-lines-thunk-first', expect: 'moves' },
     ],
   },
   {
