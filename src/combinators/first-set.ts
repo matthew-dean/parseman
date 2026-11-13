@@ -14,7 +14,10 @@ import { triviaThroughRef } from './trivia-boundary.ts'
  * Only NAMED refs are resolvable: an unnamed `ref()` that was never `.define()`d
  * carries no name for anyone to bind, so it stays `any`.
  */
-export type RefResolver = (name: string) => Combinator<unknown> | undefined
+export type RefResolver = ((name: string) => Combinator<unknown> | undefined) & {
+  /** What each reference reads as, read before `resolve` and written where it can be. */
+  readonly targets?: RefTargets & { set?(ref: Combinator<unknown>, target: Combinator<unknown>): unknown }
+}
 
 /** Winner-resolved choice facts shared by table encoding and capability IR. */
 export type FinalChoiceClassification = {
@@ -73,31 +76,60 @@ export function classifyFinalChoice(
   return { exclusive, firstSets, nullable }
 }
 
-/** The compose WINNER a named lazy ref resolves to — the same row the encoder's
- * `lazy` case calls via `winners`/`scopedRef`. Winner-FIRST resolution is what makes
- * first-set / nullability analysis AGREE with emission: a base piece's thunk still
- * closes over its own binding, so a compose OVERRIDE (and any undefined cross-piece
- * ref) would otherwise be invisible to the gate — the reducer reroutes, the recognizer
- * does not. `undefined` → no winner; fall back to the thunk. Monolithic: the winner IS
- * the thunk's target, a no-op. A winner that recurses back to `p` (recursive or
- * self-alias rule) is caught by the shared `seen` guard → `any`, a sound over-approx. */
-export function winnerForRef(p: Combinator<unknown>, resolve: RefResolver | undefined): Combinator<unknown> | undefined {
-  if (resolve === undefined) return undefined
-  const name = (p as unknown as { _ruleName?: string })._ruleName
-  const w = name === undefined ? undefined : resolve(name)
-  // Skip a winner that merely wraps THIS reference (a transparent rules()/parser()
-  // alias): resolving to it is a self-hop, not an override — matches the encoder's
-  // own `winnerWrapsReference` guard so first-set analysis agrees with emission.
-  if (w === undefined || w === p) return undefined
-  let cur = w
-  for (const seen = new Set<Combinator<unknown>>(); !seen.has(cur); ) {
-    if (cur === p) return undefined
-    seen.add(cur)
-    const cd = cur._def as ParserDef
-    if (cd.tag !== 'grammar' && cd.tag !== 'trivia') return w
-    cur = cd.parser
+/**
+ * What a named reference reads as, where the encoder or a fuse records it: the
+ * rule the map binds to the name, else the reference's own thunk. `undefined`:
+ * it cannot be resolved.
+ */
+export type RefTargets = { get(ref: Combinator<unknown>): Combinator<unknown> | undefined }
+
+/** Does a final rule-map winner bottom out at the reference being resolved? */
+export function winnerWrapsReference(
+  winner: Combinator<unknown>,
+  reference: Combinator<unknown>,
+): boolean {
+  let current = winner
+  const seen = new Set<Combinator<unknown>>()
+  // Only wrappers introduced by rules()/parser() are transparent here. Walking
+  // into a sequence or choice would mistake ordinary recursive use for an alias.
+  while (!seen.has(current)) {
+    if (current === reference) return true
+    seen.add(current)
+    const def = current._def
+    if (def.tag !== 'grammar' && def.tag !== 'trivia') return false
+    current = def.parser
   }
-  return w
+  return false
+}
+
+/**
+ * What the reference `parser` reads as: THE one place that decision is made.
+ *
+ * Its rule BY NAME first, when `resolve` binds the name: in a merged map a base
+ * piece's thunk still closes over its own binding, so an override (or a
+ * cross-piece hole) is visible only by name. Else its own thunk. A resolver that
+ * carries `targets` keeps the answer: the table encoder's capability walk records
+ * each reference once, and every later reader (emission, first sets, the
+ * commitment census) reads the record.
+ */
+export function resolvedLazyTarget(
+  parser: Combinator<unknown>,
+  resolve?: RefResolver,
+): Combinator<unknown> | undefined {
+  const def = parser._def
+  if (def.tag !== 'lazy') return undefined
+  const targets = resolve?.targets
+  let target = targets?.get(parser)
+  if (target !== undefined) return target
+  const name = (parser as unknown as { _ruleName?: string })._ruleName
+  const winner = name === undefined ? undefined : resolve?.(name)
+  // A named rule whose whole definition is itself a lazy alias is stamped with
+  // its OWN name. Resolving that name returns the same object, not the
+  // referenced winner; only a distinct winner supersedes the construction thunk.
+  try { target = winner !== undefined && !winnerWrapsReference(winner, parser) ? winner : def.thunk() }
+  catch { return undefined }
+  targets?.set?.(parser, target)
+  return target
 }
 
 export function union(a: FirstSet, b: FirstSet): FirstSet {
@@ -237,10 +269,8 @@ function matchesEmptyBody(
     case 'grammar':
     case 'recover':   return me(d.parser)
     case 'lazy': {
-      const w = winnerForRef(p, resolve)
-      if (w !== undefined) return me(w)
-      try { return me(d.thunk()) }
-      catch { return true }
+      const target = resolvedLazyTarget(p, resolve)
+      return target === undefined || me(target)
     }
     // A run consumes at least its first line's prefix, and its body after that.
     case 'lines':     return me(d.first ?? d.prefix) && me(d.body)
@@ -440,11 +470,8 @@ function firstSetBody(
     case 'keywords':  return p._meta.firstSet  // terminals: no refs, cached set is exact
     case 'dispatch':  return fs(d.selector)
     case 'lazy': {
-      let target = winnerForRef(p, resolve)
-      if (target === undefined) {
-        try { target = d.thunk() }
-        catch { return any() }
-      }
+      const target = resolvedLazyTarget(p, resolve)
+      if (target === undefined) return any()
       // Under a scope KNOWN to have no trivia (`null`), the target runs under the
       // trivia the reference installs for it (`triviaThroughRef`). `undefined`
       // says nothing about the scope, and the target is read as it stands. Only

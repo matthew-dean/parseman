@@ -31,7 +31,9 @@
  * module only decides WHAT the tokens are and WHICH ones each site may see.
  */
 import type { AutoNotCheck, Combinator, FirstSet, ParserDef } from '../types.ts'
-import { classifyFinalChoice, firstSetOf, intersects, matchesEmpty } from '../combinators/first-set.ts'
+import { classifyFinalChoice, firstSetOf, intersects, matchesEmpty, resolvedLazyTarget, type RefResolver } from '../combinators/first-set.ts'
+export { winnerWrapsReference } from '../combinators/first-set.ts'
+import { childrenOf } from '../analysis/gating.ts'
 import { branchUsesRouted } from '../combinators/dispatch.ts'
 import type { BalancedSpec } from '../combinators/scanTo.ts'
 import { deriveExpected } from '../combinators/expect.ts'
@@ -1314,81 +1316,15 @@ function terminalOf(def: ParserDef, id: number): TokenTerminal | undefined {
   }
 }
 
-/** Does a final rule-map winner bottom out at the reference being resolved? */
-export function winnerWrapsReference(
-  winner: Combinator<unknown>,
-  reference: Combinator<unknown>,
-): boolean {
-  let current = winner
-  const seen = new Set<Combinator<unknown>>()
-  // Only wrappers introduced by rules()/parser() are transparent here. Walking
-  // into a sequence or choice would mistake ordinary recursive use for an alias.
-  while (!seen.has(current)) {
-    if (current === reference) return true
-    seen.add(current)
-    const def = current._def
-    if (def.tag !== 'grammar' && def.tag !== 'trivia') return false
-    current = def.parser
-  }
-  return false
-}
-
-/** Final winner resolution is authoritative; a stale construction thunk is fallback only. */
-/**
- * A resolver that can also keep what each reference it resolves reads as: the table
- * encoder passes one, and its rollback census reads references through `targets`.
- */
-type RecordingResolver = ((name: string) => Combinator<unknown> | undefined) & {
-  readonly targets?: Map<Combinator<unknown>, Combinator<unknown>>
-}
-
-/** What the reference `parser` reads as: its rule by name first, else its thunk. */
-function resolvedLazyTarget(
-  parser: Combinator<unknown>,
-  resolve?: RecordingResolver,
-): Combinator<unknown> | undefined {
-  const def = parser._def
-  if (def.tag !== 'lazy') return undefined
-  const name = (parser as unknown as { _ruleName?: string })._ruleName
-  if (name !== undefined && resolve !== undefined) {
-    const winner = resolve(name)
-    // A named rule whose whole definition is itself a lazy alias is stamped
-    // with its OWN name. Resolving that name returns the same object, not the
-    // referenced winner; only a distinct winner supersedes the construction
-    // thunk.
-    if (winner !== undefined && !winnerWrapsReference(winner, parser)) {
-      resolve.targets?.set(parser, winner)
-      return winner
-    }
-  }
-  try {
-    const target = def.thunk()
-    resolve?.targets?.set(parser, target)
-    return target
-  } catch { return undefined }
-}
-
-/** Direct sub-parsers of a def, resolving a lazy through `resolve` when its own thunk is a hole. */
+/** Direct sub-parsers of a def (`childrenOf`), and what a lazy reads as (`resolvedLazyTarget`). */
 export function tokenChildren(
   p: Combinator<unknown>,
-  resolve?: (name: string) => Combinator<unknown> | undefined,
-): Combinator<unknown>[] {
+  resolve?: RefResolver,
+): readonly Combinator<unknown>[] {
   const d = p._def
-  const out: Combinator<unknown>[] = []
-  const push = (v: Combinator<unknown> | undefined): void => { if (v !== undefined) out.push(v) }
-  const rec = d as unknown as Record<string, unknown>
-  for (const k of ['parser', 'main', 'skipped', 'separator', 'selector', 'sentinel', 'recoverAt', 'stopAt', 'fallback', 'otherwise', 'triviaParser']) {
-    const v = rec[k]
-    if (v !== null && typeof v === 'object' && '_def' in (v as object)) push(v as Combinator<unknown>)
-  }
-  if (Array.isArray(rec.parsers)) for (const c of rec.parsers as Combinator<unknown>[]) push(c)
-  if (Array.isArray(rec.skip)) for (const c of rec.skip as Combinator<unknown>[]) push(c)
-  if (Array.isArray(rec.cases)) for (const c of rec.cases as Array<{ parser: Combinator<unknown> }>) push(c.parser)
-  if (Array.isArray(rec.matchers)) for (const c of rec.matchers as Array<{ parser: Combinator<unknown> }>) push(c.parser)
-  if (d.tag === 'lazy') {
-    push(resolvedLazyTarget(p, resolve))
-  }
-  return out
+  if (d.tag !== 'lazy') return childrenOf(d)
+  const target = resolvedLazyTarget(p, resolve)
+  return target === undefined ? [] : [target]
 }
 
 /**

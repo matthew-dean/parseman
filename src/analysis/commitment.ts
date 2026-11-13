@@ -19,23 +19,23 @@
 import type { Combinator, ParserDef } from '../types.ts'
 import { regexCanMatchEmpty } from '../regex/first-set.ts'
 import { childrenOf } from './gating.ts'
+import { resolvedLazyTarget, type RefResolver, type RefTargets } from '../combinators/first-set.ts'
+
+export type { RefTargets }
 
 /**
- * What a named reference reads as. The table encoder passes the map its capability
- * walk recorded (`resolvedLazyTarget` in `compiler/token-alphabet.ts`): the rule the
- * map binds to the name, which is what emission reads, also in a merged map where a
- * base piece's thunk still reaches the rule an override replaced. Without one, a
- * reference reads as its thunk. `undefined`: it cannot be resolved.
+ * Every commitment analysis reads a reference through a `RefTargets`, and must be
+ * handed one. The table encoder passes what its capability walk recorded; a caller
+ * with a rule map passes `ruleMapTargets`; a caller with neither passes this, each
+ * reference read as its own thunk.
  */
-export type RefTargets = { get(ref: Combinator<unknown>): Combinator<unknown> | undefined }
+export const THUNK_TARGETS: RefTargets = { get: ref => resolvedLazyTarget(ref) }
 
-/** Each reference read as its own thunk. */
-export const THUNK_TARGETS: RefTargets = {
-  get: ref => {
-    const d = ref._def
-    if (d.tag !== 'lazy') return undefined
-    try { return d.thunk() } catch { return undefined }
-  },
+/** Each reference read the way the table encoder reads it in `ruleMap`: by name first. */
+export function ruleMapTargets(ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>): RefTargets {
+  const byName = new Map(ruleMap)
+  const resolve: RefResolver = name => byName.get(name)
+  return { get: ref => resolvedLazyTarget(ref, resolve) }
 }
 
 /**
@@ -59,7 +59,7 @@ export const THUNK_TARGETS: RefTargets = {
  * gate first, because `expect` sits at exactly the closing-delimiter positions
  * where a wrong answer is most visible.
  */
-export function mayFail(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set(), targets: RefTargets = THUNK_TARGETS): boolean {
+export function mayFail(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set(), targets: RefTargets): boolean {
   if (seen.has(p)) return true
   seen.add(p)
   const d = p._def as ParserDef
@@ -153,7 +153,7 @@ function regexAlwaysConsumes(source: string): boolean {
  * consumption is not unconditionally part of the dispatch's own span, and the
  * few bytes are not worth the proof obligation.
  */
-export function alwaysConsumes(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set(), targets: RefTargets = THUNK_TARGETS): boolean {
+export function alwaysConsumes(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set(), targets: RefTargets): boolean {
   if (seen.has(p)) return false
   seen.add(p)
   const d = p._def as ParserDef
@@ -208,8 +208,8 @@ export function alwaysConsumes(p: Combinator<unknown>, seen: Set<Combinator<unkn
 export function mayLeavePartialCapture(
   p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set(), triviaActive = true,
   throughNodes = false,
-  restores?: ReadonlySet<Combinator<unknown>>,
-  targets: RefTargets = THUNK_TARGETS,
+  restores: ReadonlySet<Combinator<unknown>> | undefined,
+  targets: RefTargets,
   commits: (child: Combinator<unknown>) => boolean = child => mayCommitFailure(child, targets),
 ): boolean {
   if (seen.has(p)) return false
@@ -340,7 +340,7 @@ export function mayLeavePartialCapture(
 }
 
 /** True when `p` can push a leaf/node into the capture buffers on success. */
-export function capturesLeaf(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set(), targets: RefTargets = THUNK_TARGETS): boolean {
+export function capturesLeaf(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set(), targets: RefTargets): boolean {
   if (seen.has(p)) return false
   seen.add(p)
   const d = p._def
@@ -402,7 +402,7 @@ export function capturesLeaf(p: Combinator<unknown>, seen: Set<Combinator<unknow
  * thunks)? Determines whether the compile emits CST capture — so non-node
  * grammars stay byte-identical. `seen` guards against recursion cycles.
  */
-export function hasNodeDef(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set(), targets: RefTargets = THUNK_TARGETS): boolean {
+export function hasNodeDef(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set(), targets: RefTargets): boolean {
   if (seen.has(p)) return false
   seen.add(p)
   const d = p._def
@@ -455,7 +455,7 @@ export function hasNodeDef(p: Combinator<unknown>, seen: Set<Combinator<unknown>
  * `routed()` fallback and a `dispatch` matcher arm, both of which are real emit
  * sites and neither of which `hasNodeDef` above walks.
  */
-export function hasDirectBuildDef(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set(), targets: RefTargets = THUNK_TARGETS): boolean {
+export function hasDirectBuildDef(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set(), targets: RefTargets): boolean {
   if (seen.has(p)) return false
   seen.add(p)
   const d = p._def
@@ -506,7 +506,7 @@ export function hasDirectBuildDef(p: Combinator<unknown>, seen: Set<Combinator<u
  */
 export function mayCommitFailure(
   p: Combinator<unknown>,
-  targets: RefTargets = THUNK_TARGETS,
+  targets: RefTargets,
   memo: Map<Combinator<unknown>, boolean> = new Map(),
 ): boolean {
   return reachesMarked(p, node => commitFailureSuccessors(node, targets), memo)
@@ -674,6 +674,17 @@ function hasSemanticReduction(
 }
 
 /**
+ * Does any rule of `ruleMap` reach a direct `node(..., build)`, reading each
+ * reference as the map binds it? In a merged map a base piece's thunk still
+ * reaches the rule an override replaced, and that rule's builder is not in the
+ * encoded artifact.
+ */
+export function hasDirectBuilders(ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>): boolean {
+  const targets = ruleMapTargets(ruleMap)
+  return ruleMap.some(([, rule]) => hasDirectBuildDef(rule, undefined, targets))
+}
+
+/**
  * `hasDirectBuilders` / `isRecognitionOnly` for a rule map WITHOUT lowering it.
  *
  * `composeLeaf()` gates on both: every pre-final grammar must prove recognition-only,
@@ -714,7 +725,7 @@ export function classifyRuleMap(
   }
   for (const [, rule] of ruleMap) scanExternal(rule)
   return {
-    hasDirectBuilders: ruleMap.some(([, rule]) => hasDirectBuildDef(rule)),
+    hasDirectBuilders: hasDirectBuilders(ruleMap),
     isRecognitionOnly: !hasSemanticReduction(ruleMap.map(([, rule]) => rule), externalRefs),
   }
 }

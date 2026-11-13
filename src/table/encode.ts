@@ -2,9 +2,9 @@ import { scanRefs } from './program.ts'
 import { regexFirstTwo } from '../regex/first-set.ts'
 import { factorPrefixArms, factorSharedEnds, factoredChoices } from './factor-choice.ts'
 import type { AutoNotCheck, Combinator, FirstSet, ParserDef } from '../types.ts'
-import { classifyFinalChoice, empty, firstSetOf, intersects, matchesEmpty, union, winnerForRef, type RefResolver } from '../combinators/first-set.ts'
+import { classifyFinalChoice, empty, firstSetOf, intersects, matchesEmpty, resolvedLazyTarget, union, type RefResolver, type RefTargets } from '../combinators/first-set.ts'
 import { childrenOf } from '../analysis/gating.ts'
-import { capturesLeaf, mayCommitFailure, mayLeavePartialCapture, reachesMarked, type RefTargets } from '../analysis/commitment.ts'
+import { capturesLeaf, mayCommitFailure, mayLeavePartialCapture, reachesMarked } from '../analysis/commitment.ts'
 import { getCoreLiteralValue } from '../combinators/choice.ts'
 import { deriveExpected } from '../combinators/expect.ts'
 import { assertionFailureExpected, directTerminalFailureExpected } from '../combinators/expected.ts'
@@ -38,7 +38,7 @@ import { covKindCode, dispatchIsExclusive, encodeClassSpec, ownTableProgram } fr
 import type { GrammarCoveragePlan } from '../compiler/grammar-coverage-ids.ts'
 import { directArrayProjection } from '../compiler/direct-projection.ts'
 import {
-  collectLexicalCapabilities, winnerWrapsReference,
+  collectLexicalCapabilities,
 } from '../compiler/token-capability.ts'
 import { directExecutableTokenBody, type ExecutableLexNode } from '../compiler/token-alphabet.ts'
 import { continuationGate } from './late-frame.ts'
@@ -174,9 +174,8 @@ function publishesOneNode(p: Combinator<unknown>, rr: RefResolver | undefined, s
   switch (d.tag) {
     case 'node': return true
     case 'lazy': {
-      let target = winnerForRef(p, rr)
-      if (target === undefined) { try { target = d.thunk() } catch { return false } }
-      return publishesOneNode(target, rr, seen)
+      const target = resolvedLazyTarget(p, rr)
+      return target !== undefined && publishesOneNode(target, rr, seen)
     }
     case 'choice': return d.parsers.every(a => publishesOneNode(a, rr, seen))
     case 'grammar': case 'withCtx': case 'label': return publishesOneNode(d.parser, rr, seen)
@@ -715,8 +714,7 @@ class Encoder {
         break
       }
       case 'lazy': {
-        let target: Combinator<unknown> | undefined = winnerForRef(p, rr)
-        if (target === undefined) { try { target = d.thunk() } catch { target = undefined } }
+        const target = resolvedLazyTarget(p, rr)
         out = target === undefined || triviaThroughRef(p, target, null) !== null || this.readsScope(target)
         break
       }
@@ -737,10 +735,18 @@ class Encoder {
     settings: TableSettings,
     selectLexicalBodies: boolean,
     winners: Readonly<Record<string, Combinator<unknown>>>,
-    targets: RefTargets,
+    recorded: ReadonlyMap<Combinator<unknown>, Combinator<unknown>>,
   ) {
     this.winners = winners
-    this.rr = name => winners[name]
+    const byName: RefResolver = name => winners[name]
+    // A reference the walk did not record but that resolves is a walk that missed
+    // part of the graph: refuse to compile rather than read it some other way.
+    const unrecorded = (ref: Combinator<unknown>): undefined => {
+      if (resolvedLazyTarget(ref, byName) === undefined) return undefined
+      throw new Error(`parseman: internal: the capability walk did not record the reference ${JSON.stringify((ref as unknown as { _ruleName?: string })._ruleName ?? '(unnamed)')}`)
+    }
+    const targets: RefTargets = { get: ref => recorded.get(ref) ?? unrecorded(ref) }
+    this.rr = Object.assign((name: string) => winners[name], { targets })
     this.targets = targets
     this.settings = settings
     this.track = settings.trackLines === true
@@ -862,16 +868,17 @@ class Encoder {
    * after the fact. `winners` IS the final map — it is the merged rule map being
    * encoded, the one `case 'lazy'` points the arm's CALL at. Gating an arm on the
    * first set of the very row it will call cannot skip a match that row would
-   * accept. And this only ever runs in the CATCH branch: where a thunk resolves,
-   * nothing consults the resolver and nothing changes, which is why the runtime
-   * leg's counts are byte-for-byte what they were.
+   * accept.
+   *
+   * It carries `targets`, so every reader resolves a reference through
+   * `resolvedLazyTarget` and reads what the capability walk recorded.
    */
   private readonly rr: RefResolver
 
   /**
    * What each reference reads as, recorded once by the capability walk
-   * (`resolvedLazyTarget`) with the same by-name rule as `case 'lazy'` below. The
-   * rollback census reads references through it (`RefTargets`).
+   * (`resolvedLazyTarget`). Emission, first sets and the rollback census all read
+   * it; a resolvable reference it lacks throws.
    */
   private readonly targets: RefTargets
 
@@ -1125,8 +1132,8 @@ class Encoder {
     const d = c._def as ParserDef
     switch (d.tag) {
       case 'lazy': {
-        let target: Combinator<unknown> | undefined = winnerForRef(c, rr)
-        if (target === undefined) { try { target = d.thunk() } catch { return undefined } }
+        const target = resolvedLazyTarget(c, rr)
+        if (target === undefined) return undefined
         return this.gapLead(target, triviaThroughRef(c, target, trivia), depth + 1)
       }
       case 'node': case 'leaf': case 'label': case 'attempt':
@@ -2131,15 +2138,10 @@ class Encoder {
         // through. The encoder threw at build time instead, which made the table
         // lowering refuse a grammar the source lowering accepts. Deferring to the
         // ref's own `.parse` reproduces codegen's timing and its message.
-        // BY NAME first, when this reference names a rule of the map being
-        // encoded — see `winners` for why a thunk is the wrong resolver for a
-        // merged (composed) map, and why the identity guard is required.
-        const refName = (p as unknown as { _ruleName?: string })._ruleName
-        const winner = refName === undefined ? undefined : this.winners[refName]
-        if (winner !== undefined && !winnerWrapsReference(winner, p)) return this.scopedRef(p, winner)
-        let resolved: Combinator<unknown>
-        try { resolved = d.thunk() }
-        catch {
+        // What the capability walk recorded (`resolvedLazyTarget`): by name
+        // first, which is what a merged (composed) map needs — see `winners`.
+        const resolved = resolvedLazyTarget(p, this.rr)
+        if (resolved === undefined) {
           this.runtimeOnly.add('ref() used before .define() — the slot is run live')
           return this.emit(OP_LIVE, this.fn(p, null))
         }
