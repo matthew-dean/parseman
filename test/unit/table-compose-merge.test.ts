@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { attempt, choice, compile, compose, dispatch, lines, literal, many, node, not, optional, peek, regex, routed, rules, sequence, transform, when } from '../../src/index.ts'
+import { attempt, choice, compile, compose, dispatch, lines, literal, many, node, not, optional, peek, ref, regex, routed, rules, scanTo, sequence, transform, when } from '../../src/index.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { tableRules } from '../../src/table/assemble.ts'
 import { fuseInterpreted } from '../../src/compiler/linker.ts'
@@ -259,6 +259,43 @@ describe('a MERGED rule map encodes to the parser compose() means', () => {
     }
     expect(differential(linesBody, 'R', '> abc').table.ok).toBe(true)
   })
+
+  // A reference reached only through a rule's ambient `scanSkip`: the encoder
+  // lowers the skip set, so the capability walk has to record what it reads as.
+  // The skipper is a rule of another map, a defined `ref()`, and a rule of the
+  // map that skips with it.
+  const skippers: Record<string, () => Entries[]> = {
+    'a rule of another map': () => {
+      const strings = rules<Record<string, Combinator<unknown>>>(s => ({
+        Body: regex(/[^"]*/) as Combinator<unknown>,
+        Str: sequence(literal('"'), s.Body!, literal('"')) as Combinator<unknown>,
+      }))
+      return [entriesOf(rules({ scanSkip: [strings.Str!] }, () => ({ R: sequence(literal('a'), scanTo(literal(';'))) as Combinator<unknown> })))]
+    },
+    'a defined ref()': () => {
+      const str = ref<unknown>()
+      str.define(sequence(literal('"'), regex(/[^"]*/), literal('"')))
+      return [entriesOf(rules({ scanSkip: [str] }, () => ({ R: sequence(literal('a'), scanTo(literal(';'))) as Combinator<unknown> })))]
+    },
+    'a rule of its own map': () => {
+      const skip: Combinator<unknown>[] = []
+      return [entriesOf(rules<Record<string, Combinator<unknown>>>({ scanSkip: skip }, g => {
+        skip.push(g.Str!)
+        return {
+          Str: sequence(literal('"'), regex(/[^"]*/), literal('"')) as Combinator<unknown>,
+          R: sequence(literal('a'), scanTo(literal(';'))) as Combinator<unknown>,
+        }
+      }))]
+    },
+  }
+
+  for (const [skipper, build] of Object.entries(skippers)) {
+    it(`encodes a scanSkip whose skipper is ${skipper}`, () => {
+      for (const input of ['a ";" ;', 'a b;', 'a "x;y" z;', 'b']) expectIdentical(build, 'R', input)
+      // The skipper ran: the `;` inside the string did not end the scan.
+      expect(expectIdentical(build, 'R', 'a ";" ;').span).toEqual({ start: 0, end: 6 })
+    })
+  }
 
   // `hostBranchElided` says a direct builder's CST branch was dropped. The base's
   // `Item` has a builder, the override does not, and the encoded artifact holds

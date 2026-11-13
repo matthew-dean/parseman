@@ -40,7 +40,7 @@ import { directArrayProjection } from '../compiler/direct-projection.ts'
 import {
   collectLexicalCapabilities,
 } from '../compiler/token-capability.ts'
-import { directExecutableTokenBody, type ExecutableLexNode } from '../compiler/token-alphabet.ts'
+import { directExecutableTokenBody, tokenChildren, type ExecutableLexNode } from '../compiler/token-alphabet.ts'
 import { continuationGate } from './late-frame.ts'
 
 /**
@@ -2567,6 +2567,16 @@ export function encodeTableProgram(
   const targets = new Map<Combinator<unknown>, Combinator<unknown>>()
   const resolveLexical = Object.assign((name: string): Combinator<unknown> | undefined => ruleMap[name], { targets })
   const capabilities = collectLexicalCapabilities(lexicalRoots, resolveLexical)
+  // The walk keeps a rule's ambient `scanSkip` as context and never enters it,
+  // but `encodeRule` lowers that set (`scanSkipSlot`). Record the references it
+  // reaches through the same resolver, so the encoder reads them as recorded.
+  const skipSeen = new Set<Combinator<unknown>>()
+  const recordSkip = (p: Combinator<unknown>): void => {
+    if (skipSeen.has(p)) return
+    skipSeen.add(p)
+    for (const child of tokenChildren(p, resolveLexical)) recordSkip(child)
+  }
+  for (const name of names) for (const skipper of ruleMap[name]!._meta.grammarScanSkip ?? []) recordSkip(skipper)
   const enc = new Encoder(resolvedSettings, capabilities.capabilityComplete, ruleMap, targets)
   for (const name of names) enc.encodeRule(name, ruleMap[name]!)
   const prog = enc.finish()

@@ -149,6 +149,15 @@ export const DEFECTS = {
       replace: "if (d.tag !== 'lazy') return d.tag === 'lines' ? [] : childrenOf(d)",
     }],
   },
+  /** The encoder skips a rule's ambient `scanSkip` when it records references, so one only there goes unrecorded. */
+  'scan-skip-refs-unrecorded': {
+    why: 'table encoder: a reference inside a rule\'s scanSkip set is not recorded before the encoder reads it',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: 'for (const skipper of ruleMap[name]!._meta.grammarScanSkip ?? []) recordSkip(skipper)',
+      replace: 'for (const skipper of [] as Combinator<unknown>[]) recordSkip(skipper)',
+    }],
+  },
   /**
    * The closure engine reads an uncommitted dispatch fallback as failing clean,
    * so a site around it takes no mark and the selector's leaf stays. Shipped as #280.
