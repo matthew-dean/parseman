@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { candidateSet, collectAlphabet, leadTerminal, terminalId } from '../../src/compiler/token-alphabet.ts'
 import { choice, literal, node, not, optional, peek, regex, sequence } from '../../src/index.ts'
+import { ref } from '../../src/combinators/ref.ts'
 
 // The candidate set of a decision point is the leading terminal of each arm. A
 // prefix that may consume nothing is classified BEFORE its inner terminal is
@@ -48,5 +49,13 @@ describe('candidateSet: the leading terminals of a decision point', () => {
 
   it('is not a terminal id for a combinator outside the alphabet', () => {
     expect(terminalId(alphabet, literal('zz'))).toBeUndefined()
+  })
+  it('follows a reference to the rule its name resolves to, as an overriding map does', () => {
+    // A base piece's reference still builds its own rule; the override is
+    // visible only by name, the way every other reader resolves it.
+    const shadowed = Object.assign(ref<unknown>(), { _ruleName: 'x' })
+    shadowed.define(a)
+    const override = (name: string) => (name === 'x' ? b : undefined)
+    expect(leadTerminal(shadowed, alphabet, override)).toBe(id(b))
   })
 })
