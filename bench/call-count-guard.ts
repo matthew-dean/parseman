@@ -63,7 +63,13 @@
  *   pnpm callcount:guard --head-ref=<sha>  # head from a commit, not the working tree
  *   pnpm callcount:guard --only=<prefix>   # only these rows, such as emitted/
  *   pnpm callcount:guard --base=<ref>      # another commit's baseline for the row check
+ *   pnpm callcount:guard --cold            # compile plus first parse, workloads only
  *   pnpm callcount:baseline                # rewrite the baseline from the working tree
+ *
+ * `--cold` counts what compiling each workload's grammar and its first parse cost
+ * together (`count-worker.ts`), on both sides, and fails a row above the reference.
+ * It has no baseline and no reasons, and no `macro/` rows: a jess grammar is built once
+ * for all of its fixtures.
  */
 import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
@@ -116,10 +122,10 @@ function runWorker(args: WorkerArgs): Rows {
  * written to `out`, which must be outside `dir` only in the sense that nothing in
  * `dir` is edited.
  */
-export async function measureSide(dir: string, out: string, only?: (row: string) => boolean): Promise<Rows> {
+export async function measureSide(dir: string, out: string, only?: (row: string) => boolean, cold = false): Promise<Rows> {
   mkdirSync(out, { recursive: true })
   const rows: Rows = {}
-  const want = (prefix: string): boolean => only === undefined || only(prefix)
+  const want = (prefix: string): boolean => (only === undefined || only(prefix)) && !(cold && prefix.startsWith('macro/'))
 
   if (want('emitted/') || want('closure/')) {
     const bundle = await build({
@@ -141,7 +147,7 @@ export async function measureSide(dir: string, out: string, only?: (row: string)
     writeFileSync(module, instrument(bundle.outputFiles[0]!.text, module))
     for (const engine of ['emitted', 'closure'] as const) {
       if (!want(`${engine}/`)) continue
-      for (const [id, c] of Object.entries(runWorker({ kind: 'workloads', module, engine }))) {
+      for (const [id, c] of Object.entries(runWorker({ kind: 'workloads', module, engine, cold }))) {
         if (want(`${engine}/${id}`)) rows[`${engine}/${id}`] = c
       }
     }
@@ -217,9 +223,9 @@ export function callCountFailures(ref: Rows, head: Rows, reasons: Reasons | null
 }
 
 /** A gate that counted nothing has not passed. `prefix` is `--only`, when given. */
-export function minimumWorkFailures(head: Rows, prefix: string | null): string[] {
+export function minimumWorkFailures(head: Rows, prefix: string | null, all: readonly string[] = FAMILIES): string[] {
   const failures: string[] = []
-  const families = prefix === null ? FAMILIES : [prefix]
+  const families = prefix === null ? all : [prefix]
   for (const f of families) {
     if (!Object.keys(head).some(row => row.startsWith(f))) failures.push(`${f}: no rows were counted`)
   }
@@ -255,6 +261,7 @@ if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathS
   const argValue = (flag: string): string | null =>
     process.argv.find(a => a.startsWith(`${flag}=`))?.slice(flag.length + 1) ?? null
   const UPDATE = process.argv.includes('--update')
+  const COLD = process.argv.includes('--cold')
   const HEAD_REF = argValue('--head-ref')
   const ONLY = argValue('--only')
   const only = ONLY === null ? undefined : (row: string): boolean => row.startsWith(ONLY) || ONLY.startsWith(row)
@@ -264,6 +271,7 @@ if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathS
   if (UPDATE) {
     if (HEAD_REF !== null) fail(GATE, '--update writes the working tree\'s counts; it cannot be combined with --head-ref.')
     if (ONLY !== null) fail(GATE, '--update rewrites every row; it cannot be combined with --only.')
+    if (COLD) fail(GATE, '--update writes the per-parse baseline; it cannot be combined with --cold.')
     const head = await measureSide(headDir, path.join(CACHE, 'head'))
     const empty = minimumWorkFailures(head, null)
     if (empty.length > 0) fail(GATE, `refusing to write this baseline:\n  ${empty.join('\n  ')}`)
@@ -273,7 +281,7 @@ if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathS
   }
 
   // Before anything builds. `--head-ref` measures a commit, not this baseline.
-  if (HEAD_REF === null) {
+  if (HEAD_REF === null && !COLD) {
     const base = baselineAtBase<Rows>(GATE, ROOT, 'bench/call-count-baseline.json', argValue('--base'))
     const current = readJson<Rows>(BASELINE_PATH)
     const gone = base === null || current === null ? [] : vanishedRows(base.rows, current)
@@ -283,14 +291,15 @@ if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathS
   const REF_ARG = argValue('--ref')
   const reference = REF_ARG === null ? previousRelease(ROOT, GATE) : { tag: REF_ARG, sha: REF_ARG }
   const refDir = materialise(GATE, ROOT, reference.sha, COPY)
-  console.log(`${GATE}: ${HEAD_REF === null ? 'working tree' : HEAD_REF} vs ${reference.tag} (${reference.sha}) — function calls and branch tests per parse`)
+  const per = COLD ? 'to compile and parse once' : 'per parse'
+  console.log(`${GATE}: ${HEAD_REF === null ? 'working tree' : HEAD_REF} vs ${reference.tag} (${reference.sha}) — function calls and branch tests ${per}`)
   assertIndependentLegs(GATE, { reference: path.join(refDir, 'src'), head: path.join(headDir, 'src') })
 
   let ref: Rows
   let head: Rows
   try {
-    ref = await measureSide(refDir, path.join(CACHE, 'ref'), only)
-    head = await measureSide(headDir, path.join(CACHE, 'head'), only)
+    ref = await measureSide(refDir, path.join(CACHE, 'ref'), only, COLD)
+    head = await measureSide(headDir, path.join(CACHE, 'head'), only, COLD)
   } catch (error) {
     fail(GATE, (error as Error).message)
   }
@@ -304,7 +313,7 @@ if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathS
 
   const pct = (h: number, r: number): string => r === 0 ? 'n/a' : `${h >= r ? '+' : ''}${((h / r - 1) * 100).toFixed(2)}%`
   summary([
-    `#### ${GATE}: HEAD vs ${reference.tag} — per parse`,
+    `#### ${GATE}: HEAD vs ${reference.tag} — ${per}`,
     '',
     '| row | calls | Δ | branch tests | Δ |',
     '| --- | ---: | ---: | ---: | ---: |',
@@ -315,13 +324,15 @@ if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathS
     }),
   ].join('\n'))
 
-  const failures = [
-    ...minimumWorkFailures(head, ONLY),
-    ...callCountFailures(ref, head, reasons, reference.tag),
-    ...(HEAD_REF === null ? baselineFailures(baseline, head) : []),
-  ]
+  const failures = COLD
+    ? [...minimumWorkFailures(head, ONLY, ['emitted/', 'closure/']), ...callCountFailures(ref, head, null, reference.tag)]
+    : [
+        ...minimumWorkFailures(head, ONLY),
+        ...callCountFailures(ref, head, reasons, reference.tag),
+        ...(HEAD_REF === null ? baselineFailures(baseline, head) : []),
+      ]
   if (failures.length > 0) {
     fail(GATE, `FAILED\n  ${failures.join('\n  ')}\n\nAn increase that is the price of a change must be argued: set ${path.relative(ROOT, REASONS_PATH)} to { "against": "${reference.tag}", "rows": { "<row> <metric>": { "why": "<why>", "limit": <most it may add per parse> } } }, then rebaseline.`)
   }
-  console.log(`\n${GATE}: ok — ${Object.keys(head).length} rows, none above ${reference.tag}${HEAD_REF === null ? ', baseline exact' : ''}`)
+  console.log(`\n${GATE}: ok — ${Object.keys(head).length} rows, none above ${reference.tag}${HEAD_REF === null && !COLD ? ', baseline exact' : ''}`)
 }

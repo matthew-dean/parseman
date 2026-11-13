@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { choice, compile, compose, literal, many, regex, rules, sequence, transform } from '../../src/index.ts'
+import { attempt, choice, compile, compose, dispatch, lines, literal, many, node, not, optional, parser, peek, ref, regex, routed, rules, scanTo, sequence, transform, when } from '../../src/index.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { tableRules } from '../../src/table/assemble.ts'
 import { fuseInterpreted } from '../../src/compiler/linker.ts'
+import { compileRuleMapRunnable } from '../../src/table/compile-rule-map.ts'
 import { run } from '../../src/functional/run.ts'
+import { readers } from '../helpers/table-readers.ts'
 import type { Combinator } from '../../src/types.ts'
 
 /**
@@ -82,6 +84,13 @@ function expectIdentical(
   expect(table.value, at).toEqual(interp.value)
   expect(table.span, at).toEqual(interp.span)
   expect([...table.expected].sort(), `${at} expected`).toEqual([...interp.expected].sort())
+  // Every reader of the one encoded program, the emitted assemblies included:
+  // the rollback masks a failed choice arm reads are printed only into those.
+  for (const [name, rules] of readers(encodeTable(mergeMaps(build())))) {
+    const r = run(rules[rule] as never, input)
+    expect({ ok: r.ok, value: r.value, span: r.span, expected: [...r.expected].sort() }, `${at} ${name}`)
+      .toEqual({ ok: interp.ok, value: interp.value, span: interp.span, expected: [...interp.expected].sort() })
+  }
   return table
 }
 
@@ -115,6 +124,208 @@ describe('a MERGED rule map encodes to the parser compose() means', () => {
     for (const input of ['<b>', '<a', '<', '', 'a>']) {
       expectIdentical(overridden, 'Doc', input)
     }
+  })
+
+  /**
+   * An override that can commit a failure where the base's rule cannot. The rollback
+   * census has to read the override, as emission does, or a contained attempt over an
+   * optional of it keeps what the failed item captured.
+   */
+  const committingOverride = (): Entries[] => [
+    entriesOf(rules<Record<string, Combinator<unknown>>>(g => ({
+      Item: sequence(literal('-'), regex(/[a-z]+/), literal('?')) as Combinator<unknown>,
+      R: node('N', choice(attempt(optional(g.Item!), { contain: true }), sequence(literal('-'), regex(/[a-z]+/)))) as Combinator<unknown>,
+    }))),
+    entriesOf(rules<Record<string, Combinator<unknown>>>(() => ({
+      Item: sequence(literal('-'), dispatch(regex(/[a-z]+/), when('foo', sequence(routed(), literal('!'))))) as Combinator<unknown>,
+    }))),
+  ]
+
+  it('takes back what an overriding rule captured before it committed a failure', () => {
+    const table = expectIdentical(committingOverride, 'R', '-foo')
+    expect((table.value as { children: Array<{ value: unknown }> }).children.map(c => c.value)).toEqual(['-', 'foo'])
+  })
+
+  // The overridden reference is inside the repeated item, not the item itself.
+  const nestedOverride = (): Entries[] => [
+    entriesOf(rules<Record<string, Combinator<unknown>>>(g => ({
+      Item: sequence(literal('-'), regex(/[a-z]+/), literal('?')) as Combinator<unknown>,
+      R: node('N', choice(
+        attempt(optional(sequence(literal('+'), g.Item!)), { contain: true }),
+        sequence(literal('+'), literal('-'), regex(/[a-z]+/)),
+      )) as Combinator<unknown>,
+    }))),
+    entriesOf(rules<Record<string, Combinator<unknown>>>(() => ({
+      Item: sequence(literal('-'), dispatch(regex(/[a-z]+/), when('foo', sequence(routed(), literal('!'))))) as Combinator<unknown>,
+    }))),
+  ]
+
+  it('takes back the captures when the override sits inside the repeated item', () => {
+    const table = expectIdentical(nestedOverride, 'R', '+-foo')
+    expect((table.value as { children: Array<{ value: unknown }> }).children.map(c => c.value)).toEqual(['+', '-', 'foo'])
+  })
+
+  // The override makes a later term of a sequence fallible, after an earlier term
+  // captured. The override is a node, so it keeps its own captures to itself.
+  const fallibleOverride = (): Entries[] => [
+    entriesOf(rules<Record<string, Combinator<unknown>>>(g => ({
+      Item: literal('?') as Combinator<unknown>,
+      R: node('N', choice(
+        attempt(sequence(literal('-'), optional(g.Item!)), { contain: true }),
+        sequence(literal('-'), regex(/[a-z]+/)),
+      )) as Combinator<unknown>,
+    }))),
+    entriesOf(rules<Record<string, Combinator<unknown>>>(() => ({
+      Item: node('M', dispatch(regex(/[a-z]+/), when('foo', sequence(routed(), literal('!'))))) as Combinator<unknown>,
+    }))),
+  ]
+
+  it('takes back an earlier term when the override makes a later one fail', () => {
+    const table = expectIdentical(fallibleOverride, 'R', '-foo')
+    expect((table.value as { children: Array<{ value: unknown }> }).children.map(c => c.value)).toEqual(['-', 'foo'])
+  })
+
+  // A choice arm that IS the overridden reference. The base's `Item` captures
+  // nothing it could leave behind; the override captures `a` and then fails, and
+  // the next arm must not see that `a`.
+  const armOverride = (arm: (item: Combinator<unknown>) => Combinator<unknown>) => (): Entries[] => [
+    entriesOf(rules<Record<string, Combinator<unknown>>>(g => ({
+      Item: literal('?') as Combinator<unknown>,
+      R: node('N', choice(arm(g.Item!), sequence(literal('a'), literal('c')))) as Combinator<unknown>,
+    }))),
+    entriesOf(rules<Record<string, Combinator<unknown>>>(() => ({
+      Item: sequence(literal('a'), literal('b')) as Combinator<unknown>,
+    }))),
+  ]
+
+  it('takes back what an overridden arm captured before it failed', () => {
+    const table = expectIdentical(armOverride(item => item), 'R', 'ac')
+    expect((table.value as { children: Array<{ value: unknown }> }).children.map(c => c.value)).toEqual(['a', 'c'])
+  })
+
+  it('takes back what an overridden reference under a wrapper captured', () => {
+    const table = expectIdentical(armOverride(item => transform(item, v => v) as Combinator<unknown>), 'R', 'ac')
+    expect((table.value as { children: Array<{ value: unknown }> }).children.map(c => c.value)).toEqual(['a', 'c'])
+  })
+
+  // A later term that is the overridden reference: the base's `Item` cannot fail,
+  // the override can, after the arm's first term captured.
+  const fallibleTerm = (): Entries[] => [
+    entriesOf(rules<Record<string, Combinator<unknown>>>(g => ({
+      Item: optional(literal('b')) as Combinator<unknown>,
+      R: node('N', choice(sequence(literal('a'), g.Item!), sequence(regex(/[a-z]/), literal('c')))) as Combinator<unknown>,
+    }))),
+    entriesOf(rules<Record<string, Combinator<unknown>>>(() => ({ Item: literal('b') as Combinator<unknown> }))),
+  ]
+
+  it('takes back an earlier term when an overridden later term fails', () => {
+    const table = expectIdentical(fallibleTerm, 'R', 'ac')
+    expect((table.value as { children: Array<{ value: unknown }> }).children.map(c => c.value)).toEqual(['a', 'c'])
+  })
+
+  // An overridden dispatch selector: the base's `Sel` only looks ahead, the
+  // override captures what it read before the selected arm fails.
+  const capturingSelector = (): Entries[] => [
+    entriesOf(rules<Record<string, Combinator<unknown>>>(g => ({
+      Sel: peek(regex(/[a-z]/)) as Combinator<unknown>,
+      R: node('N', choice(
+        attempt(optional(dispatch(g.Sel! as Combinator<string>, when('a', not(literal('c'))))), { contain: true }),
+        sequence(literal('a'), literal('c')),
+      )) as Combinator<unknown>,
+    }))),
+    entriesOf(rules<Record<string, Combinator<unknown>>>(() => ({ Sel: regex(/[a-z]/) as Combinator<unknown> }))),
+  ]
+
+  it('takes back what an overridden selector captured', () => {
+    const table = expectIdentical(capturingSelector, 'R', 'ac')
+    expect((table.value as { children: Array<{ value: unknown }> }).children.map(c => c.value)).toEqual(['a', 'c'])
+  })
+
+  // The override is referenced only inside a `lines()` body, so the capability
+  // walk has to descend into it to record what the reference reads as.
+  const linesBody = (): Entries[] => [
+    entriesOf(rules<Record<string, Combinator<unknown>>>(g => ({
+      Item: literal('?') as Combinator<unknown>,
+      R: lines(literal('> '), g.Item!) as Combinator<unknown>,
+    }))),
+    entriesOf(rules<Record<string, Combinator<unknown>>>(() => ({ Item: regex(/[a-z]+/) as Combinator<unknown> }))),
+  ]
+
+  // The closure reader only: the emitted one prints no `lines()` body.
+  it('reads an override referenced only inside a lines body', () => {
+    for (const input of ['> abc', '> ?', '> abc\n> de']) {
+      const { table, interp } = differential(linesBody, 'R', input)
+      expect({ ok: table.ok, value: table.value, span: table.span }, input).toEqual({ ok: interp.ok, value: interp.value, span: interp.span })
+    }
+    expect(differential(linesBody, 'R', '> abc').table.ok).toBe(true)
+  })
+
+  // Line tracking is decided for the whole table. The base's `Item` asks for it,
+  // the override does not, and the merged map holds the override: no line fields.
+  const trackedBase = (): Entries[] => [
+    entriesOf(rules<Record<string, Combinator<unknown>>>(g => ({
+      Item: parser({ trackLines: true }, node('I', literal('x'))) as Combinator<unknown>,
+      Doc: node('D', sequence(literal('<'), g.Item!, literal('>'))) as Combinator<unknown>,
+    }))),
+    entriesOf(rules<Record<string, Combinator<unknown>>>(() => ({ Item: node('I', literal('x')) as Combinator<unknown> }))),
+  ]
+
+  it('tracks no lines when only a shadowed base rule asked for them', () => {
+    for (const input of ['<x>', '<y>', '']) expectIdentical(trackedBase, 'Doc', input)
+    expect((expectIdentical(trackedBase, 'Doc', '<x>').value as { span: object }).span).toEqual({ start: 0, end: 3 })
+  })
+
+  // A reference reached only through a rule's ambient `scanSkip`: the encoder
+  // lowers the skip set, so the capability walk has to record what it reads as.
+  // The skipper is a rule of another map, a defined `ref()`, and a rule of the
+  // map that skips with it.
+  const skippers: Record<string, () => Entries[]> = {
+    'a rule of another map': () => {
+      const strings = rules<Record<string, Combinator<unknown>>>(s => ({
+        Body: regex(/[^"]*/) as Combinator<unknown>,
+        Str: sequence(literal('"'), s.Body!, literal('"')) as Combinator<unknown>,
+      }))
+      return [entriesOf(rules({ scanSkip: [strings.Str!] }, () => ({ R: sequence(literal('a'), scanTo(literal(';'))) as Combinator<unknown> })))]
+    },
+    'a defined ref()': () => {
+      const str = ref<unknown>()
+      str.define(sequence(literal('"'), regex(/[^"]*/), literal('"')))
+      return [entriesOf(rules({ scanSkip: [str] }, () => ({ R: sequence(literal('a'), scanTo(literal(';'))) as Combinator<unknown> })))]
+    },
+    'a rule of its own map': () => {
+      const skip: Combinator<unknown>[] = []
+      return [entriesOf(rules<Record<string, Combinator<unknown>>>({ scanSkip: skip }, g => {
+        skip.push(g.Str!)
+        return {
+          Str: sequence(literal('"'), regex(/[^"]*/), literal('"')) as Combinator<unknown>,
+          R: sequence(literal('a'), scanTo(literal(';'))) as Combinator<unknown>,
+        }
+      }))]
+    },
+  }
+
+  for (const [skipper, build] of Object.entries(skippers)) {
+    it(`encodes a scanSkip whose skipper is ${skipper}`, () => {
+      for (const input of ['a ";" ;', 'a b;', 'a "x;y" z;', 'b']) expectIdentical(build, 'R', input)
+      // The skipper ran: the `;` inside the string did not end the scan.
+      expect(expectIdentical(build, 'R', 'a ";" ;').span).toEqual({ start: 0, end: 6 })
+    })
+  }
+
+  // `hostBranchElided` says a direct builder's CST branch was dropped. The base's
+  // `Item` has a builder, the override does not, and the encoded artifact holds
+  // the override: there is no builder, so nothing was dropped.
+  it('reads a shadowed base builder as absent from the merged map', () => {
+    const merged = Object.entries(mergeMaps([
+      entriesOf(rules<Record<string, Combinator<unknown>>>(g => ({
+        Item: node('I', literal('x'), () => 'built') as Combinator<unknown>,
+        R: node('N', g.Item!) as Combinator<unknown>,
+      }))),
+      entriesOf(rules<Record<string, Combinator<unknown>>>(() => ({
+        Item: node('M', literal('x')) as Combinator<unknown>,
+      }))),
+    ]))
+    expect(compileRuleMapRunnable(merged)?.hostBranchElided).toBe(false)
   })
 
   /**

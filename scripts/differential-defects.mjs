@@ -38,6 +38,165 @@
 /** @type {Record<string, Defect>} */
 export const DEFECTS = {
   /**
+   * The emitted engine stops marking a rollback for a list that fails short of a
+   * minimum above one, so a choice around it keeps the items and the next arm
+   * builds a tree holding them twice. Shipped as #282.
+   */
+  'list-min-rollback-off': {
+    why: 'emitted table engine: a list short of its minimum leaves its items behind',
+    edits: [{
+      file: 'src/analysis/commitment.ts',
+      find: "return d.min > 1 || commits(d.parser)\n    case 'sepBy':",
+      replace: "return commits(d.parser)\n    case 'sepBy':",
+    }, {
+      file: 'src/analysis/commitment.ts',
+      find: 'return d.min > 1 || commits(d.parser) || commits(d.separator)',
+      replace: 'return commits(d.parser) || commits(d.separator)',
+    }],
+  },
+  /**
+   * The emitted engine stops marking a rollback for an optional or many whose item
+   * can commit a failure, so a contained attempt around it keeps the item's captures
+   * and the next arm builds a tree holding them twice. Shipped as #303.
+   */
+  'repeat-commit-rollback-off': {
+    why: 'emitted table engine: an optional or many passes on a committed failure with its captures',
+    edits: [{
+      file: 'src/analysis/commitment.ts',
+      find: 'return commits(d.parser) && mayLeavePartialCapture(d.parser, seen, triviaActive, throughNodes, restores, targets, commits)',
+      replace: 'return false',
+    }, {
+      file: 'src/analysis/commitment.ts',
+      find: "case 'many':\n      return commits(d.parser)\n",
+      replace: "case 'many':\n      return false\n",
+    }],
+  },
+  /**
+   * The commit walk reads each reference through its thunk instead of the rule the
+   * merged map binds to its name, so a base piece's reference to an overridden rule
+   * misses the override's committed failure and the table keeps the failed captures.
+   */
+  'ref-targets-thunk-first': {
+    why: 'table census: a reference reads as the base piece\'s rule, not the merged map\'s override',
+    edits: [{
+      file: 'src/analysis/commitment.ts',
+      find: 'const t = targets.get(p)\n      return t === undefined ? true : [t]',
+      replace: 'const t = THUNK_TARGETS.get(p)\n      return t === undefined ? true : [t]',
+    }],
+  },
+  /**
+   * The rollback question for a choice arm that is a reference reads the arm as its
+   * thunk, so an arm whose override captures and then fails is read as the base
+   * piece's rule and the next arm runs on top of the override's captures.
+   */
+  'ref-root-thunk-first': {
+    why: 'table census: a choice arm that is a reference reads as the base piece\'s rule',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: 'const root = this.targets.get(p) ?? p',
+      replace: 'const root = THUNK_TARGETS.get(p) ?? p',
+    }, {
+      file: 'src/table/encode.ts',
+      find: "import { capturesLeaf, mayCommitFailure, mayLeavePartialCapture, reachesMarked } from '../analysis/commitment.ts'",
+      replace: "import { capturesLeaf, mayCommitFailure, mayLeavePartialCapture, reachesMarked, THUNK_TARGETS } from '../analysis/commitment.ts'",
+    }],
+  },
+  /**
+   * The partial-capture walk reads a reference under a wrapper as its thunk, so an
+   * arm whose override captures and then fails is read as the base piece's rule.
+   */
+  'ref-capture-thunk-first': {
+    why: 'table census: a reference inside a choice arm reads as the base piece\'s rule',
+    edits: [{
+      file: 'src/analysis/commitment.ts',
+      find: 'const t = targets.get(p)\n      return t === undefined || mayLeavePartialCapture(',
+      replace: 'const t = THUNK_TARGETS.get(p)\n      return t === undefined || mayLeavePartialCapture(',
+    }],
+  },
+  /** The fallibility walk reads a reference as its thunk: an overridden later term reads as total. */
+  'ref-fallible-thunk-first': {
+    why: 'table census: a later sequence term that is a reference reads as the base piece\'s rule',
+    edits: [{
+      file: 'src/analysis/commitment.ts',
+      find: '{ const t = targets.get(p); return t === undefined || mayFail(',
+      replace: '{ const t = THUNK_TARGETS.get(p); return t === undefined || mayFail(',
+    }],
+  },
+  /** The capture walk reads a reference as its thunk: an overridden dispatch selector reads as capturing nothing. */
+  'ref-leaf-thunk-first': {
+    why: 'table census: a dispatch selector that is a reference reads as the base piece\'s rule',
+    edits: [{
+      file: 'src/analysis/commitment.ts',
+      find: 'const t = targets.get(p)\n      return t === undefined || capturesLeaf(',
+      replace: 'const t = THUNK_TARGETS.get(p)\n      return t === undefined || capturesLeaf(',
+    }],
+  },
+  /** The direct-builder question reads each reference as its thunk, so a shadowed base builder counts. */
+  'ref-builders-thunk-first': {
+    why: 'host mode: a merged map whose override drops a builder still reports a dropped CST branch',
+    edits: [{
+      file: 'src/analysis/commitment.ts',
+      find: 'hasDirectBuildDef(rule, undefined, targets)',
+      replace: 'hasDirectBuildDef(rule, undefined, THUNK_TARGETS)',
+    }],
+  },
+  /** The capability walk skips a `lines()` body, so a reference only there goes unrecorded. */
+  'token-children-skip-lines': {
+    why: 'table encoder: the capability walk misses a reference inside a lines body',
+    edits: [{
+      file: 'src/compiler/token-alphabet.ts',
+      find: "if (d.tag !== 'lazy') return childrenOf(d)",
+      replace: "if (d.tag !== 'lazy') return d.tag === 'lines' ? [] : childrenOf(d)",
+    }],
+  },
+  /** The encoder skips a rule's ambient `scanSkip` when it records references, so one only there goes unrecorded. */
+  'scan-skip-refs-unrecorded': {
+    why: 'table encoder: a reference inside a rule\'s scanSkip set is not recorded before the encoder reads it',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: 'for (const skipper of ruleMap[name]!._meta.grammarScanSkip ?? []) recordSkip(skipper)',
+      replace: 'for (const skipper of [] as Combinator<unknown>[]) recordSkip(skipper)',
+    }],
+  },
+  /** The line-tracking question reads a reference as its thunk, so a shadowed base rule's `trackLines` counts. */
+  'track-lines-thunk-first': {
+    why: 'table encoder: a merged map tracks lines because a rule an override replaced asked for them',
+    edits: [{
+      file: 'src/table/encode.ts',
+      find: 'const target = targets.get(p)\n    return target !== undefined && hasScopedTrackLines(target, seen, targets)',
+      replace: 'const target = THUNK_TARGETS.get(p)\n    return target !== undefined && hasScopedTrackLines(target, seen, targets)',
+    }, {
+      file: 'src/table/encode.ts',
+      find: "import { capturesLeaf, mayCommitFailure, mayLeavePartialCapture, reachesMarked } from '../analysis/commitment.ts'",
+      replace: "import { capturesLeaf, mayCommitFailure, mayLeavePartialCapture, reachesMarked, THUNK_TARGETS } from '../analysis/commitment.ts'",
+    }],
+  },
+  /**
+   * The fallibility walk reads a list with a minimum as failing only where its item
+   * can, so a contained attempt around a list short of its minimum, or one whose
+   * separator commits, keeps the sequence's captures in the emitted engine.
+   */
+  'seplist-min-fallible-item-only': {
+    why: 'emitted table engine: a separated list that fails on its separator or its minimum is read as total',
+    edits: [{
+      file: 'src/analysis/commitment.ts',
+      find: '? d.min > 1 || mayFail(d.parser, seen, targets) || mayCommitFailure(d.separator, targets)',
+      replace: '? mayFail(d.parser, seen, targets)',
+    }],
+  },
+  /**
+   * The closure engine reads an uncommitted dispatch fallback as failing clean,
+   * so a site around it takes no mark and the selector's leaf stays. Shipped as #280.
+   */
+  'uncommitted-fallback-clean': {
+    why: 'closure table engine: a dispatch with an uncommitted fallback leaves its selector behind',
+    edits: [{
+      file: 'src/table/fail-clean.ts',
+      find: '((flags & 2) === 0 || (flags & 1) === 1) && ',
+      replace: '',
+    }],
+  },
+  /**
    * The emitted table engine puts every node's span one byte to the right.
    *
    * The defect class: a lowering that parses identically and produces a
@@ -330,8 +489,8 @@ export const DEFECTS = {
     why: 'encoder: a tolerant list\'s separator sentinel is derived with no trivia, though the interpreter parses the separator under the live trivia',
     edits: [{
       file: 'src/table/encode.ts',
-      find: 'this.charClass(firstSetOf(d.separator, new Set(), this.refResolver(), this.activeTrivia, false)),',
-      replace: 'this.charClass(firstSetOf(d.separator, new Set(), this.refResolver(), undefined, false)),',
+      find: 'this.charClass(firstSetOf(d.separator, new Set(), this.rr, this.activeTrivia, false)),',
+      replace: 'this.charClass(firstSetOf(d.separator, new Set(), this.rr, undefined, false)),',
     }],
   },
 
@@ -416,8 +575,8 @@ export const DEFECTS = {
     why: 'encoder: the proof calls the thunk of a ref not defined yet uncaught, so a grammar that encoded before no longer does',
     edits: [{
       file: 'src/table/encode.ts',
-      find: 'if (target === undefined) { try { target = d.thunk() } catch { return false } }\n      return publishesOneNode',
-      replace: 'if (target === undefined) target = d.thunk()\n      return publishesOneNode',
+      find: 'const target = resolvedLazyTarget(p, rr)\n      return target !== undefined && publishesOneNode',
+      replace: 'const target = resolvedLazyTarget(p, rr) ?? d.thunk()\n      return publishesOneNode',
     }],
   },
 
