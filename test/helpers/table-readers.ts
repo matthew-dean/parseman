@@ -13,8 +13,11 @@ import type { Runnable } from '../../src/functional/run.ts'
 /** The reference driver, the closure engine and the precompiled emitted engine. */
 export function readers(prog: TableProgram): ReadonlyArray<readonly [string, Record<string, Runnable>]> {
   const resolved = resolveTable(prog)
+  // The scan pool and the scan-skip sets are linked from subtrees, so their
+  // sites are emitted too, as every shipped build does (`emit.ts`).
+  const extra = assemblyExtraIps(prog)
   const precompiled: PrecompiledAssembly[] = defaultAssemblyCfgs(prog).map(cfg => {
-    const out = emitAssemblySource(resolved, prog, cfg, [])
+    const out = emitAssemblySource(resolved, prog, cfg, extra)
     return {
       key: cfgKey(cfg),
       arity: EMITTED_PARAMS.length,

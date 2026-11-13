@@ -23,7 +23,7 @@ import { execRules } from '../../src/table/exec.ts'
 import { defaultAssemblyCfgs } from '../../src/table/emit.ts'
 import { EMITTED_PARAMS, emitAssemblySource, type EmittedFactory } from '../../src/table/emit-assembly.ts'
 import { assemblyExtraIps, resolveTable, type TableProgram } from '../../src/table/program.ts'
-import { mayLeavePartialCapture } from '../../src/analysis/commitment.ts'
+import { mayLeavePartialCapture, THUNK_TARGETS } from '../../src/analysis/commitment.ts'
 import { reachableIps } from '../../src/table/inspect.ts'
 import { OP_CHOICE } from '../../src/table/ops.ts'
 import { choiceLogRollbackMask, choiceRollbackMask } from '../../src/table/program.ts'
@@ -61,10 +61,10 @@ const opts = { rootTrivia: { select: ['comment'] } }
 describe('a failed node arm leaves no trivia rows behind', () => {
   it('counts a node as leaving what its body leaves where trivia can be recorded', () => {
     const pair = node('Pair', sequence(literal('x'), literal('a')))
-    expect(mayLeavePartialCapture(pair, new Set(), true, true)).toBe(true)
-    expect(mayLeavePartialCapture(node('Leaf', literal('x')), new Set(), true, true)).toBe(false)
+    expect(mayLeavePartialCapture(pair, new Set(), true, true, undefined, THUNK_TARGETS)).toBe(true)
+    expect(mayLeavePartialCapture(node('Leaf', literal('x')), new Set(), true, true, undefined, THUNK_TARGETS)).toBe(false)
     // A program with no trivia records no rows: the node's own frame is all it writes.
-    expect(mayLeavePartialCapture(pair, new Set(), true, false)).toBe(false)
+    expect(mayLeavePartialCapture(pair, new Set(), true, false, undefined, THUNK_TARGETS)).toBe(false)
   })
 
   it('restores only the trivia logs for a node arm: its frame drops the rest', () => {

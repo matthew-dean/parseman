@@ -36,7 +36,7 @@ import { leaf, sourceLeaf } from '../combinators/token.ts'
 import { noTrivia, parser } from '../combinators/grammar.ts'
 import { attempt } from '../combinators/attempt.ts'
 import { optional } from '../combinators/repeat.ts'
-import { mayCommitFailure } from '../analysis/commitment.ts'
+import { mayCommitFailure, type RefTargets } from '../analysis/commitment.ts'
 
 /**
  * The choices this module builds. The interpreter never runs them: it runs the
@@ -116,9 +116,14 @@ function never(c: Combinator<unknown>): boolean {
 
 /**
  * The factored form of `d`'s choice, or `undefined` when its arms are not one
- * shape that differs in one term.
+ * shape that differs in one term. `targets` and `memo` are the caller's
+ * `mayCommitFailure` resolution and answers.
  */
-export function factorSharedEnds(d: ChoiceDef): Combinator<unknown> | undefined {
+export function factorSharedEnds(
+  d: ChoiceDef,
+  targets: RefTargets,
+  memo: Map<Combinator<unknown>, boolean>,
+): Combinator<unknown> | undefined {
   const arms = d.parsers
   if (arms.length < 2) return undefined
   if (d.strategy.tag !== 'firstMatch' && d.strategy.tag !== 'sharedPrefix') return undefined
@@ -157,7 +162,7 @@ export function factorSharedEnds(d: ChoiceDef): Combinator<unknown> | undefined 
   for (let i = at + 1; i < n; i++) if (!never(first.terms[i]!)) return undefined
   // A committed failure leaves a choice without rolling its arm back. Asked last:
   // it walks everything the arms reach.
-  if (arms.some(a => mayCommitFailure(a))) return undefined
+  if (arms.some(a => mayCommitFailure(a, targets, memo))) return undefined
   const middle = choice(...(shapes.map(s => s.terms[at]!) as [Combinator<unknown>, ...Combinator<unknown>[]]))
   factoredChoices.add(middle)
   // The inner choice must keep arm order: a strategy that reorders (longest

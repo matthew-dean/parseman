@@ -5,6 +5,33 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## Unreleased
 
+- **A contained `attempt` over a separated list with a minimum takes back what came before
+  it when the list fails.** A `sepBy` with `min: 1` also fails on a separator that commits a
+  failure, and one with `min: 2` or more fails short of its minimum whatever its item, but the
+  analysis read either as failing only where its item could. In generated code
+  `node('N', choice(attempt(sequence(literal('a'), node('L', sepBy(optional(literal('x')),
+  literal(','), { min: 2 }))), { contain: true }), sequence(literal('a'), regex(/.*/))))` built
+  `N` with `a` twice on `ax`; it now builds it once.
+- **A contained `attempt` over an `optional`, `many` or list whose child commits a failure
+  takes back what that child captured.** These pass a committed failure of their child on
+  without restoring it, but the analysis said they never fail, so in generated code an
+  `attempt(..., { contain: true })` around one restored nothing and the next choice arm's tree
+  held the failed captures. `node('N', choice(attempt(optional(sequence(literal('-'),
+  dispatch(w, when('foo', sequence(routed(), literal('!')))))), { contain: true }),
+  sequence(literal('-'), w)))`, with `w` a `regex(/[a-z]+/)`, now builds `N` with `-` once on
+  `-foo` (#303). In a merged rule map, the rollback analysis now reads every reference to an
+  overridden rule, nested ones included, as the override, as the generated code does, not as
+  the base piece's rule.
+- **The table encoder reads a rule reference one way everywhere.** Emission, first sets and the
+  rollback analysis read what the encoder recorded for each reference when it walked the
+  grammar, and a reference it did not record but could resolve stops the compile with an
+  error. The walk now enters a `lines()` body and each rule's `scanSkip` set, so a reference
+  used only there is recorded. Whether the table tracks lines is read the same way, so a
+  merged map no longer puts line fields in its spans because a rule an override replaced asked
+  for `trackLines`.
+  In a merged rule map whose override replaces a base rule's `node(..., build)` with a
+  structural node, the compiled artifact no longer reports a dropped positioned-CST branch it
+  never had, so the host-mode check no longer refuses a CST host for it.
 - **A failed choice inside another choice, an `optional` or an `attempt` no longer leaves its
   arm's captures in `compile()` and generated code.** A choice whose openers are disjoint runs
   its one arm with nothing of its own to restore, and the analysis told the enclosing site there

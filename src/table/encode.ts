@@ -2,7 +2,7 @@ import { scanRefs } from './program.ts'
 import { regexFirstTwo } from '../regex/first-set.ts'
 import { factorPrefixArms, factorSharedEnds, factoredChoices } from './factor-choice.ts'
 import type { AutoNotCheck, Combinator, FirstSet, ParserDef } from '../types.ts'
-import { classifyFinalChoice, empty, firstSetOf, intersects, matchesEmpty, union, winnerForRef, type RefResolver } from '../combinators/first-set.ts'
+import { classifyFinalChoice, empty, firstSetOf, intersects, matchesEmpty, resolvedLazyTarget, union, type RefResolver, type RefTargets } from '../combinators/first-set.ts'
 import { childrenOf } from '../analysis/gating.ts'
 import { capturesLeaf, mayCommitFailure, mayLeavePartialCapture, reachesMarked } from '../analysis/commitment.ts'
 import { getCoreLiteralValue } from '../combinators/choice.ts'
@@ -38,9 +38,9 @@ import { covKindCode, dispatchIsExclusive, encodeClassSpec, ownTableProgram } fr
 import type { GrammarCoveragePlan } from '../compiler/grammar-coverage-ids.ts'
 import { directArrayProjection } from '../compiler/direct-projection.ts'
 import {
-  collectLexicalCapabilities, winnerWrapsReference,
+  collectLexicalCapabilities,
 } from '../compiler/token-capability.ts'
-import { directExecutableTokenBody, type ExecutableLexNode } from '../compiler/token-alphabet.ts'
+import { directExecutableTokenBody, tokenChildren, type ExecutableLexNode } from '../compiler/token-alphabet.ts'
 import { continuationGate } from './late-frame.ts'
 
 /**
@@ -174,9 +174,8 @@ function publishesOneNode(p: Combinator<unknown>, rr: RefResolver | undefined, s
   switch (d.tag) {
     case 'node': return true
     case 'lazy': {
-      let target = winnerForRef(p, rr)
-      if (target === undefined) { try { target = d.thunk() } catch { return false } }
-      return publishesOneNode(target, rr, seen)
+      const target = resolvedLazyTarget(p, rr)
+      return target !== undefined && publishesOneNode(target, rr, seen)
     }
     case 'choice': return d.parsers.every(a => publishesOneNode(a, rr, seen))
     case 'grammar': case 'withCtx': case 'label': return publishesOneNode(d.parser, rr, seen)
@@ -248,6 +247,8 @@ class Encoder {
    * Read only by the census, once `restoresArms` is final.
    */
   private leavesState = [new Map<Combinator<unknown>, boolean>(), new Map<Combinator<unknown>, boolean>()] as const
+  /** `mayCommitFailure` over this grammar's rules, for the census. Set when the census runs. */
+  private commits: (child: Combinator<unknown>) => boolean = () => true
   /**
    * `reachesSideWriter`'s answers, shared by every `failureNeedsRollback` call
    * for the lifetime of this `Encoder`. Every entry is exact — it depends only on
@@ -338,7 +339,7 @@ class Encoder {
    * this map) to `90aa867`. So the question is not "is the winner this object"
    * but "does the winner bottom out AT this reference", and `wrapsRef` asks that.
    */
-  winners: Readonly<Record<string, Combinator<unknown>>> | undefined = undefined
+  readonly winners: Readonly<Record<string, Combinator<unknown>>>
   triviaSpecs: TriviaSpec[] = []
   private triviaIndex = new Map<Combinator<unknown>, number>()
   /**
@@ -367,7 +368,7 @@ class Encoder {
     lineFlags: number
   } | { kind: 'program'; program: number } | undefined {
     if (!this.selectLexicalBodies) return undefined
-    const body = directExecutableTokenBody(p, name => this.winners?.[name])
+    const body = directExecutableTokenBody(p, this.rr)
     if (body === undefined) return undefined
     const tokenDef = p._def
     if (tokenDef.tag !== 'token') throw new Error('parseman: selected lexical body lost token boundary')
@@ -429,7 +430,7 @@ class Encoder {
             // encoder would hold at that row, so both lowerings rank the same
             // failures.
             const final = classifyFinalChoice(
-              node.parsers, this.refResolver(), node.cleared ? null : this.gateTrivia(), false, node.disjoint,
+              node.parsers, this.rr, node.cleared ? null : this.gateTrivia(), false, node.disjoint,
             )
             const classes = final.firstSets.map((first, i) => final.nullable[i] ? -1 : this.charClass(first))
             const exclusive = final.exclusive && classes.every(cls => cls >= 0) &&
@@ -655,7 +656,7 @@ class Encoder {
     if (t === undefined) return this.triviaKnown ? '' : '?'
     let sig = this.triviaSignatures.get(t)
     if (sig === undefined) {
-      sig = `t${JSON.stringify(firstSetOf(t, new Set(), this.refResolver()))}`
+      sig = `t${JSON.stringify(firstSetOf(t, new Set(), this.rr))}`
       this.triviaSignatures.set(t, sig)
     }
     return sig
@@ -676,7 +677,7 @@ class Encoder {
     if (hit !== undefined) return hit
     this.readsScopeMemo.set(p, true)
     const d = p._def as ParserDef
-    const rr = this.refResolver()
+    const rr = this.rr
     let out: boolean
     switch (d.tag) {
       case 'literal': case 'regex': case 'keywords': case 'token':
@@ -713,8 +714,7 @@ class Encoder {
         break
       }
       case 'lazy': {
-        let target: Combinator<unknown> | undefined = winnerForRef(p, rr)
-        if (target === undefined) { try { target = d.thunk() } catch { target = undefined } }
+        const target = resolvedLazyTarget(p, rr)
         out = target === undefined || triviaThroughRef(p, target, null) !== null || this.readsScope(target)
         break
       }
@@ -731,9 +731,27 @@ class Encoder {
   /** TOKEN bodies are an all-program decision. A complete occurrence inside an
    * otherwise incomplete final graph stays on CHARACTER with every sibling. */
   readonly selectLexicalBodies: boolean
-  constructor(settings: TableSettings, selectLexicalBodies: boolean) {
+  constructor(
+    settings: TableSettings,
+    selectLexicalBodies: boolean,
+    winners: Readonly<Record<string, Combinator<unknown>>>,
+    recorded: ReadonlyMap<Combinator<unknown>, Combinator<unknown>>,
+  ) {
+    this.winners = winners
+    const byName: RefResolver = name => winners[name]
+    // A reference the walk did not record but that resolves is a walk that missed
+    // part of the graph: refuse to compile rather than read it some other way.
+    const unrecorded = (ref: Combinator<unknown>): undefined => {
+      if (resolvedLazyTarget(ref, byName) === undefined) return undefined
+      throw new Error(`parseman: internal: the capability walk did not record the reference ${JSON.stringify((ref as unknown as { _ruleName?: string })._ruleName ?? '(unnamed)')}`)
+    }
+    const targets: RefTargets = { get: ref => recorded.get(ref) ?? unrecorded(ref) }
+    this.rr = Object.assign((name: string) => winners[name], { targets })
+    this.targets = targets
     this.settings = settings
+    const trackSeen = new Set<Combinator<unknown>>()
     this.track = settings.trackLines === true
+      || Object.values(winners).some(rule => hasScopedTrackLines(rule, trackSeen, targets))
     this.selectLexicalBodies = selectLexicalBodies
     this.plan = settings.coverage
     this.cov = settings.coverage === undefined
@@ -753,7 +771,7 @@ class Encoder {
    */
   private followClass(parsers: readonly Combinator<unknown>[], i: number): number {
     let fs: FirstSet = { kind: 'empty' }
-    const rr = this.refResolver()
+    const rr = this.rr
     for (let j = i + 1; j < parsers.length; j++) {
       // As the interpreter's `followSentinels` derive them (`sequence.ts`): with no
       // trivia, whatever scope the sequence runs in.
@@ -852,14 +870,19 @@ class Encoder {
    * after the fact. `winners` IS the final map — it is the merged rule map being
    * encoded, the one `case 'lazy'` points the arm's CALL at. Gating an arm on the
    * first set of the very row it will call cannot skip a match that row would
-   * accept. And this only ever runs in the CATCH branch: where a thunk resolves,
-   * nothing consults the resolver and nothing changes, which is why the runtime
-   * leg's counts are byte-for-byte what they were.
+   * accept.
+   *
+   * It carries `targets`, so every reader resolves a reference through
+   * `resolvedLazyTarget` and reads what the capability walk recorded.
    */
-  private refResolver(): RefResolver | undefined {
-    const w = this.winners
-    return w === undefined ? undefined : (name: string) => w[name]
-  }
+  private readonly rr: RefResolver
+
+  /**
+   * What each reference reads as, recorded once by the capability walk
+   * (`resolvedLazyTarget`). Emission, first sets and the rollback census all read
+   * it; a resolvable reference it lacks throws.
+   */
+  private readonly targets: RefTargets
 
   /**
    * Whether a failed ordered-choice arm can leave state that the enclosing
@@ -878,19 +901,18 @@ class Encoder {
   ): boolean {
     const refName = (p as unknown as { _ruleName?: string })._ruleName
     if (refName === undefined) {
-      return mayLeavePartialCapture(p, new Set(), true, throughNodes, this.restoresArms) || this.reachesSideWriter(p)
-        || ((autoNot?.length ?? 0) > 0 && capturesLeaf(p))
+      return mayLeavePartialCapture(p, new Set(), true, throughNodes, this.restoresArms, this.targets, this.commits) || this.reachesSideWriter(p)
+        || ((autoNot?.length ?? 0) > 0 && capturesLeaf(p, undefined, this.targets))
     }
     // A rule is asked about from every site that references it, so its walk is kept.
-    const winner = this.winners?.[refName]
-    const root = winner !== undefined && !winnerWrapsReference(winner, p) ? winner : p
+    const root = this.targets.get(p) ?? p
     const memo = this.leavesState[Number(throughNodes)]!
     let leaves = memo.get(root)
     if (leaves === undefined) {
-      leaves = mayLeavePartialCapture(root, new Set(), true, throughNodes, this.restoresArms) || this.reachesSideWriter(root)
+      leaves = mayLeavePartialCapture(root, new Set(), true, throughNodes, this.restoresArms, this.targets, this.commits) || this.reachesSideWriter(root)
       memo.set(root, leaves)
     }
-    return leaves || ((autoNot?.length ?? 0) > 0 && capturesLeaf(root))
+    return leaves || ((autoNot?.length ?? 0) > 0 && capturesLeaf(root, undefined, this.targets))
   }
 
   /** The rollback census of an `optional()` or `attempt()` row at `ip` over `child`. */
@@ -923,11 +945,8 @@ class Encoder {
       case 'unknown':
         return true
       case 'lazy': {
-        const name = (node as unknown as { _ruleName?: string })._ruleName
-        const winner = name === undefined ? undefined : this.winners?.[name]
-        if (winner !== undefined && !winnerWrapsReference(winner, node)) return [winner]
-        try { return [def.thunk()] }
-        catch { return true }
+        const target = this.targets.get(node)
+        return target === undefined ? true : [target]
       }
       default:
         return childrenOf(def)
@@ -958,7 +977,7 @@ class Encoder {
     const op = this.code[child]
     if (op === OP_GATE || op === OP_LIT || op === OP_LIT_CI || op === OP_LIT_TRACK || op === OP_LIT_CI_TRACK
       || op === OP_RX || op === OP_RX_TRACK) return child
-    const rr = this.refResolver()
+    const rr = this.rr
     if (matchesEmpty(p, new Set(), rr)) return child
     const cls = this.charClass(firstSetOf(p, new Set(), rr, this.activeTrivia, false))
     if (cls < 0) return child
@@ -1004,7 +1023,7 @@ class Encoder {
     base: Combinator<unknown> | undefined = this.activeTrivia,
   ): number[] {
     if (constructionSets || wideTrivia === base) return []
-    const narrow = classifyFinalChoice(arms, this.refResolver(), base, false, false).firstSets
+    const narrow = classifyFinalChoice(arms, this.rr, base, false, false).firstSets
     const out: number[] = []
     for (let i = 0; i < arms.length; i++) {
       if (this.charClass(wide[i]!) !== this.charClass(narrow[i]!)) out.push(i)
@@ -1015,7 +1034,7 @@ class Encoder {
   private gateFirstSet(p: Combinator<unknown>, guarded: boolean, narrowed: boolean): FirstSet {
     const cached = p._meta.firstSet
     if (p._def.tag !== 'lazy' && cached.kind !== 'any') return cached
-    const rr = this.refResolver()
+    const rr = this.rr
     // GUARDED: the interpreter tests this child's set before entering it (its set
     // was finite when the wrapper was built), so the table tests the same set: a
     // reference's resolved target, as its construction-time set reads it, without
@@ -1111,12 +1130,12 @@ class Encoder {
     c: Combinator<unknown>, trivia: Combinator<unknown> | null | undefined, depth: number,
   ): { p: Combinator<unknown>; follow: FirstSet; other: FirstSet } | undefined {
     if (depth > 24) return undefined
-    const rr = this.refResolver()
+    const rr = this.rr
     const d = c._def as ParserDef
     switch (d.tag) {
       case 'lazy': {
-        let target: Combinator<unknown> | undefined = winnerForRef(c, rr)
-        if (target === undefined) { try { target = d.thunk() } catch { return undefined } }
+        const target = resolvedLazyTarget(c, rr)
+        if (target === undefined) return undefined
         return this.gapLead(target, triviaThroughRef(c, target, trivia), depth + 1)
       }
       case 'node': case 'leaf': case 'label': case 'attempt':
@@ -1179,8 +1198,8 @@ class Encoder {
   private sepGate(p: Combinator<unknown>, ip: number): number {
     const op = this.code[ip]
     if (op === OP_LIT || op === OP_LIT_CI || op === OP_RX || op === OP_LIT_TRACK || op === OP_RX_TRACK || op === OP_LIT_CI_TRACK) return -1
-    if (matchesEmpty(p, new Set(), this.refResolver())) return -1
-    return this.charClass(firstSetOf(p, new Set(), this.refResolver(), this.gateTrivia(), this.gateConsuming()))
+    if (matchesEmpty(p, new Set(), this.rr)) return -1
+    return this.charClass(firstSetOf(p, new Set(), this.rr, this.gateTrivia(), this.gateConsuming()))
   }
 
   /** Reserve `n` operand slots to patch once children are laid out. */
@@ -1201,7 +1220,7 @@ class Encoder {
    */
   private subtree(c: Combinator<unknown>): SubtreeRef {
     const ip = this.node(c).ip
-    const fs = firstSetOf(c, new Set(), this.refResolver(), this.activeTrivia)
+    const fs = firstSetOf(c, new Set(), this.rr, this.activeTrivia)
     return [ip, fs.kind === 'empty' ? -2 : this.charClass(fs)]
   }
 
@@ -1370,9 +1389,9 @@ class Encoder {
     }
     const follow = walk(arm, this.activeTrivia, 0)
     if (follow === undefined || follow === 'end') return undefined
-    const rr = this.refResolver()
+    const rr = this.rr
     const { next, boundary } = follow
-    if (matchesEmpty(next, new Set(), rr) || mayCommitFailure(next, rr, this.commitFailureMemo)) return undefined
+    if (matchesEmpty(next, new Set(), rr) || mayCommitFailure(next, this.targets, this.commitFailureMemo)) return undefined
     // A miss reports the set `next` fails with at its start, so only a row with
     // one such set is gated: a terminal, which fails with its own spelling
     // (`directTerminalFailureExpected` — `keywords()` and `word()` say `keyword`,
@@ -1555,7 +1574,7 @@ class Encoder {
         // Arms that differ in one term are that term's choice (`factor-choice.ts`).
         // Not under a coverage plan, which credits the arms as written.
         if (this.plan === undefined) {
-          const shared = factorSharedEnds(d)
+          const shared = factorSharedEnds(d, this.targets, this.commitFailureMemo)
           if (shared !== undefined) {
             // Factored as an `attempt`, which restores what the choice would have.
             this.restoringChoices.add(p)
@@ -1666,7 +1685,7 @@ class Encoder {
           // covered on a parse where the choice picked somebody else.
           return this.covWrap(gated, armCovIds?.[src], 1)
         })
-        const rr = this.refResolver()
+        const rr = this.rr
         // O(1) first-char dispatch is only SOUND when the arms are disjoint.
         // With overlapping first sets, "the first arm whose class contains this
         // char" is not "the first arm that matches": a `Keyword` arm whose first
@@ -1788,14 +1807,14 @@ class Encoder {
             if (logMask !== 0) this.choiceLogRollbackMasks.set(head, logMask)
           })
         }
-        const nonCommitting = arms.every(arm => !mayCommitFailure(arm, rr, this.commitFailureMemo))
+        const nonCommitting = arms.every(arm => !mayCommitFailure(arm, this.targets, this.commitFailureMemo))
         if (nonCommitting) this.nonCommittingChoiceSites.add(head)
         ;(!exclusive && nonCommitting ? this.restoringChoices : this.leakingChoices).add(p)
         return head
       }
       case 'many':
       case 'oneOrMore': {
-        const rr = this.refResolver()
+        const rr = this.rr
         // The item's gate tests what the interpreter's repeat guard tests where it
         // has one (`repeat.ts`), and otherwise what the item can start with.
         const itemClass = matchesEmpty(d.parser, new Set(), rr)
@@ -1845,7 +1864,7 @@ class Encoder {
           itemFx,
           // As 0.58.0: the interpreter resyncs on the separator itself
           // (`orSentinel`), which runs under the live trivia.
-          this.charClass(firstSetOf(d.separator, new Set(), this.refResolver(), this.activeTrivia, false)),
+          this.charClass(firstSetOf(d.separator, new Set(), this.rr, this.activeTrivia, false)),
         ]
         if (gate >= 0) ops.push(gate)
         return this.emit(OP_REP, ...ops)
@@ -1979,7 +1998,7 @@ class Encoder {
           if (continuationGate(this.code, this.code[child + 3]!) === undefined) this.code[child + 2] = corner
           else run = this.emit(OP_CONT, corner, body, this.code[child + 3]!)
         }
-        if (matchesEmpty(d.parser, new Set(), this.refResolver())) return run
+        if (matchesEmpty(d.parser, new Set(), this.rr)) return run
         // A node whose BODY is a bare cross-rule ref (`node('X', g.Y, …)`) caches its
         // first set from the ref's base binding. Under a compose OVERRIDE the winner
         // for `Y` may be WIDER, so the cached set gates out input the merged rule
@@ -2121,15 +2140,10 @@ class Encoder {
         // through. The encoder threw at build time instead, which made the table
         // lowering refuse a grammar the source lowering accepts. Deferring to the
         // ref's own `.parse` reproduces codegen's timing and its message.
-        // BY NAME first, when this reference names a rule of the map being
-        // encoded — see `winners` for why a thunk is the wrong resolver for a
-        // merged (composed) map, and why the identity guard is required.
-        const refName = (p as unknown as { _ruleName?: string })._ruleName
-        const winner = refName === undefined ? undefined : this.winners?.[refName]
-        if (winner !== undefined && !winnerWrapsReference(winner, p)) return this.scopedRef(p, winner)
-        let resolved: Combinator<unknown>
-        try { resolved = d.thunk() }
-        catch {
+        // What the capability walk recorded (`resolvedLazyTarget`): by name
+        // first, which is what a merged (composed) map needs — see `winners`.
+        const resolved = resolvedLazyTarget(p, this.rr)
+        if (resolved === undefined) {
           this.runtimeOnly.add('ref() used before .define() — the slot is run live')
           return this.emit(OP_LIVE, this.fn(p, null))
         }
@@ -2203,7 +2217,7 @@ class Encoder {
         // Same override-aware resolution as the node gate: a bare-ref inner resolves
         // its gate through `winners` so a widened winner is not gated out.
         const fs = this.gateFirstSet(d.parser, d.guarded === true, false)
-        if (fs.kind === 'any' || matchesEmpty(d.parser, new Set(), this.refResolver())) return inner
+        if (fs.kind === 'any' || matchesEmpty(d.parser, new Set(), this.rr)) return inner
         const cls = this.charClass(fs)
         if (cls < 0) return inner
         const e = deriveExpected(d.parser)
@@ -2332,8 +2346,8 @@ class Encoder {
     if (this.plan !== undefined || d.collapse !== true || d.build === undefined || d.trailingTrivia === true) return false
     const seq = d.parser._def
     return seq.tag === 'sequence' && seq.parsers.length === 2
-      && matchesEmpty(seq.parsers[1]!, new Set(), this.refResolver())
-      && publishesOneNode(seq.parsers[0]!, this.refResolver())
+      && matchesEmpty(seq.parsers[1]!, new Set(), this.rr)
+      && publishesOneNode(seq.parsers[0]!, this.rr)
   }
 
   /** The body of a late frame: the sequence as written, its corner behind `OP_SEED`. */
@@ -2430,6 +2444,9 @@ class Encoder {
     const restores = new Set<Combinator<unknown>>()
     for (const c of this.restoringChoices) if (!this.leakingChoices.has(c)) restores.add(c)
     this.restoresArms = restores
+    const memo = this.commitFailureMemo
+    const targets = this.targets
+    this.commits = child => memo.get(child) ?? mayCommitFailure(child, targets, memo)
     for (const census of this.logCensus) census()
     return ownTableProgram({
       code: this.code, k: this.k, fns: this.fns, cc: this.cc,
@@ -2475,32 +2492,22 @@ class Encoder {
  * underneath, so a grammar that carries its own tracking compiled through
  * codegen and was rejected by the encoder. Same question, same answer.
  *
- * A `lazy` is followed, because a rule reference is how a grammar reaches most of
- * itself; an undefined one answers `false` rather than throwing, as codegen's does.
+ * A `lazy` is followed as the capability walk recorded it (`targets`), because a
+ * rule reference is how a grammar reaches most of itself, and in a merged map its
+ * thunk still reaches the rule an override replaced. An undefined one answers
+ * `false` rather than throwing, as codegen's does.
  */
-function hasScopedTrackLines(p: Combinator<unknown>, seen: Set<Combinator<unknown>>): boolean {
+function hasScopedTrackLines(p: Combinator<unknown>, seen: Set<Combinator<unknown>>, targets: RefTargets): boolean {
   if (seen.has(p)) return false
   seen.add(p)
   if (p._meta.grammarTrackLines === true) return true
   const d = p._def
-  switch (d.tag) {
-    case 'grammar':
-      if (d.trackLines === true) return true
-      break
-    case 'lazy':
-      try { return hasScopedTrackLines(d.thunk(), seen) }
-      catch { return false }
-    // Neither is covered by the shared `childrenOf`: it drops `dispatch` matcher
-    // arms and treats `routed()` as a leaf.
-    case 'dispatch':
-      for (const m of d.matchers ?? []) if (hasScopedTrackLines(m.parser, seen)) return true
-      break
-    case 'routed':
-      return d.fallback === undefined ? false : hasScopedTrackLines(d.fallback, seen)
-    default:
-      break
+  if (d.tag === 'grammar' && d.trackLines === true) return true
+  if (d.tag === 'lazy') {
+    const target = targets.get(p)
+    return target !== undefined && hasScopedTrackLines(target, seen, targets)
   }
-  for (const c of childrenOf(d)) if (hasScopedTrackLines(c, seen)) return true
+  for (const c of childrenOf(d)) if (hasScopedTrackLines(c, seen, targets)) return true
   return false
 }
 
@@ -2528,11 +2535,9 @@ export function encodeTableProgram(
   // Line tracking is decided ONCE for the whole artifact, as codegen does
   // (`opts.trackLines || grammarTrackLines || hasLineTrackingDef(combinator)`).
   // Reading only the SETTING made the table narrower than codegen and refused a
-  // `parser({ trackLines: true })` scope that codegen simply accepts.
+  // `parser({ trackLines: true })` scope that codegen simply accepts. The Encoder
+  // decides it (`hasScopedTrackLines`), once the walk has recorded every reference.
   const names = Object.keys(ruleMap)
-  const seen = new Set<Combinator<unknown>>()
-  const track = settings.trackLines === true
-    || names.some(n => hasScopedTrackLines(ruleMap[n]!, seen))
   // Same precedence as compileRuleMap/compose: an explicit lowering option wins;
   // otherwise a `rules({ hostMode: 'cst' })` declaration stamped on its entries
   // selects CST. (`'ast'` is the unstamped default.) Reading only `settings`
@@ -2543,15 +2548,25 @@ export function encodeTableProgram(
   const resolvedSettings = {
     ...settings,
     ...(hostMode === undefined ? {} : { hostMode }),
-    ...(track ? { trackLines: true } : {}),
   }
   // Collect once from the FINAL winner-resolved graph. Sorting affects only
   // content-id discovery; ordinary rule/code order remains the caller's order.
   const lexicalRoots = [...names].sort().map(name => ruleMap[name]!)
-  const resolveLexical = (name: string): Combinator<unknown> | undefined => ruleMap[name]
+  // The walk records what each reference it resolves reads as (`resolvedLazyTarget`).
+  const targets = new Map<Combinator<unknown>, Combinator<unknown>>()
+  const resolveLexical = Object.assign((name: string): Combinator<unknown> | undefined => ruleMap[name], { targets })
   const capabilities = collectLexicalCapabilities(lexicalRoots, resolveLexical)
-  const enc = new Encoder(resolvedSettings, capabilities.capabilityComplete)
-  enc.winners = ruleMap
+  // The walk keeps a rule's ambient `scanSkip` as context and never enters it,
+  // but `encodeRule` lowers that set (`scanSkipSlot`). Record the references it
+  // reaches through the same resolver, so the encoder reads them as recorded.
+  const skipSeen = new Set<Combinator<unknown>>()
+  const recordSkip = (p: Combinator<unknown>): void => {
+    if (skipSeen.has(p)) return
+    skipSeen.add(p)
+    for (const child of tokenChildren(p, resolveLexical)) recordSkip(child)
+  }
+  for (const name of names) for (const skipper of ruleMap[name]!._meta.grammarScanSkip ?? []) recordSkip(skipper)
+  const enc = new Encoder(resolvedSettings, capabilities.capabilityComplete, ruleMap, targets)
   for (const name of names) enc.encodeRule(name, ruleMap[name]!)
   const prog = enc.finish()
   return { prog, fnSrcs: enc.fnSrcs }

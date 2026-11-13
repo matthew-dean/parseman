@@ -17,9 +17,26 @@
  * the machinery.
  */
 import type { Combinator, ParserDef } from '../types.ts'
-import type { RefResolver } from '../combinators/first-set.ts'
 import { regexCanMatchEmpty } from '../regex/first-set.ts'
 import { childrenOf } from './gating.ts'
+import { resolvedLazyTarget, type RefResolver, type RefTargets } from '../combinators/first-set.ts'
+
+export type { RefTargets }
+
+/**
+ * Every commitment analysis reads a reference through a `RefTargets`, and must be
+ * handed one. The table encoder passes what its capability walk recorded; a caller
+ * with a rule map passes `ruleMapTargets`; a caller with neither passes this, each
+ * reference read as its own thunk.
+ */
+export const THUNK_TARGETS: RefTargets = { get: ref => resolvedLazyTarget(ref) }
+
+/** Each reference read the way the table encoder reads it in `ruleMap`: by name first. */
+export function ruleMapTargets(ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>): RefTargets {
+  const byName = new Map(ruleMap)
+  const resolve: RefResolver = name => byName.get(name)
+  return { get: ref => resolvedLazyTarget(ref, resolve) }
+}
 
 /**
  * Can `p` FAIL at all?
@@ -42,7 +59,7 @@ import { childrenOf } from './gating.ts'
  * gate first, because `expect` sits at exactly the closing-delimiter positions
  * where a wrong answer is most visible.
  */
-export function mayFail(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set()): boolean {
+export function mayFail(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set(), targets: RefTargets): boolean {
   if (seen.has(p)) return true
   seen.add(p)
   const d = p._def as ParserDef
@@ -58,12 +75,16 @@ export function mayFail(p: Combinator<unknown>, seen: Set<Combinator<unknown>> =
     // `BareInterpolatedSelector` on benchmark.less — a rollback the legacy
     // build fired and this one had deleted.)
     case 'optional':
-    case 'many':      return mayCommitFailure(d.parser)
+    case 'many':      return mayCommitFailure(d.parser, targets)
+    // A list with a minimum also fails short of a minimum above one (a separator
+    // can miss), and on a separator that commits a failure, whatever its item.
     case 'sepBy':     return d.min >= 1
-      ? mayFail(d.parser, seen)
-      : mayCommitFailure(d.parser) || mayCommitFailure(d.separator)
-    case 'oneOrMore': return mayFail(d.parser, seen)
-    case 'sequence':  return d.parsers.some(x => mayFail(x, seen))
+      ? d.min > 1 || mayFail(d.parser, seen, targets) || mayCommitFailure(d.separator, targets)
+      : mayCommitFailure(d.parser, targets) || mayCommitFailure(d.separator, targets)
+    // Mandatory items are attempted at every position, EOF included (`repeat.ts`),
+    // so a repeat whose item cannot fail cannot fall short of its minimum.
+    case 'oneOrMore': return mayFail(d.parser, seen, targets)
+    case 'sequence':  return d.parsers.some(x => mayFail(x, seen, targets))
     // Delegating wrappers: as fallible as what they wrap.
     case 'node':
     case 'transform':
@@ -73,8 +94,8 @@ export function mayFail(p: Combinator<unknown>, seen: Set<Combinator<unknown>> =
     case 'withCtx':
     case 'grammar':
     case 'token':
-    case 'leaf':      return mayFail(d.parser, seen)
-    case 'lazy':      { try { return mayFail(d.thunk(), seen) } catch { return true } }
+    case 'leaf':      return mayFail(d.parser, seen, targets)
+    case 'lazy':      { const t = targets.get(p); return t === undefined || mayFail(t, seen, targets) }
     // An adjacency assertion is a TEST — failing is its whole job.
     case 'adjacency': return true
     default:          return true
@@ -136,7 +157,7 @@ function regexAlwaysConsumes(source: string): boolean {
  * consumption is not unconditionally part of the dispatch's own span, and the
  * few bytes are not worth the proof obligation.
  */
-export function alwaysConsumes(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set()): boolean {
+export function alwaysConsumes(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set(), targets: RefTargets): boolean {
   if (seen.has(p)) return false
   seen.add(p)
   const d = p._def as ParserDef
@@ -144,13 +165,13 @@ export function alwaysConsumes(p: Combinator<unknown>, seen: Set<Combinator<unkn
     case 'literal':   return d.value.length > 0
     case 'keywords':  return true
     case 'regex':      return regexAlwaysConsumes(d.source)
-    case 'routed':    return d.fallback === undefined ? true : alwaysConsumes(d.fallback, seen)
+    case 'routed':    return d.fallback === undefined ? true : alwaysConsumes(d.fallback, seen, targets)
     // One consuming term is enough for the whole sequence to consume.
-    case 'sequence':  return d.parsers.some(x => alwaysConsumes(x, seen))
+    case 'sequence':  return d.parsers.some(x => alwaysConsumes(x, seen, targets))
     // A choice consumes only if EVERY arm it could take consumes.
-    case 'choice':    return d.parsers.every(x => alwaysConsumes(x, seen))
-    case 'oneOrMore': return alwaysConsumes(d.parser, seen)
-    case 'sepBy':     return d.min >= 1 && alwaysConsumes(d.parser, seen)
+    case 'choice':    return d.parsers.every(x => alwaysConsumes(x, seen, targets))
+    case 'oneOrMore': return alwaysConsumes(d.parser, seen, targets)
+    case 'sepBy':     return d.min >= 1 && alwaysConsumes(d.parser, seen, targets)
     case 'node':
     case 'transform':
     case 'label':
@@ -158,8 +179,8 @@ export function alwaysConsumes(p: Combinator<unknown>, seen: Set<Combinator<unkn
     case 'withCtx':
     case 'grammar':
     case 'token':
-    case 'leaf':      return alwaysConsumes(d.parser, seen)
-    case 'lazy':      { try { return alwaysConsumes(d.thunk(), seen) } catch { return false } }
+    case 'leaf':      return alwaysConsumes(d.parser, seen, targets)
+    case 'lazy':      { const t = targets.get(p); return t !== undefined && alwaysConsumes(t, seen, targets) }
     // Zero-width by definition — it asserts over the gap and moves nothing. This
     // `false` is load-bearing: it is what keeps the TRIVIA REWIND in place for the
     // term that follows, so the assertion changes no span it does not mean to.
@@ -179,16 +200,21 @@ export function alwaysConsumes(p: Combinator<unknown>, seen: Set<Combinator<unkn
  * Sound over-approximation: the ONLY constructs that capture-then-fail are
  *   - a sequence whose non-final term captures before a later term can fail
  *   - a sepBy/oneOrMore with a minimum above one, failing after the items it kept
+ *   - an optional, many or list whose child can commit a failure, which it passes on
  * Atomic terminals (literal/regex/keywords/charClass/guard/not) fail without
  * having captured. node() buffers into a private sub-scope and discards it on
  * failure, so it never leaks. A choice leaves what one of its arms leaves.
- * optional/many never "fail" with partial output. Delegating
- * wrappers (transform/label/grammar/withCtx/expect) pass through to inner.
+ * Delegating wrappers (transform/label/grammar/withCtx/expect) pass through to inner.
+ *
+ * `commits` answers `mayCommitFailure` for a child; a caller with a resolver and
+ * a memo passes its own. `targets` is how a named reference reads (`RefTargets`).
  */
 export function mayLeavePartialCapture(
   p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set(), triviaActive = true,
   throughNodes = false,
-  restores?: ReadonlySet<Combinator<unknown>>,
+  restores: ReadonlySet<Combinator<unknown>> | undefined,
+  targets: RefTargets,
+  commits: (child: Combinator<unknown>) => boolean = child => mayCommitFailure(child, targets),
 ): boolean {
   if (seen.has(p)) return false
   seen.add(p)
@@ -214,14 +240,14 @@ export function mayLeavePartialCapture(
       return false
     // A run's prefixes are probed detached; only its body can capture.
     case 'lines':
-      return mayLeavePartialCapture(d.body, seen, triviaActive, throughNodes, restores)
+      return mayLeavePartialCapture(d.body, seen, triviaActive, throughNodes, restores, targets, commits)
     // node() captures its children into a frame of its own and drops it on
     // failure. The trivia logs (`_triviaLog`, `_rootTriviaLog`) are not part of
     // that frame: trivia its body scanned before failing stays recorded. With
     // `throughNodes` (a program that installs trivia somewhere) a node leaves
     // what its body leaves; without, it leaves nothing.
     case 'node':
-      return throughNodes && mayLeavePartialCapture(d.parser, seen, triviaActive, throughNodes, restores)
+      return throughNodes && mayLeavePartialCapture(d.parser, seen, triviaActive, throughNodes, restores, targets, commits)
     // A choice leaves what one of its arms leaves. The table lowers a choice whose
     // openers are disjoint as an exclusive dispatch, which runs its one selected
     // arm with no mark of its own (`emit-assembly.ts`, `table.exclusive`), and an
@@ -231,7 +257,7 @@ export function mayLeavePartialCapture(
     // logs alike.
     case 'choice':
       if (restores?.has(p) === true) return false
-      for (const arm of d.parsers) if (mayLeavePartialCapture(arm, new Set(seen), triviaActive, throughNodes, restores)) return true
+      for (const arm of d.parsers) if (mayLeavePartialCapture(arm, new Set(seen), triviaActive, throughNodes, restores, targets, commits)) return true
       return false
     case 'dispatch':
       // These are independent graph predicates. Sharing one mutable `seen` set
@@ -240,21 +266,27 @@ export function mayLeavePartialCapture(
       // and then skipped by `capturesLeaf` (also false because already seen).
       // Fork the ancestor set for each proof so cycle protection remains, while
       // one proof cannot erase evidence needed by another.
-      return capturesLeaf(d.selector, new Set(seen)) ||
-        d.cases.some(x => mayLeavePartialCapture(x.parser, new Set(seen), triviaActive, throughNodes, restores) || capturesLeaf(x.parser, new Set(seen))) ||
-        (d.matchers ? d.matchers.some(x => mayLeavePartialCapture(x.parser, new Set(seen), triviaActive, throughNodes, restores) || capturesLeaf(x.parser, new Set(seen))) : false) ||
-        (d.otherwise ? mayLeavePartialCapture(d.otherwise, new Set(seen), triviaActive, throughNodes, restores) || capturesLeaf(d.otherwise, new Set(seen)) : false)
+      return capturesLeaf(d.selector, new Set(seen), targets) ||
+        d.cases.some(x => mayLeavePartialCapture(x.parser, new Set(seen), triviaActive, throughNodes, restores, targets, commits) || capturesLeaf(x.parser, new Set(seen), targets)) ||
+        (d.matchers ? d.matchers.some(x => mayLeavePartialCapture(x.parser, new Set(seen), triviaActive, throughNodes, restores, targets, commits) || capturesLeaf(x.parser, new Set(seen), targets)) : false) ||
+        (d.otherwise ? mayLeavePartialCapture(d.otherwise, new Set(seen), triviaActive, throughNodes, restores, targets, commits) || capturesLeaf(d.otherwise, new Set(seen), targets) : false)
     case 'attempt':
       return false
-    // optional and many never fail.
+    // optional and many fail only by passing on a committed failure of their child,
+    // without restoring it (`repeat.ts`, and `OP_OPT` / the repeat loop in
+    // `emit-assembly.ts`). An optional then leaves what its child leaves; a many keeps
+    // the items before the one that failed.
     case 'optional':
+      return commits(d.parser) && mayLeavePartialCapture(d.parser, seen, triviaActive, throughNodes, restores, targets, commits)
     case 'many':
-      return false
+      return commits(d.parser)
     // A list restores the item it failed on and keeps the ones before it, so a
-    // list short of a minimum above one fails with those still captured.
+    // list short of a minimum above one fails with those still captured, and so
+    // does one whose item or separator can commit a failure.
     case 'oneOrMore':
+      return d.min > 1 || commits(d.parser)
     case 'sepBy':
-      return d.min > 1
+      return d.min > 1 || commits(d.parser) || commits(d.separator)
     // A sequence is the real case: an earlier capturing term followed by a term
     // that can fail leaves the earlier captures buffered.
     //
@@ -285,9 +317,9 @@ export function mayLeavePartialCapture(
       for (let i = 0; i < parts.length; i++) {
         const part = parts[i]!
         if (i > 0 && triviaActive) captured = true
-        if (captured && mayFail(part)) return true
-        if (mayLeavePartialCapture(part, seen, triviaActive, throughNodes, restores)) return true
-        if (capturesLeaf(part) || hasNodeDef(part)) captured = true
+        if (captured && mayFail(part, undefined, targets)) return true
+        if (mayLeavePartialCapture(part, seen, triviaActive, throughNodes, restores, targets, commits)) return true
+        if (capturesLeaf(part, undefined, targets) || hasNodeDef(part, undefined, targets)) captured = true
       }
       return false
     }
@@ -298,11 +330,12 @@ export function mayLeavePartialCapture(
     case 'expect':
     case 'withCtx':
     case 'grammar':
-      return mayLeavePartialCapture(d.parser, seen, triviaActive, throughNodes, restores)
+      return mayLeavePartialCapture(d.parser, seen, triviaActive, throughNodes, restores, targets, commits)
     case 'recover':
-      return mayLeavePartialCapture(d.parser, seen, triviaActive, throughNodes, restores)
+      return mayLeavePartialCapture(d.parser, seen, triviaActive, throughNodes, restores, targets, commits)
     case 'lazy': {
-      try { return mayLeavePartialCapture(d.thunk(), seen, triviaActive, throughNodes, restores) } catch { return true }
+      const t = targets.get(p)
+      return t === undefined || mayLeavePartialCapture(t, seen, triviaActive, throughNodes, restores, targets, commits)
     }
     // Unknown shapes: be safe and keep the rollback.
     default:
@@ -311,7 +344,7 @@ export function mayLeavePartialCapture(
 }
 
 /** True when `p` can push a leaf/node into the capture buffers on success. */
-export function capturesLeaf(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set()): boolean {
+export function capturesLeaf(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set(), targets: RefTargets): boolean {
   if (seen.has(p)) return false
   seen.add(p)
   const d = p._def
@@ -333,14 +366,14 @@ export function capturesLeaf(p: Combinator<unknown>, seen: Set<Combinator<unknow
       return false
     case 'sequence':
     case 'choice':
-      return d.parsers.some(x => capturesLeaf(x, seen))
+      return d.parsers.some(x => capturesLeaf(x, seen, targets))
     case 'dispatch':
-      return capturesLeaf(d.selector, seen) ||
-        d.cases.some(x => capturesLeaf(x.parser, seen)) ||
-        (d.matchers ? d.matchers.some(entry => capturesLeaf(entry.parser, seen)) : false) ||
-        (d.otherwise ? capturesLeaf(d.otherwise, seen) : false)
+      return capturesLeaf(d.selector, seen, targets) ||
+        d.cases.some(x => capturesLeaf(x.parser, seen, targets)) ||
+        (d.matchers ? d.matchers.some(entry => capturesLeaf(entry.parser, seen, targets)) : false) ||
+        (d.otherwise ? capturesLeaf(d.otherwise, seen, targets) : false)
     case 'sepBy':
-      return capturesLeaf(d.parser, seen) || capturesLeaf(d.separator, seen)
+      return capturesLeaf(d.parser, seen, targets) || capturesLeaf(d.separator, seen, targets)
     case 'many':
     case 'oneOrMore':
     case 'optional':
@@ -352,15 +385,16 @@ export function capturesLeaf(p: Combinator<unknown>, seen: Set<Combinator<unknow
     case 'withCtx':
     case 'grammar':
     case 'recover':
-      return capturesLeaf(d.parser, seen)
+      return capturesLeaf(d.parser, seen, targets)
     case 'scanTo':
       return true
     case 'lines':
-      return capturesLeaf(d.body, seen)
+      return capturesLeaf(d.body, seen, targets)
     case 'columns':
       return true
     case 'lazy': {
-      try { return capturesLeaf(d.thunk(), seen) } catch { return true }
+      const t = targets.get(p)
+      return t === undefined || capturesLeaf(t, seen, targets)
     }
     default:
       return true
@@ -372,13 +406,13 @@ export function capturesLeaf(p: Combinator<unknown>, seen: Set<Combinator<unknow
  * thunks)? Determines whether the compile emits CST capture — so non-node
  * grammars stay byte-identical. `seen` guards against recursion cycles.
  */
-export function hasNodeDef(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set()): boolean {
+export function hasNodeDef(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set(), targets: RefTargets): boolean {
   if (seen.has(p)) return false
   seen.add(p)
   const d = p._def
   switch (d.tag) {
     case 'node':      return true
-    case 'lazy':      { try { return hasNodeDef(d.thunk(), seen) } catch { return false } }
+    case 'lazy':      { const t = targets.get(p); return t !== undefined && hasNodeDef(t, seen, targets) }
     case 'grammar':
     case 'trivia':
     case 'token':
@@ -390,19 +424,19 @@ export function hasNodeDef(p: Combinator<unknown>, seen: Set<Combinator<unknown>
     case 'oneOrMore':
     case 'not':
     case 'peek':
-    case 'transform': return hasNodeDef(d.parser, seen)
+    case 'transform': return hasNodeDef(d.parser, seen, targets)
     case 'sequence':
-    case 'choice':    return d.parsers.some(x => hasNodeDef(x, seen))
-    case 'dispatch':  return hasNodeDef(d.selector, seen) || d.cases.some(x => hasNodeDef(x.parser, seen)) || (d.matchers ? d.matchers.some(entry => hasNodeDef(entry.parser, seen)) : false) || (d.otherwise ? hasNodeDef(d.otherwise, seen) : false)
-    case 'sepBy':     return hasNodeDef(d.parser, seen) || hasNodeDef(d.separator, seen)
-    case 'scanTo':    return hasNodeDef(d.sentinel, seen)
-      || d.skip.some(x => hasNodeDef(x, seen))
-      || (d.recoverAt !== undefined && hasNodeDef(d.recoverAt, seen))
-      || (d.stopAt !== undefined && hasNodeDef(d.stopAt, seen))
-    case 'lines':     return hasNodeDef(d.body, seen)
-    case 'recover':   return hasNodeDef(d.parser, seen) || hasNodeDef(d.sentinel, seen)
-    case 'expect':    return hasNodeDef(d.parser, seen)
-    case 'withCtx':   return hasNodeDef(d.parser, seen)
+    case 'choice':    return d.parsers.some(x => hasNodeDef(x, seen, targets))
+    case 'dispatch':  return hasNodeDef(d.selector, seen, targets) || d.cases.some(x => hasNodeDef(x.parser, seen, targets)) || (d.matchers ? d.matchers.some(entry => hasNodeDef(entry.parser, seen, targets)) : false) || (d.otherwise ? hasNodeDef(d.otherwise, seen, targets) : false)
+    case 'sepBy':     return hasNodeDef(d.parser, seen, targets) || hasNodeDef(d.separator, seen, targets)
+    case 'scanTo':    return hasNodeDef(d.sentinel, seen, targets)
+      || d.skip.some(x => hasNodeDef(x, seen, targets))
+      || (d.recoverAt !== undefined && hasNodeDef(d.recoverAt, seen, targets))
+      || (d.stopAt !== undefined && hasNodeDef(d.stopAt, seen, targets))
+    case 'lines':     return hasNodeDef(d.body, seen, targets)
+    case 'recover':   return hasNodeDef(d.parser, seen, targets) || hasNodeDef(d.sentinel, seen, targets)
+    case 'expect':    return hasNodeDef(d.parser, seen, targets)
+    case 'withCtx':   return hasNodeDef(d.parser, seen, targets)
     default:          return false
   }
 }
@@ -425,13 +459,13 @@ export function hasNodeDef(p: Combinator<unknown>, seen: Set<Combinator<unknown>
  * `routed()` fallback and a `dispatch` matcher arm, both of which are real emit
  * sites and neither of which `hasNodeDef` above walks.
  */
-export function hasDirectBuildDef(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set()): boolean {
+export function hasDirectBuildDef(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set(), targets: RefTargets): boolean {
   if (seen.has(p)) return false
   seen.add(p)
   const d = p._def
   switch (d.tag) {
-    case 'node':      return d.build !== undefined || hasDirectBuildDef(d.parser, seen)
-    case 'lazy':      { try { return hasDirectBuildDef(d.thunk(), seen) } catch { return false } }
+    case 'node':      return d.build !== undefined || hasDirectBuildDef(d.parser, seen, targets)
+    case 'lazy':      { const t = targets.get(p); return t !== undefined && hasDirectBuildDef(t, seen, targets) }
     case 'grammar':
     case 'trivia':
     case 'token':
@@ -446,21 +480,21 @@ export function hasDirectBuildDef(p: Combinator<unknown>, seen: Set<Combinator<u
     case 'peek':
     case 'withCtx':
     case 'expect':
-    case 'transform': return hasDirectBuildDef(d.parser, seen)
+    case 'transform': return hasDirectBuildDef(d.parser, seen, targets)
     case 'sequence':
-    case 'choice':    return d.parsers.some(x => hasDirectBuildDef(x, seen))
-    case 'dispatch':  return hasDirectBuildDef(d.selector, seen)
-      || d.cases.some(x => hasDirectBuildDef(x.parser, seen))
-      || (d.matchers ? d.matchers.some(x => hasDirectBuildDef(x.parser, seen)) : false)
-      || (d.otherwise ? hasDirectBuildDef(d.otherwise, seen) : false)
-    case 'sepBy':     return hasDirectBuildDef(d.parser, seen) || hasDirectBuildDef(d.separator, seen)
-    case 'scanTo':    return hasDirectBuildDef(d.sentinel, seen)
-      || d.skip.some(x => hasDirectBuildDef(x, seen))
-      || (d.recoverAt !== undefined && hasDirectBuildDef(d.recoverAt, seen))
-      || (d.stopAt !== undefined && hasDirectBuildDef(d.stopAt, seen))
-    case 'lines':     return hasDirectBuildDef(d.body, seen)
-    case 'recover':   return hasDirectBuildDef(d.parser, seen) || hasDirectBuildDef(d.sentinel, seen)
-    case 'routed':    return d.fallback ? hasDirectBuildDef(d.fallback, seen) : false
+    case 'choice':    return d.parsers.some(x => hasDirectBuildDef(x, seen, targets))
+    case 'dispatch':  return hasDirectBuildDef(d.selector, seen, targets)
+      || d.cases.some(x => hasDirectBuildDef(x.parser, seen, targets))
+      || (d.matchers ? d.matchers.some(x => hasDirectBuildDef(x.parser, seen, targets)) : false)
+      || (d.otherwise ? hasDirectBuildDef(d.otherwise, seen, targets) : false)
+    case 'sepBy':     return hasDirectBuildDef(d.parser, seen, targets) || hasDirectBuildDef(d.separator, seen, targets)
+    case 'scanTo':    return hasDirectBuildDef(d.sentinel, seen, targets)
+      || d.skip.some(x => hasDirectBuildDef(x, seen, targets))
+      || (d.recoverAt !== undefined && hasDirectBuildDef(d.recoverAt, seen, targets))
+      || (d.stopAt !== undefined && hasDirectBuildDef(d.stopAt, seen, targets))
+    case 'lines':     return hasDirectBuildDef(d.body, seen, targets)
+    case 'recover':   return hasDirectBuildDef(d.parser, seen, targets) || hasDirectBuildDef(d.sentinel, seen, targets)
+    case 'routed':    return d.fallback ? hasDirectBuildDef(d.fallback, seen, targets) : false
     default:          return false
   }
 }
@@ -470,16 +504,16 @@ export function hasDirectBuildDef(p: Combinator<unknown>, seen: Set<Combinator<u
  * channel: a `dispatch`, or a shape this analysis cannot see into, is reachable
  * along `commitFailureSuccessors`' edges.
  *
- * `memo` carries exact answers between calls over one graph and one `resolve`;
+ * `memo` carries exact answers between calls over one graph and one `targets`;
  * a caller asking at many sites passes the same map to every call, so the graph
  * is walked once rather than once per site.
  */
 export function mayCommitFailure(
   p: Combinator<unknown>,
-  resolve?: RefResolver,
+  targets: RefTargets,
   memo: Map<Combinator<unknown>, boolean> = new Map(),
 ): boolean {
-  return reachesMarked(p, node => commitFailureSuccessors(node, resolve), memo)
+  return reachesMarked(p, node => commitFailureSuccessors(node, targets), memo)
 }
 
 const NO_EDGES: readonly Combinator<unknown>[] = []
@@ -487,7 +521,7 @@ const NO_EDGES: readonly Combinator<unknown>[] = []
 /** `mayCommitFailure`'s edges out of `p`, or `true` when `p` itself can commit. */
 function commitFailureSuccessors(
   p: Combinator<unknown>,
-  resolve: RefResolver | undefined,
+  targets: RefTargets,
 ): readonly Combinator<unknown>[] | true {
   const d = p._def
   switch (d.tag) {
@@ -525,12 +559,8 @@ function commitFailureSuccessors(
     case 'lines':
       return [d.body]
     case 'lazy': {
-      try { return [d.thunk()] }
-      catch {
-        const name = (p as unknown as { _ruleName?: string })._ruleName
-        const target = name === undefined ? undefined : resolve?.(name)
-        return target === undefined ? true : [target]
-      }
+      const t = targets.get(p)
+      return t === undefined ? true : [t]
     }
     default:
       return NO_EDGES
@@ -648,6 +678,17 @@ function hasSemanticReduction(
 }
 
 /**
+ * Does any rule of `ruleMap` reach a direct `node(..., build)`, reading each
+ * reference as the map binds it? In a merged map a base piece's thunk still
+ * reaches the rule an override replaced, and that rule's builder is not in the
+ * encoded artifact.
+ */
+export function hasDirectBuilders(ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>): boolean {
+  const targets = ruleMapTargets(ruleMap)
+  return ruleMap.some(([, rule]) => hasDirectBuildDef(rule, undefined, targets))
+}
+
+/**
  * `hasDirectBuilders` / `isRecognitionOnly` for a rule map WITHOUT lowering it.
  *
  * `composeLeaf()` gates on both: every pre-final grammar must prove recognition-only,
@@ -688,7 +729,7 @@ export function classifyRuleMap(
   }
   for (const [, rule] of ruleMap) scanExternal(rule)
   return {
-    hasDirectBuilders: ruleMap.some(([, rule]) => hasDirectBuildDef(rule)),
+    hasDirectBuilders: hasDirectBuilders(ruleMap),
     isRecognitionOnly: !hasSemanticReduction(ruleMap.map(([, rule]) => rule), externalRefs),
   }
 }

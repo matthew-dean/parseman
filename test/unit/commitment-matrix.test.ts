@@ -43,6 +43,7 @@ import {
   mayCommitFailure,
   mayFail,
   mayLeavePartialCapture,
+  THUNK_TARGETS,
 } from '../../src/analysis/commitment.ts'
 
 function synthetic(def: ParserDef, inner: Combinator<unknown> = literal('x')): Combinator<unknown> {
@@ -69,7 +70,7 @@ describe('commitment proof predicates', () => {
       optional(literal('x')),
       many(literal('x')),
       sepBy(literal('x'), literal(',')),
-    ]) expect(mayFail(total)).toBe(false)
+    ]) expect(mayFail(total, undefined, THUNK_TARGETS)).toBe(false)
 
     const committed = dispatch(literal('x'), when('x', literal('!')))
     for (const fallible of [
@@ -91,7 +92,7 @@ describe('commitment proof predicates', () => {
       optional(committed),
       many(committed),
       sepBy(literal('x'), committed),
-    ]) expect(mayFail(fallible)).toBe(true)
+    ]) expect(mayFail(fallible, undefined, THUNK_TARGETS)).toBe(true)
   })
 
   it('distinguishes consuming success from zero-width success', () => {
@@ -114,7 +115,7 @@ describe('commitment proof predicates', () => {
       parser({}, literal('x')),
       token(literal('x')),
       leaf(literal('x'), value => value),
-    ]) expect(alwaysConsumes(consuming)).toBe(true)
+    ]) expect(alwaysConsumes(consuming, undefined, THUNK_TARGETS)).toBe(true)
 
     for (const nullable of [
       literal(''),
@@ -128,7 +129,7 @@ describe('commitment proof predicates', () => {
       recover(literal('x')),
       adjacent(),
       throwingRef(),
-    ]) expect(alwaysConsumes(nullable)).toBe(false)
+    ]) expect(alwaysConsumes(nullable, undefined, THUNK_TARGETS)).toBe(false)
   })
 
   it('detects partial capture only when a later failure can expose it', () => {
@@ -139,21 +140,27 @@ describe('commitment proof predicates', () => {
       choice(literal('x'), literal('y')), attempt(sequence(literal('x'), literal('!'))),
       optional(sequence(literal('x'), literal('!'))), many(sequence(literal('x'), literal('!'))),
       oneOrMore(sequence(literal('x'), literal('!'))), sepBy(literal('x'), literal(','), { min: 1 }),
-    ]) expect(mayLeavePartialCapture(isolated)).toBe(false)
+    ]) expect(mayLeavePartialCapture(isolated, undefined, undefined, undefined, undefined, THUNK_TARGETS)).toBe(false)
 
-    expect(mayLeavePartialCapture(sequence(literal('x'), literal('!')))).toBe(true)
+    expect(mayLeavePartialCapture(sequence(literal('x'), literal('!')), undefined, undefined, undefined, undefined, THUNK_TARGETS)).toBe(true)
     // Disjoint openers lower to an exclusive dispatch, which restores nothing itself.
-    expect(mayLeavePartialCapture(choice(sequence(literal('x'), literal('!')), literal('y')))).toBe(true)
-    expect(mayLeavePartialCapture(sequence(gate(() => true), literal('!')), new Set(), false)).toBe(false)
-    expect(mayLeavePartialCapture(sequence(gate(() => true), literal('!')), new Set(), true)).toBe(true)
-    expect(mayLeavePartialCapture(transform(sequence(literal('x'), literal('!')), value => value))).toBe(true)
-    expect(mayLeavePartialCapture(recover(sequence(literal('x'), literal('!'))))).toBe(true)
-    expect(mayLeavePartialCapture(throwingRef())).toBe(true)
+    expect(mayLeavePartialCapture(choice(sequence(literal('x'), literal('!')), literal('y')), undefined, undefined, undefined, undefined, THUNK_TARGETS)).toBe(true)
+    expect(mayLeavePartialCapture(sequence(gate(() => true), literal('!')), new Set(), false, undefined, undefined, THUNK_TARGETS)).toBe(false)
+    expect(mayLeavePartialCapture(sequence(gate(() => true), literal('!')), new Set(), true, undefined, undefined, THUNK_TARGETS)).toBe(true)
+    expect(mayLeavePartialCapture(transform(sequence(literal('x'), literal('!')), value => value), undefined, undefined, undefined, undefined, THUNK_TARGETS)).toBe(true)
+    expect(mayLeavePartialCapture(recover(sequence(literal('x'), literal('!'))), undefined, undefined, undefined, undefined, THUNK_TARGETS)).toBe(true)
+    expect(mayLeavePartialCapture(throwingRef(), undefined, undefined, undefined, undefined, THUNK_TARGETS)).toBe(true)
+    // A child that can commit a failure is passed on unrestored (issue #303).
+    const committing = sequence(literal('x'), dispatch(literal('y'), when('y', literal('!'))))
+    for (const passing of [optional(committing), many(committing), oneOrMore(committing), sepBy(committing, literal(','))]) {
+      expect(mayLeavePartialCapture(passing, undefined, undefined, undefined, undefined, THUNK_TARGETS)).toBe(true)
+    }
+    expect(mayLeavePartialCapture(sepBy(literal('x'), dispatch(literal(','), when(',', literal('!')))), undefined, undefined, undefined, undefined, THUNK_TARGETS)).toBe(true)
 
-    expect(mayLeavePartialCapture(dispatch(literal('x'), when('x', literal('!'))))).toBe(true)
-    expect(mayLeavePartialCapture(dispatch(gate(() => true) as unknown as Combinator<string>, when('x', literal('!'))))).toBe(true)
-    expect(mayLeavePartialCapture(dispatch(gate(() => true) as unknown as Combinator<string>, when(matches(/^x/), literal('!'))))).toBe(true)
-    expect(mayLeavePartialCapture(dispatch(gate(() => true) as unknown as Combinator<string>, otherwise(literal('!'))))).toBe(true)
+    expect(mayLeavePartialCapture(dispatch(literal('x'), when('x', literal('!'))), undefined, undefined, undefined, undefined, THUNK_TARGETS)).toBe(true)
+    expect(mayLeavePartialCapture(dispatch(gate(() => true) as unknown as Combinator<string>, when('x', literal('!'))), undefined, undefined, undefined, undefined, THUNK_TARGETS)).toBe(true)
+    expect(mayLeavePartialCapture(dispatch(gate(() => true) as unknown as Combinator<string>, when(matches(/^x/), literal('!'))), undefined, undefined, undefined, undefined, THUNK_TARGETS)).toBe(true)
+    expect(mayLeavePartialCapture(dispatch(gate(() => true) as unknown as Combinator<string>, otherwise(literal('!'))), undefined, undefined, undefined, undefined, THUNK_TARGETS)).toBe(true)
   })
 
   it('classifies constructs that capture a successful value', () => {
@@ -168,10 +175,10 @@ describe('commitment proof predicates', () => {
       dispatch(gate(() => true) as unknown as Combinator<string>, when('x', literal('x'))),
       dispatch(gate(() => true) as unknown as Combinator<string>, when(matches(/^x/), literal('x'))),
       dispatch(gate(() => true) as unknown as Combinator<string>, otherwise(literal('x'))),
-    ]) expect(capturesLeaf(capturing)).toBe(true)
+    ]) expect(capturesLeaf(capturing, undefined, THUNK_TARGETS)).toBe(true)
 
     for (const silent of [gate(() => true), adjacent(), not(literal('x')), peek(literal('x')), trivia(literal('x')), unknown()]) {
-      expect(capturesLeaf(silent)).toBe(false)
+      expect(capturesLeaf(silent, undefined, THUNK_TARGETS)).toBe(false)
     }
   })
 
@@ -186,10 +193,10 @@ describe('commitment proof predicates', () => {
       dispatch(literal('x'), when('x', n)),
       dispatch(literal('x'), when(matches(/^x/), n)),
       dispatch(literal('x'), otherwise(n)),
-    ]) expect(hasNodeDef(containing)).toBe(true)
+    ]) expect(hasNodeDef(containing, undefined, THUNK_TARGETS)).toBe(true)
 
-    expect(hasNodeDef(throwingRef())).toBe(false)
-    expect(hasNodeDef(literal('x'))).toBe(false)
+    expect(hasNodeDef(throwingRef(), undefined, THUNK_TARGETS)).toBe(false)
+    expect(hasNodeDef(literal('x'), undefined, THUNK_TARGETS)).toBe(false)
   })
 
   it('finds only direct semantic node builders through compound edges', () => {
@@ -203,11 +210,11 @@ describe('commitment proof predicates', () => {
       dispatch(literal('x'), when('x', b)),
       dispatch(literal('x'), when(matches(/^x/), b)),
       dispatch(literal('x'), otherwise(b)),
-    ]) expect(hasDirectBuildDef(containing)).toBe(true)
+    ]) expect(hasDirectBuildDef(containing, undefined, THUNK_TARGETS)).toBe(true)
 
-    expect(hasDirectBuildDef(structuralNode())).toBe(false)
-    expect(hasDirectBuildDef(throwingRef())).toBe(false)
-    expect(hasDirectBuildDef(routed())).toBe(false)
+    expect(hasDirectBuildDef(structuralNode(), undefined, THUNK_TARGETS)).toBe(false)
+    expect(hasDirectBuildDef(throwingRef(), undefined, THUNK_TARGETS)).toBe(false)
+    expect(hasDirectBuildDef(routed(), undefined, THUNK_TARGETS)).toBe(false)
   })
 
   it('tracks committed failure through swallowing and scanning constructs', () => {
@@ -217,18 +224,18 @@ describe('commitment proof predicates', () => {
       optional(cut), attempt(cut), transform(cut, value => value), label('c', cut), field('c', cut),
       parser({}, cut), node('N', cut), sepBy(literal('x'), cut), token(cut), leaf(cut, value => value),
       withCtx({}, cut), scanTo(literal(';'), { skip: [cut] }), throwingRef(), unknown(),
-    ]) expect(mayCommitFailure(committing)).toBe(true)
+    ]) expect(mayCommitFailure(committing, THUNK_TARGETS)).toBe(true)
 
     for (const ordinary of [literal('x'), expectParser(cut), recover(cut), adjacent()]) {
-      expect(mayCommitFailure(ordinary)).toBe(false)
+      expect(mayCommitFailure(ordinary, THUNK_TARGETS)).toBe(false)
     }
 
     const imported = throwingRef() as Combinator<unknown> & { _ruleName?: string }
     imported._ruleName = 'Imported'
-    expect(mayCommitFailure(imported, name =>
-      name === 'Imported' ? literal('x') : undefined)).toBe(false)
-    expect(mayCommitFailure(imported, name =>
-      name === 'Imported' ? cut : undefined)).toBe(true)
+    // A reference reads as what `targets` records for it, even one whose thunk throws.
+    expect(mayCommitFailure(imported, new Map([[imported, literal('x')]]))).toBe(false)
+    expect(mayCommitFailure(imported, new Map([[imported, cut]]))).toBe(true)
+    expect(mayCommitFailure(imported, new Map())).toBe(true)
   })
 
   it('answers every node of a cycle exactly from one shared memo, whichever is asked first', () => {
@@ -249,7 +256,7 @@ describe('commitment proof predicates', () => {
       for (let first = 0; first < nodes.length; first++) {
         const memo = new Map<Combinator<unknown>, boolean>()
         for (const n of [...nodes.slice(first), ...nodes.slice(0, first)].reverse()) {
-          expect(mayCommitFailure(n, undefined, memo)).toBe(committing)
+          expect(mayCommitFailure(n, THUNK_TARGETS, memo)).toBe(committing)
         }
       }
     }

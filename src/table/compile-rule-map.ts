@@ -1,5 +1,5 @@
 import type { Combinator } from '../types.ts'
-import { hasDirectBuildDef } from '../analysis/commitment.ts'
+import { hasDirectBuilders } from '../analysis/commitment.ts'
 import type { HostMode } from '../cst/host-mode.ts'
 import { collectGrammarReflection, GRAMMAR_REFLECTION, type GrammarReflection } from '../cst/reflection.ts'
 import { encodeTableProgram, type TableSettings } from './encode.ts'
@@ -249,7 +249,7 @@ export function compileRuleMapRunnable(
   return {
     keys: ruleMap.map(([key]) => key),
     hostMode,
-    hostBranchElided: hostMode === 'ast' && ruleMap.some(([, rule]) => hasDirectBuildDef(rule)),
+    hostBranchElided: hostMode === 'ast' && hasDirectBuilders(ruleMap),
     reflection,
     ...(plan === undefined ? {} : { coverageDefinitions: plan.definitions }),
     // Reflection rides on the map's metadata prototype from birth. Only `compile()`
@@ -398,7 +398,7 @@ export function compileRuleMap(
     // host — the long-standing `node(parser)` contract. Same predicate codegen uses
     // for its own `hasDirectBuilders` (both read `analysis/commitment.ts`), so the two
     // lowerings stamp the same artifact rather than disagreeing about it.
-    hostBranchElided: hostMode === 'ast' && ruleMap.some(([, rule]) => hasDirectBuildDef(rule)),
+    hostBranchElided: hostMode === 'ast' && hasDirectBuilders(ruleMap),
     reflection: collectGrammarReflection(ruleMap),
     ...(plan === undefined ? {} : { coverageDefinitions: plan.definitions }),
     rules: tableRules(artifact),
