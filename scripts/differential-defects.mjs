@@ -159,6 +159,19 @@ export const DEFECTS = {
     }],
   },
   /**
+   * The fallibility walk reads a list with a minimum as failing only where its item
+   * can, so a contained attempt around a list short of its minimum, or one whose
+   * separator commits, keeps the sequence's captures in the emitted engine.
+   */
+  'seplist-min-fallible-item-only': {
+    why: 'emitted table engine: a separated list that fails on its separator or its minimum is read as total',
+    edits: [{
+      file: 'src/analysis/commitment.ts',
+      find: '? d.min > 1 || mayFail(d.parser, seen, targets) || mayCommitFailure(d.separator, targets)',
+      replace: '? mayFail(d.parser, seen, targets)',
+    }],
+  },
+  /**
    * The closure engine reads an uncommitted dispatch fallback as failing clean,
    * so a site around it takes no mark and the selector's leaf stays. Shipped as #280.
    */

@@ -76,9 +76,13 @@ export function mayFail(p: Combinator<unknown>, seen: Set<Combinator<unknown>> =
     // build fired and this one had deleted.)
     case 'optional':
     case 'many':      return mayCommitFailure(d.parser, targets)
+    // A list with a minimum also fails short of a minimum above one (a separator
+    // can miss), and on a separator that commits a failure, whatever its item.
     case 'sepBy':     return d.min >= 1
-      ? mayFail(d.parser, seen, targets)
+      ? d.min > 1 || mayFail(d.parser, seen, targets) || mayCommitFailure(d.separator, targets)
       : mayCommitFailure(d.parser, targets) || mayCommitFailure(d.separator, targets)
+    // Mandatory items are attempted at every position, EOF included (`repeat.ts`),
+    // so a repeat whose item cannot fail cannot fall short of its minimum.
     case 'oneOrMore': return mayFail(d.parser, seen, targets)
     case 'sequence':  return d.parsers.some(x => mayFail(x, seen, targets))
     // Delegating wrappers: as fallible as what they wrap.

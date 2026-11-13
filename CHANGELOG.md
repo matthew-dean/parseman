@@ -5,6 +5,13 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## Unreleased
 
+- **A contained `attempt` over a separated list with a minimum takes back what came before
+  it when the list fails.** A `sepBy` with `min: 1` also fails on a separator that commits a
+  failure, and one with `min: 2` or more fails short of its minimum whatever its item, but the
+  analysis read either as failing only where its item could. In generated code
+  `node('N', choice(attempt(sequence(literal('a'), node('L', sepBy(optional(literal('x')),
+  literal(','), { min: 2 }))), { contain: true }), sequence(literal('a'), regex(/.*/))))` built
+  `N` with `a` twice on `ax`; it now builds it once.
 - **A contained `attempt` over an `optional`, `many` or list whose child commits a failure
   takes back what that child captured.** These pass a committed failure of their child on
   without restoring it, but the analysis said they never fail, so in generated code an

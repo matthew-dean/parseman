@@ -208,6 +208,15 @@ const REGISTRY = [
     ],
   },
   {
+    id: 'list-commit-rollback',
+    needs: 'repo',
+    file: 'test/unit/table-list-commit-rollback.test.ts',
+    legs: 'a contained attempt around a separated list with a minimum, through execRules, closure and precompiled emitted tableRules, vs the interpreted grammar: value, span and expected per input',
+    cleanExit: 0,
+    run: () => runCmd(['node_modules/vitest/vitest.mjs', 'run', '--reporter=dot', 'test/unit/table-list-commit-rollback.test.ts']),
+    plants: [{ defect: 'seplist-min-fallible-item-only', expect: 'moves' }],
+  },
+  {
     id: 'table-lowering-identity',
     needs: 'repo',
     file: 'test/unit/table-identity.test.ts (bench/table-lowering-identity.ts)',
