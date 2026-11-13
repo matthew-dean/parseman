@@ -19,6 +19,14 @@
     "calls": 166652,
     "branches": 818354
   },
+  "emitted/json/captureTrivia": {
+    "calls": 147773,
+    "branches": 753946
+  },
+  "emitted/cst/leaves": {
+    "calls": 58822,
+    "branches": 351666
+  },
   "closure/less/stylesheet": {
     "calls": 1124891,
     "branches": 5478309
@@ -38,6 +46,14 @@
   "closure/json/document": {
     "calls": 268887,
     "branches": 1218309
+  },
+  "closure/json/captureTrivia": {
+    "calls": 215958,
+    "branches": 1020895
+  },
+  "closure/cst/leaves": {
+    "calls": 107624,
+    "branches": 689733
   },
   "macro/css/ast/site.css": {
     "calls": 198200,

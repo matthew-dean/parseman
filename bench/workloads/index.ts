@@ -39,7 +39,7 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { compile, run, type Combinator } from '../../src/index.ts'
+import { compile, cstBuildHost, leaf, literal, node, oneOrMore, parser, regex, rules, run, sequence, sourceLeaf, trivia, type Combinator } from '../../src/index.ts'
 import { allTriviaParse, plainParse } from '../all-trivia.ts'
 import { Stylesheet as LessStylesheet } from './less.ts'
 import { Stylesheet as CssStylesheet } from '../../examples/css/parser.ts'
@@ -134,6 +134,46 @@ export function buildWorkloads(): Workload[] {
     { id: 'css/stylesheet', bytes: cssInput.length, make: withoutCapture(CssStylesheet, cssInput), capture: withCapture(CssStylesheet, cssInput), input: cssInput },
     { id: 'graphql/document', bytes: gqlInput.length, make: withoutCapture(graphqlDoc, gqlInput), input: gqlInput },
     { id: 'json/document', bytes: jsonInput.length, make: withoutCapture(jsonDoc, jsonInput), input: jsonInput },
+  ]
+}
+
+/**
+ * Capture shapes no corpus workload above reaches, counted by the call-count gate only
+ * (`bench/call-count-guard.ts`), not timed. Each is a plain parse, so the run installs the
+ * plain skip set:
+ *
+ * - `json/captureTrivia` — an AST parse with `captureTrivia: true` and no CST buffer ever
+ *   open, over pretty-printed JSON so every gap has trivia in it.
+ * - `cst/leaves` — a CST parse whose gaps fall mostly inside `leaf()` and `sourceLeaf()`,
+ *   which close the CST buffer for their span.
+ *
+ * Capture is on and no buffer is open at a gap in both. A skip that records a gap without
+ * asking whether a buffer is open pays a call per gap that does nothing.
+ */
+export function buildCaptureWorkloads(): Workload[] {
+  const jsonInput = JSON.stringify(JSON.parse(jsonPayload(24)), null, 2)
+  const leaves = rules({ trivia: trivia(regex(/[ \n]+/)) }, (g: { Doc: Combinator<unknown>; Item: Combinator<unknown> }) => ({
+    Doc: node('Doc', oneOrMore(g.Item)),
+    Item: node('Item', sequence(
+      literal('x'),
+      leaf(oneOrMore(literal('a')), (v: unknown) => v),
+      sourceLeaf(oneOrMore(literal('b')), (v: unknown) => v),
+      literal('y'),
+    )),
+  }))
+  const leafInput = Array.from({ length: 400 }, () => 'x a a a a a a a a b b b b b b b b y').join('\n')
+  return [
+    { id: 'json/captureTrivia', bytes: jsonInput.length, make: withoutCapture(parser({ captureTrivia: true }, jsonDoc), jsonInput), input: jsonInput },
+    {
+      id: 'cst/leaves',
+      bytes: leafInput.length,
+      make: () => {
+        const compiled = compile(leaves.Doc, undefined, { hostMode: 'cst' })
+        const build = cstBuildHost()
+        return { parse: () => compiled.parseWithContext(leafInput, { trackLines: false, build }, 0) }
+      },
+      input: leafInput,
+    },
   ]
 }
 

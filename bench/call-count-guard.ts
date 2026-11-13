@@ -23,8 +23,9 @@
  *
  * ## What it counts
  *
- *   emitted/<workload>   parseman's workloads (`bench/workloads/`) under runtime
- *                        `compile()`, which emits the whole grammar as code
+ *   emitted/<workload>   parseman's workloads (`bench/workloads/`, the corpus set and
+ *                        `buildCaptureWorkloads`) under runtime `compile()`, which
+ *                        emits the whole grammar as code
  *   closure/<workload>   the same, with `Function` refusing (a CSP), so the closure
  *                        assembler runs it
  *   macro/<dialect>/<variant>/<fixture>
@@ -122,7 +123,11 @@ export async function measureSide(dir: string, out: string, only?: (row: string)
 
   if (want('emitted/') || want('closure/')) {
     const bundle = await build({
-      stdin: { contents: "export { buildWorkloads } from './bench/workloads/index.ts'", resolveDir: dir, loader: 'ts' },
+      stdin: {
+        contents: "import { buildCaptureWorkloads, buildWorkloads as corpus } from './bench/workloads/index.ts'\nexport const buildWorkloads = () => [...corpus(), ...buildCaptureWorkloads()]",
+        resolveDir: dir,
+        loader: 'ts',
+      },
       bundle: true,
       format: 'esm',
       platform: 'node',
