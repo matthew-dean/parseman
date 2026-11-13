@@ -60,7 +60,7 @@ import {
 } from './program.ts'
 import { emitShapeMatch, scanShapeFromRegex } from './scan-shapes.ts'
 import {
-  CAP_OFF, CAP_ON, RAW_CAPTURE, RAW_OMIT, TRI_NONE, TRI_UNKNOWN,
+  CAP_OFF, CAP_ON, CAP_UNKNOWN, RAW_CAPTURE, RAW_OMIT, TRI_NONE, TRI_UNKNOWN,
   computeSiteLabels, gatedPassCollapse, passCollapse, reachableSites, scopeIsIdentity, triviaLeadRanges, TOP, type SiteLabel,
 } from './site-labels.ts'
 import {
@@ -180,14 +180,12 @@ export function emittedAbi(version: string, helperCount: number): string {
   return `${minor[0]}/${helperCount}`
 }
 
-/** Whether a CST buffer is open, as far as the label resolves it. */
-function sinkHere(l: Pick<SiteLabel, 'buf'>): string {
-  return l.buf ? 'true' : 'ctx._cstBuf!==undefined'
-}
+/** The test for an open CST buffer, printed where the label does not settle it (`l.buf` false). Read inline, not through a helper, so printing a site adds no call. */
+const OPEN_BUF = 'ctx._cstBuf!==undefined'
 
 /** `ctx.captureTrivia === true && (a sink is open)`, as far as the label resolves it. */
 function capturesHere(l: Pick<SiteLabel, 'cap' | 'buf'>): string {
-  const sink = sinkHere(l)
+  const sink = l.buf ? 'true' : OPEN_BUF
   return l.cap === CAP_OFF ? 'false' : l.cap === CAP_ON ? sink : `(ctx.captureTrivia===true&&${sink})`
 }
 
@@ -214,8 +212,7 @@ function scannedSkip(sc: string, l: Pick<SiteLabel, 'cap' | 'buf'>, record: bool
     // can turn it off for a node type. The buffer is tested here, once: with capture on
     // and no buffer open (outside every `node()`, or inside `leaf()` or `token()`) the
     // gap is not pushed, and with one open the push does not test it again.
-    const sink = sinkHere(l)
-    return `if(!(ctx.captureTrivia===true${sink === 'true' ? '' : `&&${sink}`}))return ${sc}(input,cur)
+    return `if(!(ctx.captureTrivia===true${l.buf ? '' : `&&${OPEN_BUF}`}))return ${sc}(input,cur)
 const e=${sc}(input,cur)
 if(e!==cur)pushOpenCstTriviaEntry(ctx,cur,e)
 return e`
@@ -226,6 +223,15 @@ return e`
 if(e!==cur)recordUnlabelledGap(ctx,cur,e)
 return e`
 }
+
+/**
+ * Every installed scanner's skip body, with the scanner bound to `s`, at
+ * `(record ? 6 : 0) + cap * 2 + (buf ? 1 : 0)` for a label's capture and buffer facts
+ * (`CAP_UNKNOWN`, `CAP_OFF`, `CAP_ON` are 0, 1, 2). Built once when the module loads,
+ * so printing a site's skip reads this table and makes no call.
+ */
+const SCANNED_SKIP: readonly string[] = [false, true].flatMap(record =>
+  [CAP_UNKNOWN, CAP_OFF, CAP_ON].flatMap(cap => [false, true].map(buf => scannedSkip('s', { cap, buf }, record))))
 
 /** `_skipTrivia`, the skip of a site whose trivia the label leaves to the installed scanner, in one skip set. */
 function skipTriviaDef(name: string, record: boolean): string {
@@ -1184,8 +1190,10 @@ return advanceTrivia(input,cur,ctx)}`)
     const sc = hoist('ts', `TRIVIASCAN[${ki}]`)
     // `_sk<N>` is the plain set's, and the name every call site uses; `_sk<N>r` is the
     // recording set's, which `_pfSkips` assigns over it for a run that records gaps.
-    skipDefs.push(`function ${nm}(input,cur,ctx){\n${scannedSkip(sc, l, false)}}`)
-    skipDefs.push(`function ${nm}r(input,cur,ctx){\n${scannedSkip(sc, l, true)}}`)
+    // Both bodies come from `SCANNED_SKIP`, the plain set's and then the recording set's.
+    const at = l.cap * 2 + (l.buf ? 1 : 0)
+    skipDefs.push(`function ${nm}(input,cur,ctx){const s=${sc}\n${SCANNED_SKIP[at]!}}`)
+    skipDefs.push(`function ${nm}r(input,cur,ctx){const s=${sc}\n${SCANNED_SKIP[6 + at]!}}`)
     plainSkips += `,${nm}`
     toRecording += `;${nm}=${nm}r`
     toPlain += `;${nm}=_skPlain[${skipCount++}]`
