@@ -305,14 +305,18 @@ export function rollbackCstCaptureAt(
   if (ctx._fields && fields !== undefined && ctx._fields.length !== fields) ctx._fields.length = fields
 }
 
-export function pushCstTriviaEntry(
+/**
+ * Push a gap's capture entry into the CST buffer. The caller has tested `ctx._cstBuf`
+ * open: every caller already makes that test to decide whether to push at all, so the
+ * entry does not make it again.
+ */
+export function pushOpenCstTriviaEntry(
   ctx: ParseContext,
   start: number,
   end: number,
   kindIndex?: number,
 ): void {
-  const b = ctx._cstBuf
-  if (!b) return
+  const b = ctx._cstBuf!
   const insertIdx = cstRawLen(ctx)
   const withKind = ctx.triviaKindLabels !== undefined && kindIndex !== undefined
   if (!b.tl) {

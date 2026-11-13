@@ -151,7 +151,7 @@ describe('a factory 0.61.9 printed, on this runtime', () => {
  * change here without a new minor is the misbind 0.61.9's factories show above.
  */
 describe('the helpers a printed factory binds', () => {
-  it('never include the retired skipTriviaScanned, whose slot is bound to undefined', () => {
+  it('never include the retired skipTriviaScanned or pushCstTriviaEntry, whose slots are bound to undefined', () => {
     const grammars = [
       rules({ trivia: trivia(regex(/[ \n]+/)) }, () => ({ Entry: node('Pair', sequence(literal('a'), optional(literal('b')))) })),
       rules({ trivia: classifiedTrivia({ ws: regex(/[ \n]+/), c: regex(/\/\*[^*]*\*\//) }) }, () => ({
@@ -161,13 +161,13 @@ describe('the helpers a printed factory binds', () => {
     for (const g of grammars) {
       const prog = encodeTable(g)
       for (const options of [STRICT, { hostCst: true, trackLines: true, tolerant: true, coverage: false, probe: true }]) {
-        expect(emitAssemblySource(resolveTable(prog), prog, options).source).not.toMatch(/\bskipTriviaScanned\b/)
+        expect(emitAssemblySource(resolveTable(prog), prog, options).source).not.toMatch(/\b(?:skipTriviaScanned|pushCstTriviaEntry)\b/)
       }
     }
   })
 
   it('have the parameter counts declared for this ABI', () => {
-    expect(EMITTED_ABI).toBe('0.62/61')
+    expect(EMITTED_ABI).toBe('0.62/62')
     const prog = encodeTable({ Entry: node('Pair', sequence(literal('a'), literal('b'))) })
     const em = emitAssemblySource(resolveTable(prog), prog, STRICT)
     const real = new Function(...EMITTED_PARAMS, em.source) as (...helpers: unknown[]) => unknown
@@ -199,7 +199,7 @@ describe('the helpers a printed factory binds', () => {
       demoteCapturedToRaw: 2,
       cstLeavesLen: 1,
       recordUnlabelledGap: 3,
-      pushCstTriviaEntry: 4,
+      pushOpenCstTriviaEntry: 4,
       needsDeferredTriviaCommit: 1,
       advanceTrivia: 3,
       refuseUnclassifiedRootScope: 1,

@@ -1,5 +1,5 @@
 import type { CharRange, Combinator, ParseContext } from '../types.ts'
-import { pushCstTriviaEntry } from './capture-buffer.ts'
+import { pushOpenCstTriviaEntry } from './capture-buffer.ts'
 import { growRootTriviaLog } from './trivia-entries.ts'
 import { startsFirstSet } from '../combinators/first-set.ts'
 import { createDetachedParseContext } from '../parse-context.ts'
@@ -288,7 +288,7 @@ export function recordTriviaChunks(ctx: ParseContext, chunks: readonly TriviaChu
     // whitespace run. No mask / no labels → capture everything, as before.
     if (ctx.captureTrivia && ctx._cstBuf !== undefined) {
       if (mask === undefined || kinds === undefined || (mask & (1 << ch.kindIndex)) !== 0) {
-        pushCstTriviaEntry(ctx, ch.start, ch.end, kinds ? ch.kindIndex : undefined)
+        pushOpenCstTriviaEntry(ctx, ch.start, ch.end, kinds ? ch.kindIndex : undefined)
       }
     }
   }

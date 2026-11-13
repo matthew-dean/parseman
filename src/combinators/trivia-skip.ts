@@ -8,7 +8,7 @@ import {
   visitLabeledTrivia,
 } from '../cst/trivia-kinds.ts'
 import {
-  pushCstTriviaEntry,
+  pushOpenCstTriviaEntry,
   rollbackCstCapture,
   rollbackCstCaptureAt,
   saveCstMark,
@@ -233,8 +233,10 @@ function scanWithLabels(input: string, cur: number, ctx: ParseContext): CompactT
           }
         }
         if (cstRows !== undefined) {
-          for (let i = 0; i < cstRows.length; i += 3) {
-            pushCstTriviaEntry(ctx, cstRows[i]!, cstRows[i + 1]!, cstRows[i + 2]!)
+          if (ctx._cstBuf !== undefined) {
+            for (let i = 0; i < cstRows.length; i += 3) {
+              pushOpenCstTriviaEntry(ctx, cstRows[i]!, cstRows[i + 1]!, cstRows[i + 2]!)
+            }
           }
         }
       },
@@ -349,7 +351,7 @@ export function scanTriviaCompact(input: string, cur: number, ctx: ParseContext)
         end,
         // A capture-only commit pushes the entry itself, as one call.
         commit: rootLog === undefined
-          ? () => pushCstTriviaEntry(ctx, cur, end)
+          ? () => { if (ctx._cstBuf !== undefined) pushOpenCstTriviaEntry(ctx, cur, end) }
           : () => recordUnlabelledGap(ctx, cur, end),
       }
     }
@@ -401,7 +403,7 @@ export function scanTriviaCompact(input: string, cur: number, ctx: ParseContext)
       end,
       // A capture-only commit pushes the entry itself, as one call.
       commit: rootLog === undefined
-        ? () => pushCstTriviaEntry(ctx, cur, end)
+        ? () => { if (ctx._cstBuf !== undefined) pushOpenCstTriviaEntry(ctx, cur, end) }
         : () => recordUnlabelledGap(ctx, cur, end),
     }
   }
@@ -436,7 +438,7 @@ export function recordUnlabelledGap(ctx: ParseContext, start: number, end: numbe
     b[n + 4] = rootLog.gapKind
     rootLog.length = n + 5
   }
-  if (ctx.captureTrivia === true && ctx._cstBuf !== undefined) pushCstTriviaEntry(ctx, start, end)
+  if (ctx.captureTrivia === true && ctx._cstBuf !== undefined) pushOpenCstTriviaEntry(ctx, start, end)
 }
 
 /** The object-shaped form of `scanTriviaCompact`. No engine calls it; the trivia-skip tests compare the two. */

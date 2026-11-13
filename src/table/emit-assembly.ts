@@ -151,8 +151,12 @@ export const EMITTED_PARAMS = [
   'GAP',
   // The one recording site for an unlabelled gap (`trivia-skip.ts`), 0.62/60.
   'recordUnlabelledGap',
-  // A gap's capture entry, written by the plain skip set, which never reads the root log, 0.62/61.
+  // `pushCstTriviaEntry` (0.62/61) is retired: every emitted push now has the buffer
+  // proven open and calls `pushOpenCstTriviaEntry`. Its slot stays, bound to `undefined`.
   'pushCstTriviaEntry',
+  // A gap's capture entry into a buffer the caller has tested open, written by the plain
+  // skip set, 0.62/62.
+  'pushOpenCstTriviaEntry',
   // SLOTS ONLY APPEND. A factory binds its helpers by position, so giving an existing
   // slot a new meaning binds an older factory's calls to the wrong helper while the
   // count still matches. A retired helper keeps its slot, bound to `undefined`, and a
@@ -161,7 +165,7 @@ export const EMITTED_PARAMS = [
 
 /**
  * What a printed factory's record says it binds: the parseman minor that printed it and
- * the helper count, as `"0.62/61"`. The count alone misses a helper whose parameters
+ * the helper count, as `"0.62/62"`. The count alone misses a helper whose parameters
  * changed, which binds every argument after the change to the wrong name and runs. A
  * helper's parameters change only in a minor (`docs/design/artifact-format.md`), so the
  * minor covers that. The runtime refuses any record whose `abi` is not this string
@@ -176,9 +180,14 @@ export function emittedAbi(version: string, helperCount: number): string {
   return `${minor[0]}/${helperCount}`
 }
 
+/** Whether a CST buffer is open, as far as the label resolves it. */
+function sinkHere(l: Pick<SiteLabel, 'buf'>): string {
+  return l.buf ? 'true' : 'ctx._cstBuf!==undefined'
+}
+
 /** `ctx.captureTrivia === true && (a sink is open)`, as far as the label resolves it. */
 function capturesHere(l: Pick<SiteLabel, 'cap' | 'buf'>): string {
-  const sink = l.buf ? 'true' : 'ctx._cstBuf!==undefined'
+  const sink = sinkHere(l)
   return l.cap === CAP_OFF ? 'false' : l.cap === CAP_ON ? sink : `(ctx.captureTrivia===true&&${sink})`
 }
 
@@ -202,12 +211,13 @@ function scannedSkip(sc: string, l: Pick<SiteLabel, 'cap' | 'buf'>, record: bool
     if (capturing === 'false') return `return ${sc}(input,cur)`
     // The test the closure's plain skip makes, before the scan. `ctx.captureTrivia` is
     // read even where the label says capture is on: a host's `_parsemanCaptureTrivia`
-    // can turn it off for a node type. The buffer is tested here and not left to
-    // `pushCstTriviaEntry`: with none open (an AST run, or inside `leaf()`), every gap
-    // would pay a call that returns at once.
-    return `if(!(ctx.captureTrivia===true${l.buf ? '' : '&&ctx._cstBuf!==undefined'}))return ${sc}(input,cur)
+    // can turn it off for a node type. The buffer is tested here, once: with capture on
+    // and no buffer open (outside every `node()`, or inside `leaf()` or `token()`) the
+    // gap is not pushed, and with one open the push does not test it again.
+    const sink = sinkHere(l)
+    return `if(!(ctx.captureTrivia===true${sink === 'true' ? '' : `&&${sink}`}))return ${sc}(input,cur)
 const e=${sc}(input,cur)
-if(e!==cur)pushCstTriviaEntry(ctx,cur,e)
+if(e!==cur)pushOpenCstTriviaEntry(ctx,cur,e)
 return e`
   }
   const quiet = capturing === 'true' ? ''

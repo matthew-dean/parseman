@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   pushCstChild,
   pushCstLeaf,
-  pushCstTriviaEntry,
+  pushOpenCstTriviaEntry,
   cstDeferredTriviaActive,
   beginCstNodeCapture,
   endCstNodeCapture,
@@ -44,7 +44,7 @@ describe('beginCstNodeCapture() / endCstNodeCapture()', () => {
     const buf: CstCaptureBuf = { noRaw: true, rawLen: 0 }
     const ctx: ParseContext = { trackLines: false, captureTrivia: true, _cstBuf: buf }
     pushCstChild(ctx, 'a', { expensive: 'raw-a' })
-    pushCstTriviaEntry(ctx, 1, 2)
+    pushOpenCstTriviaEntry(ctx, 1, 2)
     pushCstChild(ctx, 'b', { expensive: 'raw-b' })
 
     expect(buf).toMatchObject({ rawLen: 2, tl: [1, 2, 1] })
@@ -60,16 +60,14 @@ describe('beginCstNodeCapture() / endCstNodeCapture()', () => {
   })
 })
 
-describe('pushCstTriviaEntry() / cstDeferredTriviaActive()', () => {
-  it('records labeled trivia into the open buffer, and nowhere without one', () => {
+describe('pushOpenCstTriviaEntry() / cstDeferredTriviaActive()', () => {
+  it('records labeled trivia into the open buffer', () => {
     const buf: CstCaptureBuf = {}
     const ctx: ParseContext = { trackLines: false, triviaKindLabels: ['ws'], _cstBuf: buf }
-    pushCstTriviaEntry(ctx, 0, 2, 0)
+    pushOpenCstTriviaEntry(ctx, 0, 2, 0)
     expect(buf.tl).toEqual([0, 2, 0, 0])
-
-    const bare: ParseContext = { trackLines: false, triviaKindLabels: ['ws'] }
-    pushCstTriviaEntry(bare, 0, 2, 0)
-    expect(bare).toEqual({ trackLines: false, triviaKindLabels: ['ws'] })
+    pushOpenCstTriviaEntry(ctx, 3, 4)
+    expect(buf.tl).toEqual([0, 2, 0, 0, 3, 4, 0])
   })
 
   it('cstDeferredTriviaActive is true exactly when a capture buffer is open', () => {

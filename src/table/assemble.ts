@@ -81,7 +81,7 @@ import {
 } from '../combinators/trivia-skip.ts'
 import {
   cstCaptureActive, cstLeavesLen, cstTlLen,
-  demoteCapturedToRaw, pushCstChild, pushCstLeaf, pushCstTriviaEntry,
+  demoteCapturedToRaw, pushCstChild, pushCstLeaf, pushOpenCstTriviaEntry,
   type CstCaptureBuf,
   popCstChild,
 } from '../cst/capture-buffer.ts'
@@ -1018,7 +1018,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     if (s !== null) {
       if (!(ctx.captureTrivia === true && ctx._cstBuf !== undefined)) return s(input, cur)
       const end = s(input, cur)
-      if (end !== cur) pushCstTriviaEntry(ctx, cur, end)
+      if (end !== cur) pushOpenCstTriviaEntry(ctx, cur, end)
       return end
     }
     if (needsDeferredTriviaCommit(ctx)) return skipDeferredTrivia(input, cur, ctx)
@@ -4396,7 +4396,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         scalarRecognizers, t.lex, adjacencyHolds, t.lexPrograms,
         LEAD, triviaFieldCapture, skipDeferredTrivia,
         collapseEmpty, popCstChild,
-        PlainSpan, PlainLeaf, PlainNode, PlainField, PlainBuf, GAP, recordUnlabelledGap, pushCstTriviaEntry,
+        PlainSpan, PlainLeaf, PlainNode, PlainField, PlainBuf, GAP, recordUnlabelledGap, undefined, pushOpenCstTriviaEntry,
       )
       emitReached = new Set(pre.reached)
       if (emitted.ext !== undefined) HYBRID = emitted
@@ -4481,7 +4481,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         scalarRecognizers, t.lex, adjacencyHolds, t.lexPrograms,
         LEAD, triviaFieldCapture, skipDeferredTrivia,
         collapseEmpty, popCstChild,
-        PlainSpan, PlainLeaf, PlainNode, PlainField, PlainBuf, GAP, recordUnlabelledGap, pushCstTriviaEntry,
+        PlainSpan, PlainLeaf, PlainNode, PlainField, PlainBuf, GAP, recordUnlabelledGap, undefined, pushOpenCstTriviaEntry,
       )
       emitReached = em.reached
     } catch (e) {

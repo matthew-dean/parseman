@@ -11,7 +11,7 @@ import {
   advanceTrivia, commitTriviaScan, needsDeferredTriviaCommit, rollbackScannedTriviaAt, rollbackTrivia,
   rollbackTriviaAt, saveTriviaMark, scanTriviaCompact, recordUnlabelledGap, type FastTriviaScanner,
 } from '../combinators/trivia-skip.ts'
-import { pushCstTriviaEntry } from '../cst/capture-buffer.ts'
+import { pushOpenCstTriviaEntry } from '../cst/capture-buffer.ts'
 import {
   beginCstNodeCapture, cstCaptureActive, cstLeavesLen, cstRawLen, cstTlLen,
   demoteCapturedToRaw, endCstNodeCapture, pushCstChild, pushCstLeaf,
@@ -301,7 +301,7 @@ function makeDriver(
     if (s !== null) {
       if (!(ctx.captureTrivia === true && ctx._cstBuf !== undefined)) return s(input, cur)
       const end = s(input, cur)
-      if (end !== cur) pushCstTriviaEntry(ctx, cur, end)
+      if (end !== cur) pushOpenCstTriviaEntry(ctx, cur, end)
       return end
     }
     if (needsDeferredTriviaCommit(ctx)) {
