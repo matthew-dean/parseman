@@ -1008,13 +1008,36 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     return c < 128 && table[c] === 0
   }
 
-  function skipTrivia(input: string, cur: number, ctx: ParseContext): number {
+  function skipTriviaPlain(input: string, cur: number, ctx: ParseContext): number {
     const t = ctx.trivia
     if (t !== undefined && cannotStartTrivia(input, cur, t)) return cur
     const s = SCAN
-    // CAPTURE IS NOT A REASON TO LEAVE THE SCANNER — see `recordUnlabelledGap`, which
-    // also writes a root log's row. Nested under the one `s !== null` test, so a
-    // labelled trivia (no scanner) pays that test alone.
+    // CAPTURE IS NOT A REASON TO LEAVE THE SCANNER: a gap is one capture entry, written
+    // here. Nested under the one `s !== null` test, so a labelled trivia (no scanner)
+    // pays that test alone.
+    if (s !== null) {
+      if (!(ctx.captureTrivia === true && ctx._cstBuf !== undefined)) return s(input, cur)
+      const end = s(input, cur)
+      if (end !== cur) pushCstTriviaEntry(ctx, cur, end)
+      return end
+    }
+    if (needsDeferredTriviaCommit(ctx)) return skipDeferredTrivia(input, cur, ctx)
+    return advanceTrivia(input, cur, ctx)
+  }
+
+  /**
+   * The skip for a run whose root log takes UNLABELLED gaps (`rootTrivia: { select:
+   * 'all' }`, `gapKind >= 0`). Whether a run is one is known when it begins, so `begin`
+   * installs this or {@link skipTriviaPlain} as `skipTrivia` and no gap asks. It differs
+   * from the plain skip only in its scanner arm, which still reads `_rootTriviaLog`
+   * because a token clears the log for its own span. The rest is restated rather than
+   * reached through the plain skip: a call there is paid on every labelled gap of a
+   * recording parse.
+   */
+  function skipTriviaRecording(input: string, cur: number, ctx: ParseContext): number {
+    const t = ctx.trivia
+    if (t !== undefined && cannotStartTrivia(input, cur, t)) return cur
+    const s = SCAN
     if (s !== null) {
       if (ctx._rootTriviaLog === undefined && !(ctx.captureTrivia === true && ctx._cstBuf !== undefined)) {
         return s(input, cur)
@@ -1025,6 +1048,14 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     }
     if (needsDeferredTriviaCommit(ctx)) return skipDeferredTrivia(input, cur, ctx)
     return advanceTrivia(input, cur, ctx)
+  }
+
+  /** The skip every trivia site calls: {@link skipTriviaPlain} or {@link skipTriviaRecording}, chosen per run. */
+  let skipTrivia = skipTriviaPlain
+  let RECORDING = false
+  function installSkip(recording: boolean): void {
+    RECORDING = recording
+    skipTrivia = recording ? skipTriviaRecording : skipTriviaPlain
   }
 
   /**
@@ -1075,6 +1106,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     scan: FastTriviaScanner | null
     host: ParseContext['build']
     coverage: (id: string) => void
+    recording: boolean
     end: number
   }> = []
   let depth = 0
@@ -4550,8 +4582,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     // throws must not leave an outer parse suspended.
     const nextHost = ctx.build
     const nextCoverage = ctx._grammarCoverage ?? NO_COVERAGE
-    if (depth > 0) frames.push({ scan: SCAN, host: HOST, coverage: COV, end: EC.e })
+    const nextRecording = ctx._rootTriviaLog !== undefined && ctx._rootTriviaLog.gapKind >= 0
+    if (depth > 0) frames.push({ scan: SCAN, host: HOST, coverage: COV, recording: RECORDING, end: EC.e })
     depth++
+    if (nextRecording !== RECORDING) installSkip(nextRecording)
     SCAN = null
     HOST = nextHost
     COV = nextCoverage
@@ -4565,6 +4599,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     SCAN = prior.scan
     HOST = prior.host
     COV = prior.coverage
+    if (prior.recording !== RECORDING) installSkip(prior.recording)
     EC.e = prior.end
   }
 

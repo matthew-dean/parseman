@@ -11,6 +11,7 @@ import {
   advanceTrivia, commitTriviaScan, needsDeferredTriviaCommit, rollbackScannedTriviaAt, rollbackTrivia,
   rollbackTriviaAt, saveTriviaMark, scanTriviaCompact, recordUnlabelledGap, type FastTriviaScanner,
 } from '../combinators/trivia-skip.ts'
+import { pushCstTriviaEntry } from '../cst/capture-buffer.ts'
 import {
   beginCstNodeCapture, cstCaptureActive, cstLeavesLen, cstRawLen, cstTlLen,
   demoteCapturedToRaw, endCstNodeCapture, pushCstChild, pushCstLeaf,
@@ -227,6 +228,7 @@ function makeDriver(
     hostCst: boolean
     hostReadsChildren: boolean
     hostCaptureTrivia: ((type: string) => boolean) | undefined
+    recording: boolean
     end: number
   }
   // The ordinary path stays allocation-free. A frame exists only while a host
@@ -284,18 +286,41 @@ function makeDriver(
    *     scanner exists and `trackLines` is off — folded into `SCAN` already.
    *   - `scanTrivia` (deferred commit) runs it and returns a NO-OP commit when
    *     nothing is capturing trivia into a CST buffer.
-   *     `_rootTriviaLog` is deliberately absent from this test: root rows are
-   *     only ever written on the LABELLED scan path (see `OP_SCOPE`), and a
-   *     labelled trivia never gets a `SCAN` installed.
+   *     `_rootTriviaLog` is absent from this test: a labelled trivia's root rows
+   *     are written on the LABELLED scan path (see `OP_SCOPE`), which never has a
+   *     `SCAN` installed, and an unlabelled gap's row is `skipTriviaRecording`'s.
    *
    * Anything outside that falls through to the shared implementations unchanged,
    * so recording, labels and line tracking keep exactly one implementation.
    */
-  function skipTrivia(input: string, cur: number, ctx: ParseContext): number {
+  function skipTriviaPlain(input: string, cur: number, ctx: ParseContext): number {
     const s = SCAN
     // CAPTURE IS NOT A REASON TO LEAVE THE SCANNER. The recording an installed
-    // scanner's scope can owe is one `(cur, end)` row (and a root log's row), so it
-    // is written here rather than through a deferred `{ end, commit }` pair per term.
+    // scanner's scope can owe is one `(cur, end)` entry, so it is written here
+    // rather than through a deferred `{ end, commit }` pair per term.
+    if (s !== null) {
+      if (!(ctx.captureTrivia === true && ctx._cstBuf !== undefined)) return s(input, cur)
+      const end = s(input, cur)
+      if (end !== cur) pushCstTriviaEntry(ctx, cur, end)
+      return end
+    }
+    if (needsDeferredTriviaCommit(ctx)) {
+      return commitTriviaScan(scanTriviaCompact(input, cur, ctx))
+    }
+    return advanceTrivia(input, cur, ctx)
+  }
+
+  /**
+   * The skip for a run whose root log takes UNLABELLED gaps (`rootTrivia: { select:
+   * 'all' }`, `gapKind >= 0`). Whether a run is one is known when it begins, so `begin`
+   * installs this or {@link skipTriviaPlain} as `skipTrivia` and no gap asks. It differs
+   * from the plain skip only in its scanner arm, which still reads `_rootTriviaLog`
+   * because a token clears the log for its own span. The rest is restated rather than
+   * reached through the plain skip: a call there is paid on every labelled gap of a
+   * recording parse.
+   */
+  function skipTriviaRecording(input: string, cur: number, ctx: ParseContext): number {
+    const s = SCAN
     if (s !== null) {
       if (ctx._rootTriviaLog === undefined && !(ctx.captureTrivia === true && ctx._cstBuf !== undefined)) {
         return s(input, cur)
@@ -308,6 +333,14 @@ function makeDriver(
       return commitTriviaScan(scanTriviaCompact(input, cur, ctx))
     }
     return advanceTrivia(input, cur, ctx)
+  }
+
+  /** The skip every trivia site calls: {@link skipTriviaPlain} or {@link skipTriviaRecording}, chosen per run. */
+  let skipTrivia = skipTriviaPlain
+  let RECORDING = false
+  function installSkip(recording: boolean): void {
+    RECORDING = recording
+    skipTrivia = recording ? skipTriviaRecording : skipTriviaPlain
   }
 
   function lead(input: string, pos: number): number {
@@ -1673,15 +1706,18 @@ function makeDriver(
     const nextHostReadsChildren = host?._parsemanReadsChildren !== false
       || host?._parsemanCstCollapse !== undefined
     const nextHostCaptureTrivia = host?._parsemanCaptureTrivia
+    const nextRecording = ctx._rootTriviaLog !== undefined && ctx._rootTriviaLog.gapKind >= 0
     if (depth > 0) {
       frames.push({
         scan: SCAN, fast: FAST,
         hostCst: HOSTCST, hostReadsChildren: HOSTREADSCHILDREN,
         hostCaptureTrivia: HOSTCAPTURETRIVIA,
+        recording: RECORDING,
         end: EC.e,
       })
     }
     depth++
+    if (nextRecording !== RECORDING) installSkip(nextRecording)
     FAST = nextFast
     SCAN = null
     HOSTCST = nextHostCst
@@ -1699,6 +1735,7 @@ function makeDriver(
     HOSTCST = prior.hostCst
     HOSTREADSCHILDREN = prior.hostReadsChildren
     HOSTCAPTURETRIVIA = prior.hostCaptureTrivia
+    if (prior.recording !== RECORDING) installSkip(prior.recording)
     EC.e = prior.end
   }
 
