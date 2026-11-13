@@ -75,7 +75,7 @@ describe('call-count gate', () => {
   it('counts the same rows twice from separate processes', async () => {
     clean = await measureSide(ROOT, path.join(TMP, 'clean-a'), workloadsOnly)
     const again = await measureSide(ROOT, path.join(TMP, 'clean-b'), workloadsOnly)
-    expect(Object.keys(clean).length).toBe(14)
+    expect(Object.keys(clean).length).toBe(16)
     expect(again).toEqual(clean)
     expect(callCountFailures(clean, again, null, 'clean')).toEqual([])
     expect(baselineFailures(clean, again)).toEqual([])
@@ -85,7 +85,7 @@ describe('call-count gate', () => {
     const dir = plantedSide('extra-call', ...atEntries('      ;(() => 0)()'))
     const planted = await measureSide(dir, path.join(TMP, 'extra-call-out'), workloadsOnly)
     const failures = callCountFailures(clean, planted, null, 'clean')
-    expect(failures.filter(f => f.includes(' calls: '))).toHaveLength(14)
+    expect(failures.filter(f => f.includes(' calls: '))).toHaveLength(16)
     expect(failures.every(f => f.includes('(+1 per parse)'))).toBe(true)
     expect(baselineFailures(clean, planted).some(f => f.includes('more work per parse'))).toBe(true)
   }, 180_000)
@@ -95,7 +95,7 @@ describe('call-count gate', () => {
     const planted = await measureSide(dir, path.join(TMP, 'extra-check-out'), workloadsOnly)
     const failures = callCountFailures(clean, planted, null, 'clean')
     expect(failures.some(f => f.includes(' calls: '))).toBe(false)
-    expect(failures.filter(f => f.includes(' branches: '))).toHaveLength(14)
+    expect(failures.filter(f => f.includes(' branches: '))).toHaveLength(16)
   }, 180_000)
 
   it('keeps a baseline row for the AST path each dialect ships', () => {

@@ -27,6 +27,10 @@
     "calls": 58822,
     "branches": 350067
   },
+  "emitted/cst/mixed": {
+    "calls": 19814,
+    "branches": 80129
+  },
   "closure/less/stylesheet": {
     "calls": 1124891,
     "branches": 5467435
@@ -54,6 +58,10 @@
   "closure/cst/leaves": {
     "calls": 107624,
     "branches": 688134
+  },
+  "closure/cst/mixed": {
+    "calls": 31411,
+    "branches": 130750
   },
   "macro/css/ast/site.css": {
     "calls": 198200,
