@@ -52,6 +52,15 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   faster, except on three expected-set bench cases, which are 1.5% to 2.7% slower.
   `buildRootTriviaIndex(rows, select)` takes any array-like of numbers, so rows kept as a
   plain array still build an index.
+- **A plain parse of a small grammar can be up to 5% slower than 0.61.11 on CI.** The
+  cross-process A/B on GitHub's runners (Node 26) measured `rollback/none` +4.4%,
+  `expected/none` +3.4%, `expected/narrow` +2.9%, `expected/wide` +2.3% and
+  `json/document` +1.5%, while `rollback/medium` and `rollback/dense` are 4% faster and the
+  Less, CSS and GraphQL workloads are level. On a quiet x64 machine (Node 26) the same cases
+  are 0.5% to 1.6% slower, below the gate's significance bar. The generated code for these
+  grammars does strictly less work than 0.61.11's, and calls and branches are at or below
+  it on every workload; profiles show V8 inlining the leaner skip functions differently,
+  which moves `cstRawLen` out of line. Accepted for this release.
 - **Breaking: `ParseContext` no longer has `_cstTriviaLog` or `_cstRawChildren`.** No engine
   read them back. A node's trivia reaches its builder as the fifth argument (`triviaLog`), and
   raw children come from the node's own capture. Every engine stops saving, clearing and
