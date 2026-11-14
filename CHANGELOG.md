@@ -5,6 +5,11 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## Unreleased
 
+- **The cross-process floor in `bench/xproc-gate.json` is back to 1%.** `floorPct: 7 → 1`.
+  0.62.0 is published, so the gate now measures against it.
+
+## 0.62.0 — 2026-11-14
+
 - **The cross-process floor in `bench/xproc-gate.json` is 7%, not 1%, for 0.62.0 only.**
   `floorPct: 1 → 7` releases the small-grammar slowdown accepted in this release (see
   "A plain parse of a small grammar can be up to 5% slower"); `rollback/sparse` was also
@@ -12,8 +17,6 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   +5.5% median and up to +5.4% mean, so 7 keeps a re-run unlikely. The A/A false-fail rate
   and power are not re-derived for 7%, which only loosens the gate. The floor returns to 1%
   in the first change after 0.62.0 is published, when the gate measures against 0.62.0.
-
-## 0.62.0 — 2026-11-11
 
 - **Breaking: printed parsers must be printed again with 0.62.0.** The emitted helpers
   `rollbackTriviaAt` and `rollbackScannedTriviaAt` take fewer arguments. A printed factory
@@ -29,6 +32,7 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   and `recordUnlabelledGap` and `pushOpenCstTriviaEntry` are new slots at the end, with one
   retired slot between them bound to `undefined` (`docs/design/artifact-format.md`). A 0.61.x runtime refuses a 0.62.0 record because
   it carries no `arity`.
+
 - **Breaking: the document's trivia log moves from `ParseContext._triviaLog` to
   `run(parser, input, { rootTrivia: { select: 'all' } })`.** `RunResult.rootTrivia.rows` holds
   five numbers per row, `gapStart, gapEnd, start, end, kind`, where `kind` indexes
@@ -50,6 +54,7 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   On the CSS example, the five bench workloads and the Jess corpora in all four dialects,
   the rows give the same spans as 0.61.9's `_triviaLog`, and in Jess the same labels except
   two block comments in a nested CSS scope, which the old log named `whitespace`.
+
 - **Breaking: `RunResult.rootTrivia.rows` is an `Int32Array`, not a `number[]`.** The layout
   and indexing don't change: five numbers per row, read as `rows[5 * i + k]`, and `length`
   covers exactly the rows the parse kept. The array is a view of the log the parse wrote, so
@@ -62,6 +67,7 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   faster, except on three expected-set bench cases, which are 1.5% to 2.7% slower.
   `buildRootTriviaIndex(rows, select)` takes any array-like of numbers, so rows kept as a
   plain array still build an index.
+
 - **A plain parse of a small grammar can be up to 5% slower than 0.61.11 on CI.** The
   cross-process A/B on GitHub's runners (Node 26) measured `rollback/none` +4.4%,
   `expected/none` +3.4%, `expected/narrow` +2.9%, `expected/wide` +2.3% and
@@ -71,6 +77,7 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   grammars does strictly less work than 0.61.11's, and calls and branches are at or below
   it on every workload; profiles show V8 inlining the leaner skip functions differently,
   which moves `cstRawLen` out of line. Accepted for this release.
+
 - **Breaking: `ParseContext` no longer has `_cstTriviaLog` or `_cstRawChildren`.** No engine
   read them back. A node's trivia reaches its builder as the fifth argument (`triviaLog`), and
   raw children come from the node's own capture. Every engine stops saving, clearing and
@@ -80,6 +87,7 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   Against 0.61.9, branch tests per parse fall 1.8% to 10.8% on every call-count row (Less
   `app.less` AST −8.46%, CSS `site.css` AST −10.81%) and calls by up to 3.7% (Less AST −3.74%);
   no row rises, on the first parse or after warmup.
+
 - **A contained `attempt` over a separated list with a minimum takes back what came before
   it when the list fails.** A `sepBy` with `min: 1` also fails on a separator that commits a
   failure, and one with `min: 2` or more fails short of its minimum whatever its item, but the
@@ -87,6 +95,7 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   `node('N', choice(attempt(sequence(literal('a'), node('L', sepBy(optional(literal('x')),
   literal(','), { min: 2 }))), { contain: true }), sequence(literal('a'), regex(/.*/))))` built
   `N` with `a` twice on `ax`; it now builds it once.
+
 - **A contained `attempt` over an `optional`, `many` or list whose child commits a failure
   takes back what that child captured.** These pass a committed failure of their child on
   without restoring it, but the analysis said they never fail, so in generated code an
@@ -97,6 +106,7 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   `-foo` (#303). In a merged rule map, the rollback analysis now reads every reference to an
   overridden rule, nested ones included, as the override, as the generated code does, not as
   the base piece's rule.
+
 - **The table encoder reads a rule reference one way everywhere.** Emission, first sets and the
   rollback analysis read what the encoder recorded for each reference when it walked the
   grammar, and a reference it did not record but could resolve stops the compile with an
@@ -107,12 +117,18 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   In a merged rule map whose override replaces a base rule's `node(..., build)` with a
   structural node, the compiled artifact no longer reports a dropped positioned-CST branch it
   never had, so the host-mode check no longer refuses a CST host for it.
+
+## 0.61.11 — 2026-11-12
+
 - **A failed choice inside another choice, an `optional` or an `attempt` no longer leaves its
   arm's captures in `compile()` and generated code.** A choice whose openers are disjoint runs
   its one arm with nothing of its own to restore, and the analysis told the enclosing site there
   was nothing to restore either, so
   `node('N', choice(choice(sequence(literal('a'), literal('b')), literal('x')), literal('a')))`
   on `a` built `N` with `a` twice.
+
+## 0.61.10 — 2026-11-11
+
 - **A sequence that opens with `attempt(x)` or `field(name, x)` no longer expects what follows
   it.** The expected set read either as able to match empty, so an arm a first-character gate
   declined named a token that could only come after `x`.
@@ -121,19 +137,27 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   as `(?=a)` or `\b`, wrapped or not. It reads the regex with its flags, so `/\u{0}/u` and
   `/[a--b]/v` are required characters, and `/[\q{}a]/v`, whose empty string member matches
   nothing, is not. First-character gates and choice dispatch don't change.
+
 - **A named backreference such as `\k<x>` can match empty.** The regex reader took the `<x>`
   after `\k` as required characters, so `/(?<x>a)?\k<x>/` read as always consuming. Expected
   sets stopped at it, and the commitment, hold-gap and assembly checks treated it as consuming
   when it could match nothing. Only a group name goes with `\k`, so in `/a\k<x|b>/`, where `\k` is
   a literal `k`, the `|` still splits the pattern.
+
+## 0.61.9 — 2026-11-06
+
 - **A list with a minimum above one takes back its items when it fails in a choice.** Generated
   code and `compile()` treated `sepBy(x, sep, { min: 2 })` and `many(x, { min: 2 })` as leaving
   nothing behind on failure, so a later arm's tree also held the items the list kept.
   `node('N', choice(sepBy(literal('a'), literal(','), { min: 2 }), literal('a')))` on `"a"` now
   gives `[a]`, not `[a, a]`. A choice with such a list now marks and restores around that arm.
+
+## 0.61.8 — 2026-11-06
+
 - **`run()` no longer keeps a dispatch selector's leaf after `otherwise(x, { commit: false })`
   fails.** The closure engine read every fallback as committing, so it skipped the rollback
   and the next arm of an enclosing choice built a tree with the leaf twice.
+
 - **`expect()` is read as what it is: it matches empty, and it runs on any character.** It
   recovers at zero width when its child fails, but nullability and first sets read it as its
   child. So a repeat could keep an error from an item it gave back, a first-character gate could
@@ -143,17 +167,34 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   there, and where it follows a lookahead under trivia, which can put a held gap back (+5.97%
   calls on the closure engine). One that only uses it after a term that must consume compiles to
   the same table.
+
+## 0.61.7 — 2026-11-06
+
+- **`expect()` is read as what it is: it matches empty, and it runs on any character.** It
+  recovers at zero width when its child fails, but nullability and first sets read it as its
+  child. So a repeat could keep an error from an item it gave back, a first-character gate could
+  skip an `expect()` that should have reported, and a gap held for one stayed consumed after it
+  recovered. All engines now agree. Resync sentinels still read through it. A grammar only pays
+  where `expect()` opens a repeat item, a choice arm or a sequence, which lose a gate there; one
+  that only uses it after a term that must consume compiles to the same table.
+
+## 0.61.6 — 2026-11-06
+
 - **`assemblyProfile` picks sites that sit next to each other.** A call between generated
   code and the closure engine goes through a wrapper, so ranking by calls per byte alone left
   islands of generated code and could make more calls per parse than the static ranking. A
   site's worth now counts the crossings it removes. A build without a profile picks the same
   sites as before, except that a `collapse` level the emitter can't decide at no longer leaves
   its wrapper out of the estimate.
+
 - **A macro build prints functions that read the same once.** `optional(x)` written in 25
   places was 25 functions. Which sites are generated doesn't change, and neither do the calls
   a parse makes.
+
 - **Docs: `triviaLog` entries have four numbers when the trivia has kind labels.** The guide
   documented only `[start, end, insertIdx]`. With labels each entry also carries `kind`.
+
+## 0.61.5 — 2026-11-05
 
 - **A `collapse` ladder level opens its frame only where its tail starts.** A
   `node(type, sequence(corner, tail), build, { collapse: true })` whose corner always
@@ -165,15 +206,22 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   probe and the reference driver run the node as written. Tables gain two opcodes,
   `OP_CONT` and `OP_SEED`. See `docs/design/internals.md`, `docs/guide/ast.md` and
   `test/unit/table-late-frame.test.ts`.
+
+## 0.61.4 — 2026-11-05
+
 - **`assemblyProfile.scope` lets a grammar whose reducers or gates read imported helpers
   use a measured ranking.** Callback source runs at build time with no module around it,
   so those grammars couldn't profile. Pass the helpers, and the corpus run sees them for
   that run only.
   A name that's already a global fails the build.
+
 - **A build fails when grammars were profiled and none has the `entry` rule.** A mistyped
   rule name used to give the static ranking with no warning, so the output looked profiled
   and wasn't. A direct `transformMacro` caller gets `assemblyProfile: 'no-entry'` on the
   result instead, and has to read it.
+
+## 0.61.3 — 2026-11-05
+
 - **`assemblyBudget` is now a share of a module's code, not counting comments or
   whitespace, and a larger budget never loses a site.** The budget was a share of the
   module's raw text, so a longer comment bought more generated code: on Jess's SCSS
@@ -187,6 +235,9 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   The default is `0.5` on the new base. Comments are about 40% of Jess's grammars, so an
   explicit budget needs raising to buy what it did: a grammar that passed `1` and is half
   comments passes about `2.7`.
+
+## 0.61.2 — 2026-11-05
+
 - **An `assemblyProfile` that cannot run fails the build, naming the file and the reducer
   or gate that threw.** So does a corpus with nothing in it, and a file that parses only
   by recovering. It used to swallow the throw, and when no file parsed it warned
@@ -194,6 +245,9 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   silently ship a different one. On Jess's Less and SCSS grammars the gates read imported
   helpers, which aren't in scope at build time, so a profile on those grammars now fails
   instead of being ignored.
+
+## 0.61.1 — 2026-11-05
+
 - **`backtrackProbe` in `parseman/diagnostics` counts rewinds among matched terminals.**
   Per parse it reports how often one started behind the one before it and how many of
   its bytes had already matched, plus the lookahead `not()`/`peek()` and regex lookarounds
