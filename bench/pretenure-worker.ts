@@ -8,7 +8,8 @@ import { buildWorkloads } from './workloads/index.ts'
 import { DENSITY_CASES, caseGrammar, caseInput } from './grammar-density/grammar.ts'
 import { SpanKeepingNode } from './grammar-density/tree-node.js'
 import { Stylesheet } from '../examples/css/parser.ts'
-import { compile, cstBuildHost, literal, many, node, regex, rules, sequence, trivia, type Combinator } from '../src/index.ts'
+import { compile, cstBuildHost, literal, many, node, regex, rules, run, sequence, trivia, type Combinator } from '../src/index.ts'
+import { allTriviaParse } from './all-trivia.ts'
 
 if (process.execArgv.length > 0 || process.env['NODE_OPTIONS'] !== undefined) {
   console.error('pretenure-worker: refusing to count under a changed runtime')
@@ -30,7 +31,7 @@ const density = DENSITY_CASES.find(c => c.id === id)
 if (density !== undefined) {
   const compiled = compile(caseGrammar(density))
   input = planted(caseInput(density, 200))
-  parse = () => compiled.parseWithContext(input, { trackLines: false, _triviaLog: [] }, 0)
+  parse = allTriviaParse(run, compiled, input)
 } else if (id === 'css/cst') {
   // A CST host: the tree is `cstBuildHost()`'s nodes over parseman's leaves and spans.
   input = planted(buildWorkloads().find(w => w.id === 'css/stylesheet')!.input)
@@ -64,7 +65,7 @@ if (density !== undefined) {
   if (id === 'graphql/document') expectType = 'OperationDefinition'
   if (plantTruncated) {
     const compiled = compile(Stylesheet)
-    parse = () => compiled.parseWithContext(input, { trackLines: false, _triviaLog: [] }, 0)
+    parse = allTriviaParse(run, compiled, input)
   } else {
     const built = w.make()
     parse = () => built.parse()

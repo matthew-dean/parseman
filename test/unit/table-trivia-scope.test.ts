@@ -30,7 +30,7 @@ import { readers, seeded } from '../helpers/table-readers.ts'
 import { cfgKey, tableRules } from '../../src/table/assemble.ts'
 import { resolveTable, type PrecompiledAssembly, type TableProgram } from '../../src/table/program.ts'
 import { defaultAssemblyCfgs } from '../../src/table/emit.ts'
-import { emitAssemblySource, EMITTED_PARAMS } from '../../src/table/emit-assembly.ts'
+import { emitAssemblySource, EMITTED_ABI, EMITTED_PARAMS } from '../../src/table/emit-assembly.ts'
 
 type Comb = Combinator<unknown>
 
@@ -406,7 +406,7 @@ function probeEmitted(prog: TableProgram): Record<string, unknown> {
     const out = emitAssemblySource(resolved, prog, cfg, [])
     // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
     const factory = new Function(...EMITTED_PARAMS, out.source) as PrecompiledAssembly['factory']
-    return { key: cfgKey(cfg), arity: EMITTED_PARAMS.length, factory, plan: out.plan, reached: [...out.reached] }
+    return { key: cfgKey(cfg), abi: EMITTED_ABI, factory, plan: out.plan, reached: [...out.reached] }
   })
   return tableRules({ ...prog, asm })
 }

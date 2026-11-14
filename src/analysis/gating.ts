@@ -25,6 +25,9 @@
  * on the fused artifact, which really runs and whose author really can fix it.
  */
 import type { Combinator, FirstSet, ParserDef } from '../types.ts'
+import { childrenOf, edgesOf } from './children.ts'
+
+export { childrenOf }
 import { firstSetOf, intersects, matchesEmpty, type RefResolver } from '../combinators/first-set.ts'
 
 /** Why an arm's (deep) first-set is `any` / over-broad — the poison source. */
@@ -202,50 +205,6 @@ export type GatingReport = {
 }
 
 // ── grammar walk ─────────────────────────────────────────────────────────────
-
-/**
- * Ordered structural children per def tag. Explicit rather than "every key that
- * holds a Combinator" because a SLOT's position is what near-duplicate detection
- * varies — a stable, meaningful order is load-bearing, not cosmetic.
- *
- * Lives here, in the module every analysis pass already imports, because
- * `./choice-cost.ts` and `./duplication.ts` each carried a byte-identical copy.
- */
-export function childrenOf(d: ParserDef): readonly Combinator<unknown>[] {
-  switch (d.tag) {
-    case 'sequence': case 'choice': return d.parsers
-    case 'dispatch': return [
-      d.selector,
-      ...d.cases.map(c => c.parser),
-      ...(d.matchers ? d.matchers.map(c => c.parser) : []),
-      ...(d.otherwise === undefined ? [] : [d.otherwise]),
-    ]
-    case 'sepBy': return [d.parser, d.separator]
-    case 'recover': return [d.parser, d.sentinel]
-    case 'scanTo': return [
-      d.sentinel,
-      ...d.skip,
-      ...(d.recoverAt === undefined ? [] : [d.recoverAt]),
-      ...(d.stopAt === undefined ? [] : [d.stopAt]),
-    ]
-    case 'grammar': return d.triviaParser ? [d.parser, d.triviaParser] : [d.parser]
-    case 'routed': return d.fallback ? [d.fallback] : []
-    case 'lines': return [d.prefix, d.body, ...(d.first === undefined ? [] : [d.first]), ...(d.lazy === undefined ? [] : [d.lazy])]
-    case 'columns': return []
-    // A `lazy` is a REFERENCE, not a subtree. Descending through it would make
-    // every rule's walk cover the whole reachable grammar — site paths become
-    // nonsense, and a structural hash includes half the grammar. Treated as a
-    // leaf, keyed by the rule name it refers to, which is also the right
-    // semantics: two productions referencing `g.Ident` really do fill that slot
-    // the same way.
-    case 'lazy': case 'literal': case 'regex': case 'keywords': case 'guard': case 'adjacency': case 'unknown':
-      return []
-    default: {
-      const rec = d as unknown as { parser?: Combinator<unknown> }
-      return rec.parser ? [rec.parser] : []
-    }
-  }
-}
 
 // ── first-set helpers (local, to avoid importing codegen and creating a cycle) ──
 
@@ -609,14 +568,13 @@ export function analyzeGatingRules(
     // one place: choice-cost, duplication and dependency analysis use the same
     // authored edge order, including matcher arms, grammar trivia, and routed
     // fallbacks.
-    const kids = [...childrenOf(d)]
+    const kids = edgesOf(p)
     // Deliberately NOT `resolveRef`-aware: the WALK must visit the same choices with
     // and without a resolver, so a choice's `id` (per-rule occurrence order) is the
     // same in both passes — that identity is what lets the fuse-time diagnostic report
     // exactly the choices its authoring site deferred. Nothing is lost: every rule of
     // the fused map is its own seed below, so a rule reached only through a hole is
     // still analyzed, under its own name.
-    if (d.tag === 'lazy') { try { kids.push((d as { thunk(): Combinator<unknown> }).thunk()) } catch { /* unresolved */ } }
     for (const k of kids) visit(k, rule)
   }
 

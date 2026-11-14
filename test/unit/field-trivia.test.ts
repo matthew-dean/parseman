@@ -7,7 +7,7 @@ import {
 // table first, which would make the interpreter leg a second table leg.
 import { run } from '../../src/functional/run.ts'
 import { tableRules } from '../../src/table/assemble.ts'
-import { EMITTED_PARAMS, emitAssemblySource } from '../../src/table/emit-assembly.ts'
+import { EMITTED_ABI, EMITTED_PARAMS, emitAssemblySource } from '../../src/table/emit-assembly.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { execRules } from '../../src/table/exec.ts'
 import { resolveTable, type PrecompiledAssembly, type TableProgram } from '../../src/table/program.ts'
@@ -40,7 +40,7 @@ const commaWithTrivia = () => field('sep', literal(','), { leadingTrivia: true, 
 function precompiled(prog: TableProgram): TableProgram {
   const emitted = emitAssemblySource(resolveTable(prog), prog, STRICT)
   const factory = new Function(...EMITTED_PARAMS, `'use strict';\n${emitted.source}`) as PrecompiledAssembly['factory']
-  return { ...prog, asm: [{ key: 0, arity: EMITTED_PARAMS.length, factory, plan: emitted.plan, reached: [...emitted.reached] }] }
+  return { ...prog, asm: [{ key: 0, abi: EMITTED_ABI, factory, plan: emitted.plan, reached: [...emitted.reached] }] }
 }
 
 function engines(entry: Combinator<unknown>): Record<string, Entry> {

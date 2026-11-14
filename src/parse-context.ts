@@ -14,9 +14,9 @@ import type { ParseContext } from './types.ts'
  *     mask, tolerant, instrumentation) — up to 2^6 distinct hidden classes for
  *     `ctx` across configurations, all landing on the same ICs.
  *   - Fields that appear only inside a spread are ABSENT from the map on the
- *     paths that don't take the branch. That is why `ctx._triviaLog = undefined`
+ *     paths that don't take the branch. That is why `ctx._rootTriviaLog = undefined`
  *     is not free there: it is a property ADD (a map transition), not a store.
- *     And it is why `delete ctx._triviaLog` is expensive on the paths where the
+ *     And it is why `delete ctx._rootTriviaLog` is expensive on the paths where the
  *     field IS present: a transition to dictionary mode.
  *
  * Declaring every field unconditionally — `undefined` when unset — collapses
@@ -62,14 +62,11 @@ export function createParseContext(): ParseContext {
     _probe: undefined,
     _cstChildren: undefined,
     _cstLeaves: undefined,
-    _cstRawChildren: undefined,
-    _triviaLog: undefined,
     _rootTriviaLog: undefined,
     _rootTriviaKindIndex: undefined,
     _rootTriviaStrictScopes: undefined,
     _rootTriviaCapture: undefined,
     _gap: undefined,
-    _cstTriviaLog: undefined,
     _fields: undefined,
     _cstBuf: undefined,
     _routed: undefined,

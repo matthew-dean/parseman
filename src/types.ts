@@ -1,5 +1,7 @@
 import type { LineView } from './combinators/lines.ts'
 import type { LabeledTriviaSpec } from './cst/trivia-kinds.ts'
+import type { COMPILED_ENTRY } from './cst/host-mode.ts'
+import type { RootTriviaLog } from './cst/trivia-entries.ts'
 
 export type Span = {
   start: number
@@ -266,7 +268,7 @@ export type ParseContext = {
   triviaKindLabels?: readonly string[] | undefined
   /**
    * When true (and a CST node is collecting children), trivia consumed between
-   * terms is recorded into _cstRawChildren as separate CSTTrivia tokens — one
+   * terms is recorded into the node's trivia log as separate entries — one
    * per maximal sub-match of the trivia parser (e.g. a whitespace run or a
    * comment). When false/unset, trivia is skipped silently. Default: skip.
    */
@@ -275,8 +277,7 @@ export type ParseContext = {
    * Kind-filter for PER-NODE CST trivia capture (`triviaLog` handed to a node's
    * builder). A bitmask over the active `triviaKindLabels` indices: bit `k` set
    * means "record kind `k`"; `undefined` means record every kind (default). Only
-   * the per-node CST log is filtered — the global `_triviaLog` stays complete, so
-   * a downstream trivia map is unaffected. Lets a host that only consumes, say,
+   * the per-node CST log is filtered — the root trivia table is unaffected. Lets a host that only consumes, say,
    * comments enable per-node capture WITHOUT paying to log every whitespace run.
    * Requires labeled trivia (indices align with `triviaKindLabels`); with no
    * labels the mask can't apply and all trivia is captured. Build a mask with
@@ -364,28 +365,16 @@ export type ParseContext = {
    */
   _cstLeaves?: unknown[] | undefined
   /**
-   * Framework-internal: collector for ALL children including trivia.
-   * Set alongside _cstChildren/_cstLeaves. Receives CSTLeaf + CSTNode entries
-   * (same as _cstChildren) PLUS CSTTrivia entries for trivia consumed between terms.
-   * Passed to buildNode() as rawChildren so grammars can inspect trivia.
-   */
-  _cstRawChildren?: unknown[] | undefined
-  /**
-   * Framework-internal: flat trivia log. When set, scanTrivia records each
-   * consumed trivia entry as two numbers [start, end] appended to this
-   * array instead of (or in addition to) rawChildren capture. Zero object
-   * allocations — just number pushes.
-   */
-  _triviaLog?: number[] | undefined
-  /**
    * Framework-internal: selected root-trivia rows. Each row is
-   * `[gapStart, gapEnd, markerStart, markerEnd, kindIndex]`. Unlike
-   * `_triviaLog`, this never records an ordinary whitespace chunk: a row exists
-   * only for a selected labeled trivia kind, while its first pair preserves the
-   * complete committed gap that owns that marker. The fixed-width numeric log
-   * keeps compiler rollback as cheap as the legacy root sink.
+   * `[gapStart, gapEnd, markerStart, markerEnd, kindIndex]`, where `kindIndex`
+   * indexes the run's `select`. A row exists only for a selected kind, and its first
+   * pair is the complete committed gap that owns the marker. With a label list, an
+   * unselected chunk (ordinary whitespace, say) records nothing. With `select: 'all'`
+   * every labelled chunk is selected, and a gap of unlabelled trivia is one row under
+   * `''` whose two pairs are both the gap. The rows live in a `RootTriviaLog`
+   * (`cst/trivia-entries.ts`), whose `length` is the cursor, so a rollback sets it.
    */
-  _rootTriviaLog?: number[] | undefined
+  _rootTriviaLog?: RootTriviaLog | undefined
   /** Grammar-label → selected-root-table index. Each trivia scope maps its local
    * label through this once-built table, so composed grammars may use different
    * label orders without a per-chunk linear selected-label search. */
@@ -404,15 +393,6 @@ export type ParseContext = {
    * with the parse.
    */
   _gap?: TriviaGapMemo | undefined
-  /**
-   * Framework-internal: flat per-node trivia log for CST capture mode.
-   * When set alongside _cstRawChildren, each trivia entry is recorded as three
-   * numbers [start, end, insertIdx] appended here (one entry = three numbers) instead of allocating a
-   * CSTTrivia object. `insertIdx` is the _cstRawChildren.length at the moment
-   * the trivia was consumed, so consumers know where in rawChildren to insert it.
-   * Zero object allocations — replaces the CSTTrivia object path entirely.
-   */
-  _cstTriviaLog?: number[] | undefined
   /** Framework-internal: active node() field captures, enabled only when needed. */
   _fields?: Array<{ name: string; value: unknown; span: Span; leading?: string; trailing?: string }> | undefined
   /** Framework-internal: lazy capture buffer for active node() parse. */
@@ -592,7 +572,7 @@ export type CompiledParser<T> = {
    * own `parse(input, pos, ctx)` does; without it, in a fresh one.
    */
   parse(input: string, pos?: number, ctx?: ParseContext): ParseResult<T>
-  /** Like parse(), but with a caller-supplied ParseContext (e.g. `_triviaLog` for CST grammars). */
+  /** Like parse(), but with a caller-supplied ParseContext. */
   parseWithContext(input: string, ctx: ParseContext, pos?: number): ParseResult<T>
   /**
    * Like parse(), but activates the error-collection channel. Recovery points
@@ -624,6 +604,8 @@ export type CompiledParser<T> = {
   runtimeOnly?: readonly string[]
   /** Present only when compiled with `{ coverage: true }`. */
   coverageDefinitions?: readonly import('./compiler/grammar-coverage-ids.ts').GrammarCoverageDefinition[]
+  /** The entry rule, which `run(compiled, input, options)` drives. */
+  readonly [COMPILED_ENTRY]: (input: string, pos: number, ctx: ParseContext) => ParseResult<unknown>
 }
 
 /** A trivia gap scanned from `at` to `end` that recorded nothing, and the key it holds for. */
@@ -634,6 +616,5 @@ export interface TriviaGapMemo {
   of: Combinator<unknown> | undefined
   root: boolean | undefined
   rootKinds: Readonly<Record<string, number>> | undefined
-  log: number[] | undefined
   state: unknown
 }

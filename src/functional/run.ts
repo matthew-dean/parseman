@@ -1,11 +1,12 @@
 import type { Combinator, ParseContext, ParseError, ParseResult, Span } from '../types.ts'
 import { REC } from '../recovery/scan.ts'
 import { createParseContext } from '../parse-context.ts'
-import { buildRootTriviaIndex, type RootTriviaIndex } from '../cst/trivia-entries.ts'
+import { allTriviaLabels, buildRootTriviaIndex, RootTriviaLog, type RootTriviaIndex } from '../cst/trivia-entries.ts'
+import { triviaScopesOf } from '../analysis/children.ts'
 /* `cst/host-mode.ts` and `cst/trivia-entries.ts` are import-free by design, so
  * this keeps the `parseman/run` closure minimal — see
  * test/unit/run-entry-closure.test.ts. */
-import { assertHostModeCompatible, FUSED_HOST_MODE, FUSED_HOST_ELIDED, type HostMode } from '../cst/host-mode.ts'
+import { TRIVIA_SCOPE_LABELS, assertHostModeCompatible, COMPILED_ENTRY, FUSED_HOST_MODE, FUSED_HOST_ELIDED, type HostMode } from '../cst/host-mode.ts'
 
 /**
  * Run a compiled/interpreted grammar entry against an input and collect the raw
@@ -71,12 +72,14 @@ export type RunOptions = {
    */
   triviaCaptureMask?: number
   /**
-   * Opt into sparse root trivia capture. `run()` retains no root trivia unless
-   * this is supplied. Capture records only the named labels, each with the one
-   * complete authored gap that owns it; ordinary whitespace has no root entry.
+   * Opt into root trivia capture. `run()` retains no root trivia unless this is
+   * supplied. A label list records only those labels, each with the one complete
+   * authored gap that owns it; ordinary whitespace has no root entry. `'all'`
+   * records every trivia chunk in the document: each labelled chunk under its
+   * label, and each gap of unlabelled trivia as one row under the label `''`.
    */
   rootTrivia?: {
-    readonly select: readonly string[]
+    readonly select: readonly string[] | 'all'
   }
   /**
    * Activate automatic list recovery. When true, `many`/`sepBy`/`oneOrMore` recover
@@ -92,9 +95,11 @@ export type RunOptions = {
 }
 
 export type RootTriviaCapture = {
-  /** Packed `[gapStart, gapEnd, markerStart, markerEnd, selectedKindIndex]` rows. */
-  readonly rows: readonly number[]
-  /** Labels requested by this caller; row kind indices refer to this array. */
+  /** Packed `[gapStart, gapEnd, markerStart, markerEnd, selectedKindIndex]` rows: a view of
+   * exactly the rows the parse kept, read as `rows[5 * i + k]`. */
+  readonly rows: Int32Array
+  /** Labels requested by this caller; row kind indices refer to this array. For
+   * `select: 'all'`, the grammar's labels followed by `''` (unlabelled trivia). */
   readonly select: readonly string[]
   /** Lazy lookup over `rows`; no tokens or strings are materialized. */
   readonly index: RootTriviaIndex
@@ -364,6 +369,30 @@ function triviaKindLabelsFromRunnable(r: Runnable | undefined): readonly string[
     ?? (r._def.tag === 'grammar' ? r._def.triviaParser?._meta.triviaKindLabels : undefined)
 }
 
+type TriviaScopeLabels = ReadonlyArray<readonly string[] | undefined>
+
+type ScopeLabelsEntry = {
+  readonly [TRIVIA_SCOPE_LABELS]?: (entry: unknown) => TriviaScopeLabels
+}
+
+const interpretedScopeLabels = new WeakMap<Combinator<unknown>, TriviaScopeLabels>()
+
+/**
+ * The labels of each trivia scope reachable from an interpreted entry, for `select: 'all'`.
+ * It is built on the entry's first `'all'` run and kept, as a table entry's is
+ * (`TRIVIA_SCOPE_LABELS`, `table/stamp.ts`). The root labels are not part of it: `run()`
+ * joins them in per run, because they can come from `options.trivia`.
+ */
+function interpretedTriviaScopeLabels(entry: Combinator<unknown>): TriviaScopeLabels {
+  const cached = interpretedScopeLabels.get(entry)
+  if (cached !== undefined) return cached
+  const { scopes, complete } = triviaScopesOf(entry)
+  // A walk that met an undefined reference is redone next run: a later `.define()` can
+  // add scopes, and a kept list would drop their rows.
+  if (complete) interpretedScopeLabels.set(entry, scopes)
+  return scopes
+}
+
 function rootTriviaClassifiedFromRunnable(r: Runnable | undefined): boolean {
   if (!r) return false
   if (typeof r === 'function') return (r as RunnableMeta)._meta?.rootTriviaClassified === true
@@ -405,19 +434,20 @@ function growSpanEnd(span: Span, input: string, end: number): Span {
   return { ...span, end, endLine: line, endColumn: column }
 }
 
+/** A `compile()` result, which runs as its entry rule. */
+export type CompiledEntry = { readonly [COMPILED_ENTRY]: Runnable }
+
 /** Keep the run-entry closure independent from grammar-construction helpers. */
-function runOnce(entry: Runnable, input: string, options: RunOptions): RunResult {
+export function runRule(given: Runnable | CompiledEntry, input: string, options: RunOptions): RunResult {
+  // A `compile()` result runs as its entry rule, which carries the stamps read below.
+  const entry = typeof given === 'object' && given !== null && COMPILED_ENTRY in given ? given[COMPILED_ENTRY] : given
   if (typeof entry !== 'function' && typeof (entry as Combinator<unknown> | undefined)?.parse !== 'function') {
     throw new TypeError(
       `run(): start production is ${entry === null ? 'null' : typeof entry}, not a rule — the requested grammar rule does not exist (check the rule name).`,
     )
   }
-  const rootTriviaSelection = options.rootTrivia?.select
-  const captureRootTrivia = rootTriviaSelection !== undefined && rootTriviaSelection.length > 0
-  const selectedRootLog = captureRootTrivia ? [] as number[] : undefined
-  const selectedRootLabelIndex = captureRootTrivia
-    ? makeSelectedRootLabelIndex(rootTriviaSelection)
-    : undefined
+  const requested = options.rootTrivia?.select
+  const allTrivia = requested === 'all'
   const errors: ParseError[] = []
   // Grammar-level ambient trivia declared via rules({ trivia }, factory): install
   // it as ctx.trivia so it's ambient for the whole parse (the interpreter path;
@@ -426,23 +456,34 @@ function runOnce(entry: Runnable, input: string, options: RunOptions): RunResult
   const grammarTrivia = typeof entry !== 'function' ? entry._meta.grammarTrivia : undefined
   const grammarScanSkip = typeof entry !== 'function' ? entry._meta.grammarScanSkip : undefined
   const triviaKindLabels = triviaKindLabelsFromRunnable(entry) ?? triviaKindLabelsFromRunnable(options.trivia)
-  if (captureRootTrivia && triviaKindLabels === undefined) {
-    throw new TypeError('run(): rootTrivia.select requires labeled grammar trivia.')
-  }
-  if (captureRootTrivia) {
+  // `'all'` is this run's root labels, then the labels of the trivia scopes reachable from
+  // the entry (walked once per entry, on its first `'all'` parse), plus `''` for trivia no
+  // label covers. It is not grown during the parse.
+  const rootTriviaSelection = !allTrivia
+    ? requested
+    : [...(allTriviaLabels(triviaKindLabels, typeof entry === 'function'
+        ? (entry as ScopeLabelsEntry)[TRIVIA_SCOPE_LABELS]?.(entry) ?? []
+        : interpretedTriviaScopeLabels(entry)) ?? []), '']
+  const captureRootTrivia = rootTriviaSelection !== undefined && rootTriviaSelection.length > 0
+  if (captureRootTrivia && !allTrivia) {
+    if (triviaKindLabels === undefined) {
+      throw new TypeError('run(): rootTrivia.select requires labeled grammar trivia.')
+    }
     for (const label of rootTriviaSelection) {
-      if (!triviaKindLabels!.includes(label)) {
+      if (!triviaKindLabels.includes(label)) {
         throw new TypeError(`run(): rootTrivia.select contains unknown trivia label ${JSON.stringify(label)}.`)
       }
     }
+    if (!rootTriviaClassifiedFromRunnable(entry) && !rootTriviaClassifiedFromRunnable(options.trivia)) {
+      throw new TypeError(
+        'run(): rootTrivia.select requires classifiedTrivia() at the root.',
+      )
+    }
   }
-  if (captureRootTrivia
-    && !rootTriviaClassifiedFromRunnable(entry)
-    && !rootTriviaClassifiedFromRunnable(options.trivia)) {
-    throw new TypeError(
-      'run(): rootTrivia.select requires classifiedTrivia() at the root.',
-    )
-  }
+  const selectedRootLog = captureRootTrivia
+    // Room for a row per 8 input characters, up to 65536 rows; past that the log doubles.
+    ? new RootTriviaLog(Math.max(320, Math.min((input.length >> 3) * 5, (1 << 16) * 5)))
+    : undefined
   /*
    * Refuse an artifact/host mismatch ONCE per parse, exactly as `parseDoc` and a
    * compiled parser's `parseWithContext` already do. `run()` is handed a RULE, not the
@@ -474,8 +515,11 @@ function runOnce(entry: Runnable, input: string, options: RunOptions): RunResult
   const ctx = createParseContext()
   if (captureRootTrivia) {
     ctx._rootTriviaLog = selectedRootLog!
-    ctx._rootTriviaKindIndex = selectedRootLabelIndex!
-    ctx._rootTriviaStrictScopes = true
+    ctx._rootTriviaKindIndex = makeSelectedRootLabelIndex(rootTriviaSelection)
+    if (allTrivia) selectedRootLog!.gapKind = ctx._rootTriviaKindIndex['']!
+    // A label list is answered only by classified scopes; `'all'` takes unlabelled
+    // scopes too, under `''`.
+    ctx._rootTriviaStrictScopes = !allTrivia
   }
   ctx._errors = errors
   ctx.build = options.build
@@ -527,7 +571,10 @@ function runOnce(entry: Runnable, input: string, options: RunOptions): RunResult
   // two shapes the contract calls for, which is what the spread was silently
   // doing anyway, and a conditional spread is the shape hazard this repo has
   // an incident over.
-  return selectedRootLog !== undefined && selectedRootLog.length > 0
+  const rows = selectedRootLog !== undefined && selectedRootLog.length > 0
+    ? selectedRootLog.buf.subarray(0, selectedRootLog.length)
+    : undefined
+  return rows !== undefined
     ? new RunResultWithRootTrivia(
         r.ok,
         value,
@@ -535,9 +582,9 @@ function runOnce(entry: Runnable, input: string, options: RunOptions): RunResult
         expected,
         errors,
         {
-          rows: selectedRootLog,
+          rows,
           select: rootTriviaSelection!,
-          index: buildRootTriviaIndex(selectedRootLog, rootTriviaSelection!),
+          index: buildRootTriviaIndex(rows, rootTriviaSelection!),
         },
         unconsumedFrom,
       )
@@ -555,6 +602,6 @@ function runOnce(entry: Runnable, input: string, options: RunOptions): RunResult
  * What a restoration would take is recorded in
  * `docs/future/bench-typecheck-followups.md`. */
 
-export function run(entry: Runnable, input: string, options: RunOptions = {}): RunResult {
-  return runOnce(entry, input, options)
+export function run(entry: Runnable | CompiledEntry, input: string, options: RunOptions = {}): RunResult {
+  return runRule(entry, input, options)
 }

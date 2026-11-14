@@ -50,7 +50,7 @@ export function withCtx<T>(extra: unknown, combinator: Combinator<T>): Combinato
   // combinator's contract is "set `state` for the duration", and the clone
   // was an implementation detail with a semantic reach nobody consented to.
   //
-  // (Array MUTATIONS were never affected either way — `_triviaLog` and the
+  // (Array MUTATIONS were never affected either way — `_rootTriviaLog` and the
   // CST buffers are the same objects through a spread — so this changes the
   // scalars only, which is exactly the part that was being dropped.)
   //

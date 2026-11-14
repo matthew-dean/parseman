@@ -13,7 +13,7 @@
  *   reference     encodeTable() + execRules()                  (the reference driver)
  */
 import { digestValue } from '../src/oracle/index.ts'
-import { run } from '../src/functional/run.ts'
+import { run, type Runnable } from '../src/functional/run.ts'
 import { encodeTable, type TableSettings } from '../src/table/encode.ts'
 /**
  * `tableRules` IS THE SHIPPED TABLE ENGINE — `src/table/index.ts` re-exports
@@ -54,7 +54,7 @@ export type IdentityReport = {
   mismatches: Array<{ case: string; path: string; a: string; b: string }>
 }
 
-type RunnableLike = Parameters<typeof run>[0]
+type RunnableLike = Runnable
 
 function digestRun(entry: RunnableLike, input: string, trivia?: RunnableLike, rootTrivia?: readonly string[]): string {
   const r = run(entry, input, {

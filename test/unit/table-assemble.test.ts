@@ -6,7 +6,7 @@ import { assemble, tableRules, AssemblyCache, cfgKey } from '../../src/table/ass
 import { execRules } from '../../src/table/exec.ts'
 import { foldPrograms, unfoldVariant, expandCompact, resolveTable, type PrecompiledAssembly } from '../../src/table/program.ts'
 import { defaultAssemblyCfgs } from '../../src/table/emit.ts'
-import { emitAssemblySource, EMITTED_PARAMS } from '../../src/table/emit-assembly.ts'
+import { emitAssemblySource, EMITTED_ABI, EMITTED_PARAMS } from '../../src/table/emit-assembly.ts'
 import { reachableIps } from '../../src/table/inspect.ts'
 import { run } from '../../src/functional/run.ts'
 import { cstBuildHost } from '../../src/compiler/linker.ts'
@@ -123,7 +123,7 @@ describe('table assembler', () => {
     ).source
     expect(emittedChildSource).toContain('const flat=[]')
     expect(emittedChildSource).toContain('const captured=_capturedFlatChildren(flat)')
-    expect(emittedChildSource).toContain('else if(sCh!==undefined){')
+    expect(emittedChildSource).toContain('}else if(sCh!==undefined)sCh.push(nd)')
     expect(emittedChildSource).not.toContain('pushCstChild(ctx,nd,')
     // The direct collector uses split arrays, not `_cstBuf`; descendants must
     // therefore keep the generic collector test instead of taking the site's
@@ -223,14 +223,12 @@ describe('table assembler', () => {
         const children: unknown[] = []
         ctx._cstChildren = children
         ctx._cstLeaves = children
-        ctx._cstRawChildren = []
       }
       const first = entry('ab', 0, ctx)
       const second = entry('ab', 0, ctx)
       return digestValue({
         first, second,
         children: ctx._cstChildren,
-        raw: ctx._cstRawChildren,
         capture: buffered ? finishCstBuf(ctx._cstBuf) : undefined,
       })
     }
@@ -258,11 +256,11 @@ describe('table assembler', () => {
     })
     const reentryDigest = (entry: NonNullable<ReentryState['entry']>) => {
       const ctx = createParseContext()
-      const children: unknown[] = [], raw: unknown[] = []
-      ctx._cstChildren = children; ctx._cstLeaves = children; ctx._cstRawChildren = raw
+      const children: unknown[] = []
+      ctx._cstChildren = children; ctx._cstLeaves = children
       const state: ReentryState = { active: false, ctx, entry }
       ctx.state = state
-      return digestValue({ result: entry!('ab', 0, ctx), children, raw, active: state.active })
+      return digestValue({ result: entry!('ab', 0, ctx), children, active: state.active })
     }
     expect(reentryDigest(tableRules({ ...reentryProgram, asm: [] }).Root!))
       .toBe(reentryDigest(execRules(reentryProgram).Root!))
@@ -305,7 +303,7 @@ describe('table assembler', () => {
           const emitted = emitAssemblySource(resolved, prog, cfg, [])
           return {
             key: cfgKey(cfg),
-            arity: EMITTED_PARAMS.length,
+            abi: EMITTED_ABI,
             // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
             factory: new Function(...EMITTED_PARAMS, emitted.source) as PrecompiledAssembly['factory'],
             plan: emitted.plan, reached: [...emitted.reached],
@@ -420,7 +418,7 @@ describe('table assembler', () => {
       const emitted = emitAssemblySource(resolved, prog, cfg, [])
       return {
         key: cfgKey(cfg),
-        arity: EMITTED_PARAMS.length,
+        abi: EMITTED_ABI,
         // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
         factory: new Function(...EMITTED_PARAMS, emitted.source) as PrecompiledAssembly['factory'],
         plan: emitted.plan,
@@ -696,7 +694,7 @@ describe('table assembler', () => {
       const emitted = emitAssemblySource(resolved, prog, cfg, scanRoots)
       return {
         key: cfgKey(cfg),
-        arity: EMITTED_PARAMS.length,
+        abi: EMITTED_ABI,
         // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
         factory: new Function(...EMITTED_PARAMS, emitted.source) as PrecompiledAssembly['factory'],
         plan: emitted.plan, reached: [...emitted.reached],
@@ -871,7 +869,7 @@ describe('table assembler', () => {
         const emitted = emitAssemblySource(resolved, prog, cfg, [])
         return {
           key: cfgKey(cfg),
-          arity: EMITTED_PARAMS.length,
+          abi: EMITTED_ABI,
           // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
           factory: new Function(...EMITTED_PARAMS, emitted.source) as PrecompiledAssembly['factory'],
           plan: emitted.plan,

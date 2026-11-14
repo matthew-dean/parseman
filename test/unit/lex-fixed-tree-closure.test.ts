@@ -17,7 +17,7 @@ import { tableRules, cfgKey } from '../../src/table/assemble.ts'
 import { execRules } from '../../src/table/exec.ts'
 import { resolveTable, type PrecompiledAssembly, type TableProgram } from '../../src/table/program.ts'
 import { defaultAssemblyCfgs } from '../../src/table/emit.ts'
-import { emitAssemblySource, EMITTED_PARAMS } from '../../src/table/emit-assembly.ts'
+import { emitAssemblySource, EMITTED_ABI, EMITTED_PARAMS } from '../../src/table/emit-assembly.ts'
 import { reachableIps } from '../../src/table/inspect.ts'
 import { run, type Runnable } from '../../src/functional/run.ts'
 import { digestValue } from '../../src/oracle/index.ts'
@@ -38,7 +38,7 @@ function emitted(prog: TableProgram): Record<string, Runnable> {
     const out = emitAssemblySource(resolved, prog, cfg, [])
     return {
       key: cfgKey(cfg),
-      arity: EMITTED_PARAMS.length,
+      abi: EMITTED_ABI,
       // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
       factory: new Function(...EMITTED_PARAMS, out.source) as PrecompiledAssembly['factory'],
       plan: out.plan, reached: [...out.reached],

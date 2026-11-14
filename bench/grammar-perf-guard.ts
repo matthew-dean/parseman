@@ -103,6 +103,7 @@ import { readFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { parsedTree, plainParse } from './all-trivia.ts'
 import {
   assertIndependentLegs, materialise, calibrate, assertSameParse, measurePasses, verdicts, git, fail, median, sign, SCORE_METHOD, freshGraph, previousRelease, summary, summaryTable, reportAgainstMergeBase, sameSource, identicalSourceNote,
   type Case, type Thresholds,
@@ -161,7 +162,7 @@ const COPY = ['bench/grammar-density'] as const
 
 type DensityCase = { id: string; kind: string; n: number }
 type Side = {
-  compile: (c: unknown) => { parseWithContext: (input: string, ctx: unknown, pos?: number) => unknown }
+  compile: (c: unknown) => { parseWithContext: (input: string, ctx: never, pos?: number) => unknown }
   grammar: (c: DensityCase) => unknown
   cases: ReadonlyArray<DensityCase>
   input: (c: DensityCase, rules: number) => string
@@ -183,7 +184,10 @@ function toCases(side: Side): Case[] {
   return side.cases.map(c => {
     const compiled = side.compile(side.grammar(c))
     const input = side.input(c, CONFIG.input.rules)
-    const parse = (): unknown => compiled.parseWithContext(input, { trackLines: false, _triviaLog: [] }, 0)
+    // The plain parse, the same call on both releases; `perf:xproc:gate` reports the
+    // parse that records every trivia gap beside it.
+    const parsePlain = plainParse(compiled, input)
+    const parse = (): unknown => parsedTree(parsePlain())
     return {
       id: c.id,
       detail: `${c.n} ${c.kind === 'expected' ? 'opt/arm' : 'probes/val'}`,

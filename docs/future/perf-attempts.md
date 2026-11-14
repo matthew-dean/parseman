@@ -354,6 +354,99 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
     parses with a live root trivia log. Dropping the gap memo is rejected (below).
   - Branch `perf/shipped-alloc-trivia`.
 
+- **Delete two trivia slots no engine read back, fold the third into root trivia, and build
+  a raw entry only where a buffer takes it.** `ParseContext._triviaLog`, `_cstTriviaLog` and
+  `_cstRawChildren` were saved, cleared and tested around every attempt, token and node on all
+  four engines. No engine read `_cstTriviaLog` or `_cstRawChildren` back, so they go. A caller
+  did read `_triviaLog` after a parse: it was the document's whole trivia log. It is now
+  `run()`'s root trivia with `select: 'all'`, the grammar's labels plus `''` for unlabelled
+  gaps, so one log mechanism remains. A node also built `rawEntry()` (a leaf, a span and a
+  slice for a non-node value) and then dropped it when no `_cstBuf` was open.
+  - Same rows: 0.61.9's `_triviaLog` against `select: 'all'` gives byte-identical spans on
+    the CSS example, every bench density case and all five workloads, on the interpreter, the
+    closure engine and the emitted engine. On the Jess corpora in four dialects, spans and row
+    counts match (css 918, less 13,176, scss 9,847, jess 1,049 rows). Labels match except two
+    block comments in a nested CSS scope, which the old log named by that scope's index and
+    so read as `whitespace`.
+  - Call count against v0.61.9: branch tests fall 1.8% to 10.8% on every row and calls up to
+    3.7% (Less `app.less` AST −8.46% branches, −3.62% calls); no row rises. The first parse
+    of every row also falls (branches −1.8% to −7.9%, calls ≤ 0.61.9).
+  - What it cost: a grammar without trivia labels keeps 0.61.9's per-gap test for an open
+    root log, and every guard on the skip path nests under the scanner test, because a
+    longer `&&` chain is one more branch test even when its first operand short-circuits.
+    Hoisting the three per-chunk root tests out of the labelled scan cost CST rows a branch
+    and was dropped. The refusal of a passed `_triviaLog` sits at compiled run start, not in
+    the per-rule wrapper, where it added 2,000 to 4,000 branch tests to each Jess row.
+    For `'all'` to record what `_triviaLog` did, an opaque region's entry stores
+    `_rootTriviaCapture = _rootTriviaStrictScopes === false`, a store where a test there
+    added one branch per region entry (7 per CSS parse). The label table is the labels of
+    the scopes reachable from the entry, built on that entry's first `'all'` run and cached
+    per entry, so a map that never runs `'all'` pays no load cost; building it at stamp
+    time from the whole program gave a table rule a different numbering from the
+    interpreter and `compile(entry)`.
+  - One recording site for an unlabelled gap, `recordUnlabelledGap`. Calling it from the
+    installed-scanner helper added a call per gap (emitted CSS +2.36% calls over 0.61.9), so
+    the table engines call it straight after their scanner, and only for a non-empty gap:
+    emitted CSS and Less calls fall 1.9% to 2.7% against 0.61.9. It takes a new last helper
+    slot; the retired helper's slot stays, bound to `undefined`, so the `abi` is `0.62/60`.
+    The deferred commit picks a capture-only closure once per scan, so a capture-only commit
+    stays one call.
+  - Against the first cut of this change (86eeb55a), the six `'all'` workload rows take +5
+    branch tests per parse (closure and emitted × CSS stylesheet, Less stylesheet, Less
+    mixins): the label-table lookup, the selection, and the closure choice. Their calls
+    fall (emitted −1.8% to −2.4%), and the Jess rows do not move.
+  - Time, x64 mini PC, Node 24, marginal per parse, interleaved in random order, every arm
+    started at load < 1, compared as per-round paired medians. The plain parse is within
+    noise of v0.61.9 (−8.8% to +3.0%). Jess AST parses with their comment label lists are
+    0.2% to 3.8% faster than v0.61.9.
+  - The first cut stored `'all'` rows in a `number[]` and spent 340 to 390 µs recording 4,399
+    rows. That's about 75 ns a row, against about 15 ns for 0.61.9's two-number log. Past
+    V8's 128 KB regular-object limit (about 16k elements), every growth of the array's
+    backing store is a large-object allocation and copy. A microbenchmark on 4,890 rows:
+    2 numbers a row 25 µs, 3 numbers 33 µs, 4 or 5 numbers 235 to 245 µs, `Int32Array`
+    doubling 46 to 52 µs, and `Array.from` of the result 520 µs.
+  - Shipped: the root log is an `Int32Array` with a cursor (`RootTriviaLog`), with inline
+    pushes, one out-of-line doubling helper, rollback as a cursor store, and `rows` as an
+    exact-length `subarray`. With that alone, `'all'` was still 70 to 101 µs (+8% to +12%)
+    slower than 0.61.9's log on the expected-set cases.
+  - Two more changes, both shipped:
+    - `run()` sizes the log for a row per 8 input characters. Sizing it to 4 bytes per input
+      character performed the same, but each result retained 262 KB on a 65 KB stylesheet;
+      the shipped size retains 164 KB, as the doubling log did. RSS did not tell the three
+      apart. External `arrayBuffers` did: 8.6 MB of unreclaimed buffers after 50 parses,
+      against 12.7 to 13.7 MB at 4 bytes a character. The presize stops at 65,536 rows
+      (1.25 MB); a larger document's log doubles from there.
+    - Whether the root log takes unlabelled gaps, and under which kind, is decided at run
+      start and held on the log itself, as `gapKind` (-1 under a label list). The recorder
+      reads `_rootTriviaLog`, so a gap is a load and two tests plus the stores, and a gap
+      inside a token or probe, which clear `_rootTriviaLog`, can never reach the document
+      log. A first cut kept the decision in a second context field, `_rootGapLog`, one load
+      and test cheaper, but nothing tied it to `_rootTriviaLog`, so the token and probe
+      sites stayed correct only because no engine reaches the recorder there with a capture
+      buffer open. Before, every gap tested the log, the capture mode and the kind, and
+      the kind lookup hit a prototype-less index that V8 keeps as a dictionary.
+  - Call counts: every row is below `main`, warm and cold. Jess label-list rows take +1 call
+    and +1 branch test per parse for the run-start decision.
+    The `gapKind` test adds one branch test per gap where a root log is open: +10,642 to
+    +12,650 per parse on the closure and emitted CSS and Less rows, which stay below `main`.
+  - Result, `'all'` against 0.61.9 with `_triviaLog`, paired, taken on the `_rootGapLog` cut
+    (the shipped recorder's extra load and test per gap under capture was not re-timed):
+    - rollback cases: −5.2% to +1.4%;
+    - Less workloads: −1.6% and −2.0%;
+    - CSS workload: +0.1% to +0.5%;
+    - expected-set cases: +1.5% to +2.7% pooled over 10 rounds, with head at or below
+      0.61.9 in 3 or 4 of the 10.
+    - Recording rows (`'all'` minus `run()`) costs 28 to 139 µs on the density cases.
+    - Removing the capacity test or the five stores moves it within noise. The remainder is
+      the recorder call, its CST test and the `'all'` marks and rollbacks around attempts.
+    - The xproc gate compares the plain parse on both sides and reports the `'all'` rows
+      without gating them.
+  - Candidates, not tried: test `gapKind` inline at the emitted and closure call sites
+    before calling the recorder (costs emitted bytes), and move the CST test off the gap
+    path.
+  - Breaking for printed factories (two helper signatures), so it declares 0.62.0 with an
+    `abi` lock on the record. Breaking for `rows` readers (`Int32Array`).
+
 ## Rejected (measured)
 
 - **Merging same-text functions before the entry join.** Two earlier places for the merge

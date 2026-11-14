@@ -5,8 +5,8 @@
  * root trivia takes its mark from an EMPTY `_rootTriviaLog`, so the correct mark
  * is `0` and an engine that hard-codes `0` is indistinguishable from one that
  * saves the length. Replacing both `rt` marks in `emit-assembly.ts` with the
- * literal `0` passed all 3318 tests; the same edit to `_triviaLog`'s `lg` marks
- * failed eight, which is what makes this gap specific rather than general.
+ * literal `0` passed all 3318 tests, while the same edit to the then-present
+ * global trivia log's marks failed eight, which is what made this gap specific.
  *
  * The gap is one-sided in a second way. `expectUniqueTriviaEntries`
  * (helpers/trivia-log-parity.ts) fails on DUPLICATE spans, so it catches a mark
@@ -70,7 +70,7 @@ describe('the _rootTriviaLog rollback mark carries a SAVED length, not a hard ze
         literal('z'),
       ),
     }))) {
-      expect(run(root, input, SELECTED).rootTrivia?.rows, engine).toEqual(rows)
+      expect(run(root, input, SELECTED).rootTrivia?.rows, engine).toEqual(Int32Array.from(rows))
     }
   })
 
@@ -90,7 +90,7 @@ describe('the _rootTriviaLog rollback mark carries a SAVED length, not a hard ze
         literal('z'),
       ),
     }))) {
-      expect(run(root, input, SELECTED).rootTrivia?.rows, engine).toEqual(rows)
+      expect(run(root, input, SELECTED).rootTrivia?.rows, engine).toEqual(Int32Array.from(rows))
     }
   })
 })

@@ -15,6 +15,7 @@ import {
   keywords, literal, makeWhen, many, matches, node, not, otherwise, optional, parse, parser, peek, ref, regex, routed, rules, scanTo,
   run, sepBy, sequence, startsWith, token, transform, when, withCtx,
 } from '../../src/index.ts'
+import { makeRootLog } from '../helpers/root-log.ts'
 
 function synthetic<T>(inner: Combinator<T>, def: ParserDef): Combinator<T> {
   return { ...inner, _def: def }
@@ -1255,13 +1256,11 @@ describe('derived lexical-token families', () => {
 
   it('pins the source token transaction order and its abrupt-completion boundaries', () => {
     const slots = [
-      'trivia', 'triviaKindLabels', '_cstBuf', '_cstChildren', '_cstLeaves',
-      '_cstRawChildren', '_cstTriviaLog', '_triviaLog', '_rootTriviaLog',
+      'trivia', 'triviaKindLabels', '_cstBuf', '_cstChildren', '_cstLeaves', '_rootTriviaLog',
     ] as const
     const makeTarget = (): ParseContext => ({
       trivia: literal(' '), triviaKindLabels: ['ws'], _cstBuf: undefined,
-      _cstChildren: [], _cstLeaves: [], _cstRawChildren: [], _cstTriviaLog: [],
-      _triviaLog: [], _rootTriviaLog: [], trackLines: false,
+      _cstChildren: [], _cstLeaves: [], _rootTriviaLog: makeRootLog(), trackLines: false,
     })
     const run = (mode: 'fail' | 'throw', abrupt?: { phase: 'get' | 'set'; key: string; setCount?: number }) => {
       const log: string[] = []
@@ -1297,7 +1296,7 @@ describe('derived lexical-token families', () => {
       return { log, target, thrown }
     }
     const reads = slots.map(key => `get:${key}`)
-    // cstCaptureActive performs its own two ordered reads after the nine saves.
+    // cstCaptureActive performs its own two ordered reads after the six saves.
     const captureReads = ['get:_cstBuf', 'get:_cstLeaves']
     const clears = slots.map(key => `set:${key}`)
     const restores = [...clears]

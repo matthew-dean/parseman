@@ -294,7 +294,7 @@ export function node<N>(
         ctx._triviaCaptureMask = ctx.build._parsemanTriviaKinds(def.type)
       }
       // Short-circuit the per-node trivia push (scanTrivia gates on captureTrivia)
-      // without touching the global _triviaLog, which is committed independently.
+      // without touching the root trivia log, which is committed independently.
       if (!effTrivia) ctx.captureTrivia = false
       let r = combinator.parse(input, pos, ctx)
       if (r.ok && trailingTrivia && ctx.trivia) {

@@ -17,10 +17,11 @@ import { resolveTable } from '../../src/table/program.ts'
 import { createParseContext } from '../../src/parse-context.ts'
 import { reachableIps } from '../../src/table/inspect.ts'
 import { OP_OPT } from '../../src/table/ops.ts'
+import { RootTriviaLog } from '../../src/cst/trivia-entries.ts'
 
-function countingLog(): { log: number[]; reads: () => number } {
+function countingLog(): { log: RootTriviaLog; reads: () => number } {
   let n = 0
-  const log = new Proxy<number[]>([], {
+  const log = new Proxy<RootTriviaLog>(new RootTriviaLog(), {
     get(target, key, receiver) {
       if (key === 'length') n++
       return Reflect.get(target, key, receiver)
@@ -37,7 +38,7 @@ function parse(root: Combinator<unknown>, input: string): { value: unknown; read
   const linked = assemble(resolveTable(prog), prog, CFG)
   const { log, reads } = countingLog()
   const ctx = createParseContext()
-  ctx._triviaLog = log
+  ctx._rootTriviaLog = log
   linked.begin(ctx)
   const v = linked.pieces.Root!(input, 0, ctx)
   linked.finish()

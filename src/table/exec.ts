@@ -9,8 +9,9 @@ import { cstOutputHost } from '../compiler/build-arity.ts'
 import { consumeTrivia } from '../combinators/trivia-skip.ts'
 import {
   advanceTrivia, commitTriviaScan, needsDeferredTriviaCommit, rollbackScannedTriviaAt, rollbackTrivia,
-  rollbackTriviaAt, saveTriviaMark, scanTriviaCompact, skipTriviaScanned, type FastTriviaScanner,
+  rollbackTriviaAt, saveTriviaMark, scanTriviaCompact, recordUnlabelledGap, type FastTriviaScanner,
 } from '../combinators/trivia-skip.ts'
+import { pushOpenCstTriviaEntry } from '../cst/capture-buffer.ts'
 import {
   beginCstNodeCapture, cstCaptureActive, cstLeavesLen, cstRawLen, cstTlLen,
   demoteCapturedToRaw, endCstNodeCapture, pushCstChild, pushCstLeaf,
@@ -227,6 +228,7 @@ function makeDriver(
     hostCst: boolean
     hostReadsChildren: boolean
     hostCaptureTrivia: ((type: string) => boolean) | undefined
+    recording: boolean
     end: number
   }
   // The ordinary path stays allocation-free. A frame exists only while a host
@@ -262,11 +264,8 @@ function makeDriver(
   function rollbackNeeded(ctx: ParseContext): boolean {
     return ctx._cstBuf !== undefined
       || ctx._cstLeaves !== undefined
-      || ctx._cstRawChildren !== undefined
-      || ctx._cstTriviaLog !== undefined
       || ctx._fields !== undefined
       || ctx._errors !== undefined
-      || ctx._triviaLog !== undefined
       || ctx._rootTriviaLog !== undefined
   }
 
@@ -286,31 +285,62 @@ function makeDriver(
    *   - `advanceTrivia` (no deferred commit) runs `fast(input, cur)` whenever a
    *     scanner exists and `trackLines` is off — folded into `SCAN` already.
    *   - `scanTrivia` (deferred commit) runs it and returns a NO-OP commit when
-   *     `_triviaLog` is unset and nothing is capturing trivia into a CST buffer.
-   *     `_rootTriviaLog` is deliberately absent from this test: root rows are
-   *     only ever written on the LABELLED scan path (see `OP_SCOPE`), and a
-   *     labelled trivia never gets a `SCAN` installed.
+   *     nothing is capturing trivia into a CST buffer.
+   *     `_rootTriviaLog` is absent from this test: a labelled trivia's root rows
+   *     are written on the LABELLED scan path (see `OP_SCOPE`), which never has a
+   *     `SCAN` installed, and an unlabelled gap's row is `skipTriviaRecording`'s.
    *
    * Anything outside that falls through to the shared implementations unchanged,
    * so recording, labels and line tracking keep exactly one implementation.
    */
-  function skipTrivia(input: string, cur: number, ctx: ParseContext): number {
+  function skipTriviaPlain(input: string, cur: number, ctx: ParseContext): number {
     const s = SCAN
-    if (s !== null
-      && ctx._triviaLog === undefined
-      && !(ctx.captureTrivia === true && (ctx._cstBuf !== undefined || ctx._cstTriviaLog !== undefined))) {
-      return s(input, cur)
-    }
     // CAPTURE IS NOT A REASON TO LEAVE THE SCANNER. The recording an installed
-    // scanner's scope can owe is one `(cur, end)` row, so it is written here
-    // rather than through a deferred `{ end, commit }` pair per term. Appended
-    // rather than folded into the test above so the non-capturing path — every
-    // grammar that already had a scanner — keeps the exact branch it had.
-    if (s !== null) return skipTriviaScanned(s, input, cur, ctx)
+    // scanner's scope can owe is one `(cur, end)` entry, so it is written here
+    // rather than through a deferred `{ end, commit }` pair per term.
+    if (s !== null) {
+      if (!(ctx.captureTrivia === true && ctx._cstBuf !== undefined)) return s(input, cur)
+      const end = s(input, cur)
+      if (end !== cur) pushOpenCstTriviaEntry(ctx, cur, end)
+      return end
+    }
     if (needsDeferredTriviaCommit(ctx)) {
       return commitTriviaScan(scanTriviaCompact(input, cur, ctx))
     }
     return advanceTrivia(input, cur, ctx)
+  }
+
+  /**
+   * The skip for a run whose root log takes UNLABELLED gaps (`rootTrivia: { select:
+   * 'all' }`, `gapKind >= 0`). Whether a run is one is known when it begins, so `begin`
+   * installs this or {@link skipTriviaPlain} as `skipTrivia` and no gap asks. It differs
+   * from the plain skip only in its scanner arm, which still reads `_rootTriviaLog`
+   * because a token clears the log for its own span. The rest is restated rather than
+   * reached through the plain skip: a call there is paid on every labelled gap of a
+   * recording parse.
+   */
+  function skipTriviaRecording(input: string, cur: number, ctx: ParseContext): number {
+    const s = SCAN
+    if (s !== null) {
+      if (ctx._rootTriviaLog === undefined && !(ctx.captureTrivia === true && ctx._cstBuf !== undefined)) {
+        return s(input, cur)
+      }
+      const end = s(input, cur)
+      if (end !== cur) recordUnlabelledGap(ctx, cur, end)
+      return end
+    }
+    if (needsDeferredTriviaCommit(ctx)) {
+      return commitTriviaScan(scanTriviaCompact(input, cur, ctx))
+    }
+    return advanceTrivia(input, cur, ctx)
+  }
+
+  /** The skip every trivia site calls: {@link skipTriviaPlain} or {@link skipTriviaRecording}, chosen per run. */
+  let skipTrivia = skipTriviaPlain
+  let RECORDING = false
+  function installSkip(recording: boolean): void {
+    RECORDING = recording
+    skipTrivia = recording ? skipTriviaRecording : skipTriviaPlain
   }
 
   function lead(input: string, pos: number): number {
@@ -630,14 +660,12 @@ function makeDriver(
       }
 
       case OP_TOKEN: {
-        // Mirrors src/combinators/token.ts:21-65 exactly, including that
-        // `_triviaLog`/`_rootTriviaLog` are DELETED rather than set undefined
-        // and restored by presence, and that the leaf is pushed only when the
+        // Mirrors `token()` in src/combinators/token.ts exactly, including that
+        // the leaf is pushed only when the
         // caller was capturing BEFORE the sinks were cleared.
         const sTrivia = ctx.trivia, sKinds = ctx.triviaKindLabels
         const sBuf = ctx._cstBuf, sChildren = ctx._cstChildren, sLeaves = ctx._cstLeaves
-        const sRaw = ctx._cstRawChildren, sTl = ctx._cstTriviaLog
-        const sOuterTl = ctx._triviaLog, sRootTl = ctx._rootTriviaLog
+        const sRootTl = ctx._rootTriviaLog
         const wasCapturing = cstCaptureActive(ctx)
 
         const sScan = SCAN
@@ -647,9 +675,6 @@ function makeDriver(
         ctx._cstBuf = undefined
         ctx._cstChildren = undefined
         ctx._cstLeaves = undefined
-        ctx._cstRawChildren = undefined
-        ctx._cstTriviaLog = undefined
-        ctx._triviaLog = undefined
         ctx._rootTriviaLog = undefined
 
         let v: unknown
@@ -662,9 +687,6 @@ function makeDriver(
           ctx._cstBuf = sBuf
           ctx._cstChildren = sChildren
           ctx._cstLeaves = sLeaves
-          ctx._cstRawChildren = sRaw
-          ctx._cstTriviaLog = sTl
-          ctx._triviaLog = sOuterTl
           ctx._rootTriviaLog = sRootTl
         }
         if (v === FAIL) return FAIL
@@ -718,8 +740,7 @@ function makeDriver(
         // cannot publish into the outer collector; this row publishes one leaf.
         const sTrivia = ctx.trivia, sKinds = ctx.triviaKindLabels
         const sBuf = ctx._cstBuf, sChildren = ctx._cstChildren, sLeaves = ctx._cstLeaves
-        const sRaw = ctx._cstRawChildren, sTl = ctx._cstTriviaLog
-        const sOuterTl = ctx._triviaLog, sRootTl = ctx._rootTriviaLog
+        const sRootTl = ctx._rootTriviaLog
         const wasCapturing = cstCaptureActive(ctx)
         const sScan = SCAN
         SCAN = null
@@ -728,9 +749,6 @@ function makeDriver(
         ctx._cstBuf = undefined
         ctx._cstChildren = undefined
         ctx._cstLeaves = undefined
-        ctx._cstRawChildren = undefined
-        ctx._cstTriviaLog = undefined
-        ctx._triviaLog = undefined
         ctx._rootTriviaLog = undefined
         let end: number
         try { end = run(input, pos, ctx, scans[scanId]) }
@@ -741,9 +759,6 @@ function makeDriver(
           ctx._cstBuf = sBuf
           ctx._cstChildren = sChildren
           ctx._cstLeaves = sLeaves
-          ctx._cstRawChildren = sRaw
-          ctx._cstTriviaLog = sTl
-          ctx._triviaLog = sOuterTl
           ctx._rootTriviaLog = sRootTl
         }
         if (end < 0) return FAIL
@@ -809,7 +824,7 @@ function makeDriver(
         const policy = code[ip] === OP_SCOPE_PLAIN ? 0 : code[ip + 3]!
         if ((policy & 2) !== 0) refuseUnclassifiedRootScope(ctx._rootTriviaStrictScopes)
         const savedRootCap = ctx._rootTriviaCapture
-        if ((policy & 1) !== 0) ctx._rootTriviaCapture = false
+        if ((policy & 1) !== 0) ctx._rootTriviaCapture = ctx._rootTriviaStrictScopes === false
         const v = exec(code[ip + 2]!, input, pos, ctx)
         if ((policy & 1) !== 0) ctx._rootTriviaCapture = savedRootCap
         ctx.captureTrivia = savedCap
@@ -857,18 +872,16 @@ function makeDriver(
             // seven-field object plus the five-field CST mark it delegates to).
             const need = rollbackNeeded(ctx)
             const mTl = need ? cstTlLen(ctx) : 0
-            const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
             const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
             const scanEnd = skipTrivia(input, cur, ctx)
             const scanTl = need ? cstTlLen(ctx) : 0
-            const scanLog = need ? ctx._triviaLog?.length ?? 0 : 0
             const scanRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
             if (leadingTriviaFieldAt(code, k, child)) LEAD.at = cur
             const v = exec(child, input, scanEnd, ctx)
             if (v === FAIL) { if (REC) ctx._sync = inheritedSync; return FAIL }
             if (EC.e > scanEnd) cur = EC.e
             else if (need) rollbackScannedTriviaAt(
-              ctx, mTl, scanTl, mLog, scanLog, mRoot, scanRoot,
+              ctx, mTl, scanTl, mRoot, scanRoot,
             )
             if (values !== undefined) values.push(v)
             continue
@@ -1009,7 +1022,6 @@ function makeDriver(
         const mLv = need ? cstLeavesLen(ctx) : 0
         const mFl = need ? ctx._fields?.length ?? 0 : 0
         const mEr = need ? ctx._errors?.length ?? 0 : 0
-        const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
         const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
         // The ordered path keeps only arms at the deepest failure offset. Exact
         // ties merge in source order. The final failure is still anchored at the
@@ -1047,7 +1059,7 @@ function makeDriver(
           // A committed arm cuts, and the interpreter reports the accumulation at
           // the arm's OWN span (`choice.ts:170`), not at the choice's position.
           if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
-          if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+          if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mRoot)
         }
         if (acc !== undefined) { ctx._fe = pos; ctx._fx = acc; return FAIL }
         return failChoice()
@@ -1063,7 +1075,6 @@ function makeDriver(
         const mLv = need ? cstLeavesLen(ctx) : 0
         const mFl = need ? ctx._fields?.length ?? 0 : 0
         const mEr = need ? ctx._errors?.length ?? 0 : 0
-        const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
         const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
         const sup = exec(code[ip + 1]!, input, pos, ctx)
         // choice.ts:126 — the super arm's failure is returned VERBATIM, so `_fe`
@@ -1074,7 +1085,7 @@ function makeDriver(
         const n = code[ip + 2]!
         for (let i = 0; i < n; i++) {
           if (k[code[ip + 3 + 2 * i]!] !== word) continue
-          if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+          if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mRoot)
           // Cannot fail: `word` IS this arm's case-sensitive literal at `pos`.
           return exec(code[ip + 4 + 2 * i]!, input, pos, ctx)
         }
@@ -1140,7 +1151,6 @@ function makeDriver(
         const mLv = need ? cstLeavesLen(ctx) : 0
         const mFl = need ? ctx._fields?.length ?? 0 : 0
         const mEr = need ? ctx._errors?.length ?? 0 : 0
-        const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
         const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
         ctx._fc = false
         const v = exec(code[ip + 1]!, input, pos, ctx)
@@ -1148,7 +1158,7 @@ function makeDriver(
           // repeat.ts:277 — `optional()` propagates a committed failure rather
           // than reporting "absent".
           if (committed(ctx)) return FAIL
-          if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+          if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mRoot)
           EC.e = pos
           // NULL, not undefined. `optional()` yields `null` on no-match
           // (src/combinators/repeat.ts:269,277) and grammars TEST for it:
@@ -1224,7 +1234,6 @@ function makeDriver(
           const mLv = needMark ? cstLeavesLen(ctx) : 0
           const mFl = needMark ? ctx._fields?.length ?? 0 : 0
           const mEr = needMark ? ctx._errors?.length ?? 0 : 0
-          const mLog = needMark ? ctx._triviaLog?.length ?? 0 : 0
           const mRoot = needMark ? ctx._rootTriviaLog?.length ?? 0 : 0
           let itemStart = cur
           let sepEnd = -1
@@ -1254,7 +1263,7 @@ function makeDriver(
             if (leadingTriviaFieldAt(code, k, sep)) LEAD.at = cur
             const sv = exec(sep, input, sp, ctx)
             if (sv === FAIL) {
-              if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+              if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mRoot)
               if (committed(ctx)) return FAIL
               break
             }
@@ -1276,7 +1285,7 @@ function makeDriver(
           // runs — never to a mandatory first item, which both other engines
           // attempt at `pos` whatever is there.
           if (itemStart >= input.length && viaRepItem) {
-            if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+            if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mRoot)
             // A trailing separator at EOF is the COMMON case for
             // `trailing: 'allow'` (`a,b,`), and this early-out ran before the
             // item was ever attempted — so handling it only on the item-failure
@@ -1285,7 +1294,7 @@ function makeDriver(
             break
           }
           if (count >= min && gateItems && !classHas(itemClass!, lead(input, itemStart))) {
-            if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+            if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mRoot)
             if (trailingAllowed && sepEnd >= 0) cur = sepEnd
             break
           }
@@ -1296,7 +1305,7 @@ function makeDriver(
             // repetition. Breaking here is what let `many(dispatch(...))` return
             // ok:true with a silently truncated document.
             if (committed(ctx)) {
-              if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+              if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mRoot)
               return FAIL
             }
             // RESYNC. A mandatory item of a separator-less repeat does NOT recover
@@ -1310,7 +1319,7 @@ function makeDriver(
               && mySync !== undefined
               && (sep >= 0 || count >= min)
               && !matchesAt(mySync, input, itemStart, ctx)) {
-              if (sep < 0 && needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+              if (sep < 0 && needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mRoot)
               const rr = recoverScan(
                 input, itemStart, ctx,
                 sep < 0 ? mySync : orSentinel(sepSent ?? mySync, sepSent === undefined ? undefined : mySync),
@@ -1322,7 +1331,7 @@ function makeDriver(
               cur = rr.end
               continue
             }
-            if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+            if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mRoot)
             // `trailing: 'allow'` keeps a separator that no item followed.
             if (trailingAllowed && sepEnd >= 0) cur = sepEnd
             break
@@ -1336,7 +1345,7 @@ function makeDriver(
             // take a zero-width item there: `sepBy(nullable, ',')` over `",a"` is
             // `["", "a"]`. Applying the stop to them made the table return `[]`
             // having consumed NOTHING, silently dropping real input.
-            if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+            if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mRoot)
             break
           }
           if (out !== undefined) out.push(v)
@@ -1379,16 +1388,11 @@ function makeDriver(
         // (`ctx.trivia`, `ctx.triviaKindLabels`), and `_rootTriviaLog` stays
         // live so root-source trivia inside the leaf remains visible.
         const sBuf = ctx._cstBuf, sChildren = ctx._cstChildren, sLeaves = ctx._cstLeaves
-        const sRaw = ctx._cstRawChildren, sTl = ctx._cstTriviaLog
-        const sOuterTl = ctx._triviaLog
         const wasCapturing = cstCaptureActive(ctx)
 
         ctx._cstBuf = undefined
         ctx._cstChildren = undefined
         ctx._cstLeaves = undefined
-        ctx._cstRawChildren = undefined
-        ctx._cstTriviaLog = undefined
-        ctx._triviaLog = undefined
 
         let v: unknown
         try {
@@ -1397,9 +1401,6 @@ function makeDriver(
           ctx._cstBuf = sBuf
           ctx._cstChildren = sChildren
           ctx._cstLeaves = sLeaves
-          ctx._cstRawChildren = sRaw
-          ctx._cstTriviaLog = sTl
-          ctx._triviaLog = sOuterTl
         }
         if (v === FAIL) return FAIL
         const end = EC.e
@@ -1516,7 +1517,7 @@ function makeDriver(
         }
         // A ROOT NODE IS NOT A CHILD — see the same guard in `assemble.ts`.
         if (saved.buf !== undefined || saved.ch !== undefined) {
-          pushCstChild(ctx, nd, rawEntry(nd, input, pos, end))
+          pushCstChild(ctx, nd, saved.buf !== undefined ? rawEntry(nd, input, pos, end) : undefined)
         }
         EC.e = end
         return nd
@@ -1534,11 +1535,10 @@ function makeDriver(
         const mLv = need ? cstLeavesLen(ctx) : 0
         const mFl = need ? ctx._fields?.length ?? 0 : 0
         const mEr = need ? ctx._errors?.length ?? 0 : 0
-        const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
         const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
         const v = exec(code[ip + 1]!, input, pos, ctx)
         if (v !== FAIL) return v
-        if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+        if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mRoot)
         if (ctx._fc === true) {
           if (code[ip + 2] !== 1) return FAIL
           ctx._fc = false
@@ -1562,10 +1562,9 @@ function makeDriver(
         const mLv = need ? cstLeavesLen(ctx) : 0
         const mFl = need ? ctx._fields?.length ?? 0 : 0
         const mEr = need ? ctx._errors?.length ?? 0 : 0
-        const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
         const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
         const v = exec(code[ip + 1]!, input, pos, ctx)
-        if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+        if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mRoot)
         // A lookahead contains its child's commitment (`not.ts` returns a fresh
         // result): a generic child's committed failure is cleared here.
         ctx._fc = savedFc
@@ -1594,10 +1593,9 @@ function makeDriver(
         const mLv = need ? cstLeavesLen(ctx) : 0
         const mFl = need ? ctx._fields?.length ?? 0 : 0
         const mEr = need ? ctx._errors?.length ?? 0 : 0
-        const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
         const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
         const v = exec(code[ip + 1]!, input, pos, ctx)
-        if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+        if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mRoot)
         // A lookahead contains its child's commitment, as under `not()`.
         ctx._fc = savedFc
         if (ctx._probe !== undefined) ctx._probe.best = savedProbe ?? null
@@ -1708,15 +1706,18 @@ function makeDriver(
     const nextHostReadsChildren = host?._parsemanReadsChildren !== false
       || host?._parsemanCstCollapse !== undefined
     const nextHostCaptureTrivia = host?._parsemanCaptureTrivia
+    const nextRecording = ctx._rootTriviaLog !== undefined && ctx._rootTriviaLog.gapKind >= 0
     if (depth > 0) {
       frames.push({
         scan: SCAN, fast: FAST,
         hostCst: HOSTCST, hostReadsChildren: HOSTREADSCHILDREN,
         hostCaptureTrivia: HOSTCAPTURETRIVIA,
+        recording: RECORDING,
         end: EC.e,
       })
     }
     depth++
+    if (nextRecording !== RECORDING) installSkip(nextRecording)
     FAST = nextFast
     SCAN = null
     HOSTCST = nextHostCst
@@ -1734,6 +1735,7 @@ function makeDriver(
     HOSTCST = prior.hostCst
     HOSTREADSCHILDREN = prior.hostReadsChildren
     HOSTCAPTURETRIVIA = prior.hostCaptureTrivia
+    if (prior.recording !== RECORDING) installSkip(prior.recording)
     EC.e = prior.end
   }
 

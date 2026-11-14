@@ -104,10 +104,10 @@ describe('buildRootTriviaIndex()', () => {
   it('uses generic selected markers while preserving the one owning source range', () => {
     const labels = ['inlineWhitespace', 'blockComment', 'significantNewline'] as const
     // Two arbitrary selected markers belong to one committed trivia range.
-    const index = buildRootTriviaIndex([
+    const index = buildRootTriviaIndex(Int32Array.from([
       1, 12, 2, 7, 1,
       1, 12, 8, 9, 2,
-    ], labels)
+    ]), labels)
 
     expect(index.entries.length).toBe(2)
     expect(index.entries.insertIndex(0)).toBeUndefined()
@@ -123,14 +123,14 @@ describe('buildRootTriviaIndex()', () => {
   it('answers sparse boundary lookups without maps, then materializes and filters its gaps', () => {
     const labels = ['blockComment', 'lineComment'] as const
     const input = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ'
-    const index = buildRootTriviaIndex([
+    const index = buildRootTriviaIndex(Int32Array.from([
       // Two selected markers in one authored trivia gap.
       1, 12, 2, 7, 0,
       1, 12, 8, 11, 1,
       // A later, independent gap makes the binary-search boundary route prove
       // it does not depend on the document-wide maps.
       20, 29, 21, 24, 0,
-    ], labels)
+    ]), labels)
 
     expect(index.entryIndicesAfter(1)).toEqual([0, 1])
     expect(index.entryIndicesBefore(12)).toEqual([0, 1])

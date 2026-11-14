@@ -17,7 +17,7 @@
  *      sinks? Measured with `%HasFastProperties` before and after.
  *
  * The grammar deliberately routes through `token()`, which is the construct
- * that clears `_triviaLog` / `_rootTriviaLog` — the operation the ctx-shape
+ * that clears `_rootTriviaLog` — the operation the ctx-shape
  * change is about. Run this file at the base commit and at the change and
  * compare the counts: a count that does not drop means the fix did not land.
  */

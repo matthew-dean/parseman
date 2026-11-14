@@ -12,7 +12,7 @@ import { describe, expect, it } from 'vitest'
 import { encodeTable } from '../../src/table/encode.ts'
 import { cfgKey, countSiteVisits, tableRules } from '../../src/table/assemble.ts'
 import { defaultAssemblyCfgs } from '../../src/table/emit.ts'
-import { EMITTED_PARAMS, emitAssemblySource, type EmittedFactory } from '../../src/table/emit-assembly.ts'
+import { EMITTED_ABI, EMITTED_PARAMS, emitAssemblySource, type EmittedFactory } from '../../src/table/emit-assembly.ts'
 import { assemblyExtraIps, resolveTable, type TableProgram } from '../../src/table/program.ts'
 import { run } from '../../src/functional/run.ts'
 import type { Combinator } from '../../src/types.ts'
@@ -25,7 +25,7 @@ function emitted(prog: TableProgram): TableProgram {
     const em = emitAssemblySource(resolveTable(prog), prog, cfg, assemblyExtraIps(prog), true)
     // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
     const factory = new Function(...EMITTED_PARAMS, em.source) as EmittedFactory
-    return { key: cfgKey(cfg), arity: EMITTED_PARAMS.length, factory, plan: em.plan, reached: [...em.reached] }
+    return { key: cfgKey(cfg), abi: EMITTED_ABI, factory, plan: em.plan, reached: [...em.reached] }
   }) }
 }
 

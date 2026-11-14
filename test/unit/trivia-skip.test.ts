@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import type { CstCaptureBuf } from '../../src/cst/capture-buffer.ts'
 import { advanceTrivia, commitTriviaScan, consumeTrivia, scanTrivia, triviaScanEnd } from '../../src/combinators/trivia-skip.ts'
 import { trivia, label, regex, oneOrMore, choice, sequence, literal } from '../../src/index.ts'
 
@@ -71,20 +72,22 @@ describe('scanTrivia()', () => {
 
   it('tracks lines and commits logs through the generic fallback', () => {
     const lineIndex = { lineStarts: [0] }
-    const log: number[] = []
+    const buf: CstCaptureBuf = {}
     const ctx = {
       trackLines: true,
       trivia: sequence(literal('x'), regex(/\n+/)),
       _lineIndex: lineIndex,
       _lineScannedTo: 0,
-      _triviaLog: log,
+      captureTrivia: true,
+      _cstBuf: buf,
     }
     const scan = scanTrivia('x\nz', 0, ctx)
     expect(triviaScanEnd(scan)).toBe(2)
     expect(ctx._lineScannedTo).toBe(2)
     expect(lineIndex.lineStarts).toEqual([0, 2])
+    expect(buf.tl).toBeUndefined()
     commitTriviaScan(scan)
-    expect(log).toEqual([0, 2])
+    expect(buf.tl).toEqual([0, 2, 0])
   })
 })
 
@@ -96,12 +99,12 @@ describe('consumeTrivia() — non-deferred', () => {
 })
 
 describe('consumeTrivia()', () => {
-  it('commits deferred trivia into _triviaLog when recording is active', () => {
-    const log: number[] = []
-    const ctx = { trackLines: false, trivia: regex(/[ \t]+/), _triviaLog: log }
+  it('commits deferred trivia into the open capture buffer when recording is active', () => {
+    const buf: CstCaptureBuf = {}
+    const ctx = { trackLines: false, trivia: regex(/[ \t]+/), captureTrivia: true, _cstBuf: buf }
     const end = consumeTrivia('  hi', 0, ctx)
     expect(end).toBe(2)
-    expect(log).toEqual([0, 2])
+    expect(buf.tl).toEqual([0, 2, 0])
   })
 })
 

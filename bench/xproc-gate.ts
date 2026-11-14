@@ -191,11 +191,18 @@ const random = (): number => {
 
 const density = (await import(path.join(ROOT, 'bench', 'grammar-density', 'grammar.ts')) as {
   DENSITY_CASES: ReadonlyArray<{ id: string }>
-}).DENSITY_CASES.map(c => ({ suite: 'density' as const, id: c.id }))
+}).DENSITY_CASES.map(c => ({ suite: 'density' as const, id: c.id, base: c.id, capture: false, reported: false }))
 const workloads = (await import(path.join(ROOT, 'bench', 'workloads', 'index.ts')) as {
   buildWorkloads: () => Array<{ id: string }>
-}).buildWorkloads().map(w => ({ suite: 'workloads' as const, id: w.id }))
-const cases = [...density, ...workloads]
+}).buildWorkloads().map(w => ({ suite: 'workloads' as const, id: w.id, base: w.id, capture: false, reported: false }))
+// The parse that records every trivia gap. Reported, never gated: the reference keeps
+// those gaps in a different store, so this row is not like for like.
+const allTrivia = [
+  { suite: 'density' as const, base: 'rollback/none' },
+  { suite: 'workloads' as const, base: 'css/stylesheet' },
+  { suite: 'workloads' as const, base: 'less/stylesheet' },
+].map(c => ({ ...c, id: `${c.base} all`, capture: true, reported: true }))
+const cases = [...density, ...workloads, ...allTrivia]
   .filter(c => (SUITE === null || c.suite === SUITE) && (FILTER === null || c.id.includes(FILTER)))
 if (cases.length === 0) fail(GATE, `no case matches --case=${FILTER}`)
 
@@ -230,7 +237,7 @@ if (AGGREGATE !== null) {
 }
 
 async function measureAll(): Promise<{ logs: Map<string, number[]>; minLogs: Map<string, number[]> }> {
-  const COPY = ['bench/grammar-density', 'bench/workloads', 'examples'] as const
+  const COPY = ['bench/grammar-density', 'bench/workloads', 'bench/all-trivia.ts', 'examples'] as const
   const refDist = buildSide(materialise(GATE, ROOT, REF, COPY))
   const headDist = buildSide(HEAD_REF === null ? workingTreeBuildDir() : materialise(GATE, ROOT, HEAD_REF, COPY))
   // Checked on the built dist/ each side is copied from: every worker then loads that
@@ -244,8 +251,8 @@ async function measureAll(): Promise<{ logs: Map<string, number[]>; minLogs: Map
     for (const c of cases) {
       if (round >= roundsFor(c.id)) continue
       const refFirst = random() < 0.5
-      const first = measure(stage, refFirst ? refDist : headDist, c.suite, c.id)
-      const second = measure(stage, refFirst ? headDist : refDist, c.suite, c.id)
+      const first = measure(stage, refFirst ? refDist : headDist, c)
+      const second = measure(stage, refFirst ? headDist : refDist, c)
       const [ref, head] = refFirst ? [first, second] : [second, first]
       if (ref.digest !== head.digest) {
         fail(GATE, `case ${c.id}: the two sides produced DIFFERENT parse results (ref ${ref.digest}, head ${head.digest}).`)
@@ -317,11 +324,11 @@ async function prepareStage(): Promise<string> {
 }
 
 type Reading = { median: number; min: number; digest: string }
-function measure(stage: string, dist: string, suite: 'density' | 'workloads', id: string): Reading {
+function measure(stage: string, dist: string, { suite, id, base, capture }: (typeof cases)[number]): Reading {
   rmSync(path.join(stage, 'dist'), { recursive: true, force: true })
   cpSync(dist, path.join(stage, 'dist'), { recursive: true })
   const s = CONFIG[suite]
-  const args = { suite, id, heapPad: Math.floor(random() * 65_536), rules: CONFIG.density.rules, ...s }
+  const args = { suite, id: base, capture, heapPad: Math.floor(random() * 65_536), rules: CONFIG.density.rules, ...s }
   // An ALLOWLIST, not a denylist. `NODE_V8_COVERAGE` made parses 6x slower and
   // `NODE_COMPILE_CACHE` changes how code loads; both passed a guard that only removed
   // NODE_OPTIONS. A worker gets PATH, HOME and the padding, and nothing else.
@@ -347,11 +354,12 @@ const rows = cases.map(c => {
   const mins = minLogs!.get(c.id)!
   const sortedMins = [...mins].sort((x, y) => x - y)
   const minCenter = (Math.exp(sortedMins[sortedMins.length >> 1] ?? 0) - 1) * 100
-  return { id: c.id, minCenter, ...caseVerdict(d, SETTINGS, random) }
+  const v = caseVerdict(d, SETTINGS, random)
+  return { id: c.id, minCenter, ...v, reported: c.reported, failed: v.failed && !c.reported }
 })
 for (const r of rows) {
   console.log(
-    `  ${r.failed ? 'FAIL' : 'ok  '}  ${r.id.padEnd(17)} median ${sign(r.center).padStart(6)} (p ${r.pMedian.toExponential(1)})`
+    `  ${r.reported ? 'rep ' : r.failed ? 'FAIL' : 'ok  '}  ${r.id.padEnd(20)} median ${sign(r.center).padStart(6)} (p ${r.pMedian.toExponential(1)})`
     + `   mean ${sign(r.mean).padStart(6)} (p ${r.pMean.toExponential(1)})   min ${sign(r.minCenter).padStart(6)}`
     + `   head slower in ${r.slower}/${r.n} rounds`,
   )
@@ -369,7 +377,7 @@ summary([
   '',
   '| case | median Δ | sign-test p | mean Δ | sign-flip p | head slower | verdict |',
   '| --- | ---: | ---: | ---: | ---: | ---: | --- |',
-  ...rows.map(r => `| ${r.id} | ${sign(r.center)} | ${r.pMedian.toExponential(1)} | ${sign(r.mean)} | ${r.pMean.toExponential(1)} | ${r.slower}/${r.n} | ${gating ? (r.failed ? '**FAIL**' : 'ok') : 'report only'} |`),
+  ...rows.map(r => `| ${r.id} | ${sign(r.center)} | ${r.pMedian.toExponential(1)} | ${sign(r.mean)} | ${r.pMean.toExponential(1)} | ${r.slower}/${r.n} | ${gating && !r.reported ? (r.failed ? '**FAIL**' : 'ok') : 'report only'} |`),
 ].join('\n'))
 
 const failures = rows.filter(r => r.failed)

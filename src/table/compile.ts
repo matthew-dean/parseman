@@ -1,5 +1,5 @@
 import type { Combinator, CompiledParser, ParseContext, ParseError, ParseResult } from '../types.ts'
-import type { HostMode } from '../cst/host-mode.ts'
+import { COMPILED_ENTRY, type HostMode } from '../cst/host-mode.ts'
 import { createParseContext } from '../parse-context.ts'
 import { encodeTableProgram, type TableSettings } from './encode.ts'
 import { emitTableModule, emitTableExpression } from './emit.ts'
@@ -265,10 +265,23 @@ function compileImpl<T>(
     ? emitTableExpression(artifact, { entry: ENTRY, runtimeRef: opts.runtimeRef ?? 'tableRules', ...emitOpts })
     : null
 
-  const runOnce = (input: string, pos: number, ctx: ParseContext): ParseResult<T> =>
-    entry(input, pos, ctx) as ParseResult<T>
+  const runOnce = (input: string, pos: number, ctx: ParseContext): ParseResult<T> => {
+    // A removed sink is refused, not ignored: ignoring it leaves the caller's log
+    // empty, which reads as a document without trivia. Once per parse, here, where a
+    // caller's context enters; a rule entry is also called per rule across pieces.
+    if ((ctx as { _triviaLog?: unknown })._triviaLog !== undefined) {
+      throw new TypeError(
+        'parseman: ParseContext._triviaLog was removed in 0.62.0. Run the parser with '
+          + "`run(parser, input, { rootTrivia: { select: 'all' } })` and read `RunResult.rootTrivia.rows`: "
+          + 'five numbers per row, `gapStart, gapEnd, start, end, kind`, where `kind` indexes '
+          + "`RunResult.rootTrivia.select` and `''` is unlabelled trivia.",
+      )
+    }
+    return entry(input, pos, ctx) as ParseResult<T>
+  }
 
   return {
+    [COMPILED_ENTRY]: entry,
     source,
     inlineExpression,
     ...(printable ? {} : { runtimeOnly }),

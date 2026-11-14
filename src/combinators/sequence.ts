@@ -127,7 +127,6 @@ export function sequence<T extends [Combinator<unknown>, ...Combinator<unknown>[
           }
           let termPos = cur
           const markTlog = deferredTrivia ? cstTlLen(ctx) : 0
-          const markLog = deferredTrivia ? (ctx._triviaLog?.length ?? 0) : 0
           const markRootLog = deferredTrivia ? (ctx._rootTriviaLog?.length ?? 0) : 0
           if (ctx.trivia && i > 0) {
             termPos = deferredTrivia
@@ -135,7 +134,6 @@ export function sequence<T extends [Combinator<unknown>, ...Combinator<unknown>[
               : advanceTrivia(input, cur, ctx)
           }
           const scanTlog = deferredTrivia ? cstTlLen(ctx) : 0
-          const scanLog = deferredTrivia ? (ctx._triviaLog?.length ?? 0) : 0
           const scanRootLog = deferredTrivia ? (ctx._rootTriviaLog?.length ?? 0) : 0
           if (leading?.[i] === true) LEAD.at = cur
           const result = parsers[i]!.parse(input, termPos, ctx)
@@ -144,7 +142,7 @@ export function sequence<T extends [Combinator<unknown>, ...Combinator<unknown>[
           if (result.span.end > termPos || termPos === cur) cur = result.span.end
           else if (deferredTrivia) {
             rollbackScannedTriviaAt(
-              ctx, markTlog, scanTlog, markLog, scanLog, markRootLog, scanRootLog,
+              ctx, markTlog, scanTlog, markRootLog, scanRootLog,
             )
           }
         }

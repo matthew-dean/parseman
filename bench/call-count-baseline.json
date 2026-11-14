@@ -1,102 +1,150 @@
 {
   "emitted/less/stylesheet": {
-    "calls": 776257,
-    "branches": 3931540
+    "calls": 742502,
+    "branches": 3813607
+  },
+  "emitted/less/stylesheet/allTrivia": {
+    "calls": 753390,
+    "branches": 3838424
   },
   "emitted/less/mixins": {
-    "calls": 837629,
-    "branches": 4234919
+    "calls": 799791,
+    "branches": 4102378
+  },
+  "emitted/less/mixins/allTrivia": {
+    "calls": 812455,
+    "branches": 4133388
   },
   "emitted/css/stylesheet": {
-    "calls": 434657,
-    "branches": 2356925
+    "calls": 413223,
+    "branches": 2257933
+  },
+  "emitted/css/stylesheet/allTrivia": {
+    "calls": 424863,
+    "branches": 2294681
   },
   "emitted/graphql/document": {
-    "calls": 203741,
-    "branches": 1616611
+    "calls": 185933,
+    "branches": 1513627
   },
   "emitted/json/document": {
     "calls": 166652,
-    "branches": 884709
+    "branches": 818354
+  },
+  "emitted/json/captureTrivia": {
+    "calls": 147773,
+    "branches": 753946
+  },
+  "emitted/cst/leaves": {
+    "calls": 58822,
+    "branches": 350067
+  },
+  "emitted/cst/mixed": {
+    "calls": 19814,
+    "branches": 80129
   },
   "closure/less/stylesheet": {
-    "calls": 1129029,
-    "branches": 5692179
+    "calls": 1114003,
+    "branches": 5412980
+  },
+  "closure/less/stylesheet/allTrivia": {
+    "calls": 1124891,
+    "branches": 5467435
   },
   "closure/less/mixins": {
-    "calls": 1216449,
-    "branches": 6156813
+    "calls": 1198239,
+    "branches": 5848715
+  },
+  "closure/less/mixins/allTrivia": {
+    "calls": 1210903,
+    "branches": 5912050
   },
   "closure/css/stylesheet": {
-    "calls": 619361,
-    "branches": 3161178
+    "calls": 605927,
+    "branches": 2982700
+  },
+  "closure/css/stylesheet/allTrivia": {
+    "calls": 617567,
+    "branches": 3038097
   },
   "closure/graphql/document": {
     "calls": 294347,
-    "branches": 1724325
+    "branches": 1616356
   },
   "closure/json/document": {
     "calls": 268887,
-    "branches": 1309587
+    "branches": 1218309
+  },
+  "closure/json/captureTrivia": {
+    "calls": 215958,
+    "branches": 1020895
+  },
+  "closure/cst/leaves": {
+    "calls": 107624,
+    "branches": 688134
+  },
+  "closure/cst/mixed": {
+    "calls": 31411,
+    "branches": 130750
   },
   "macro/css/ast/site.css": {
-    "calls": 201133,
-    "branches": 779979
+    "calls": 198200,
+    "branches": 695633
   },
   "macro/css/ast/positions/site.css": {
-    "calls": 245216,
-    "branches": 1344296
+    "calls": 244918,
+    "branches": 1302933
   },
   "macro/css/cst/site.css": {
-    "calls": 216438,
-    "branches": 1108404
+    "calls": 216139,
+    "branches": 1051618
   },
   "macro/scss/ast/site.css": {
-    "calls": 355515,
-    "branches": 1480058
+    "calls": 349009,
+    "branches": 1328674
   },
   "macro/scss/ast/positions/site.css": {
-    "calls": 405983,
-    "branches": 2297744
+    "calls": 405673,
+    "branches": 2233642
   },
   "macro/scss/cst/site.css": {
-    "calls": 341220,
-    "branches": 1802888
+    "calls": 340909,
+    "branches": 1725389
   },
   "macro/jess/ast/site.css": {
-    "calls": 243951,
-    "branches": 1161529
+    "calls": 242959,
+    "branches": 1046126
   },
   "macro/jess/ast/positions/site.css": {
-    "calls": 283664,
-    "branches": 1670635
+    "calls": 283328,
+    "branches": 1619904
   },
   "macro/jess/cst/site.css": {
-    "calls": 261079,
-    "branches": 1346602
+    "calls": 260742,
+    "branches": 1283435
   },
   "macro/less/ast/site.css": {
-    "calls": 323108,
-    "branches": 1397361
+    "calls": 310426,
+    "branches": 1273835
   },
   "macro/less/ast/app.less": {
-    "calls": 295123,
-    "branches": 1287883
+    "calls": 283835,
+    "branches": 1178950
   },
   "macro/less/ast/positions/site.css": {
-    "calls": 379636,
-    "branches": 2094761
+    "calls": 378168,
+    "branches": 2029545
   },
   "macro/less/ast/positions/app.less": {
-    "calls": 353216,
-    "branches": 1943072
+    "calls": 351814,
+    "branches": 1883925
   },
   "macro/less/cst/site.css": {
-    "calls": 312475,
-    "branches": 1597701
+    "calls": 311290,
+    "branches": 1526013
   },
   "macro/less/cst/app.less": {
-    "calls": 284016,
-    "branches": 1446986
+    "calls": 282801,
+    "branches": 1382203
   }
 }

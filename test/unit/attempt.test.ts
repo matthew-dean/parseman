@@ -39,14 +39,10 @@ describe('attempt', () => {
     const grammar = grammarParser({ trivia: ws }, node('Root', body, (children, fields, _span, raw, triviaLog) => ({ children, fields, raw, triviaLog })))
     for (const parser of both(grammar)) {
       const leaves: unknown[] = []
-      const raw: unknown[] = []
-      const capturedTrivia: number[] = []
       const fields: unknown[] = []
-      const triviaLog: number[] = []
       const result = parser.parse('a c', 0, {
         trackLines: false, trivia: ws, captureTrivia: true,
-        _cstLeaves: leaves, _cstRawChildren: raw, _cstTriviaLog: capturedTrivia,
-        _fields: fields, _triviaLog: triviaLog,
+        _cstLeaves: leaves, _fields: fields,
       })
       expect(result).toMatchObject({ ok: true, span: { start: 0, end: 3 }, value: {
         children: [{ value: 'a' }, { value: 'c' }], raw: [{ value: 'a' }, { value: 'c' }],
@@ -58,8 +54,6 @@ describe('attempt', () => {
       // neither receives the rejected branch; the node's own raw payload above
       // is the authoritative CST assertion.
       expect(fields).toEqual([])
-      expect(capturedTrivia).toEqual([])
-      expect(triviaLog).toEqual([1, 2])
     }
   })
 

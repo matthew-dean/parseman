@@ -23,8 +23,10 @@
  *
  * ## What it counts
  *
- *   emitted/<workload>   parseman's workloads (`bench/workloads/`) under runtime
- *                        `compile()`, which emits the whole grammar as code
+ *   emitted/<workload>   parseman's workloads (`bench/workloads/`, the corpus set and
+ *                        `buildCaptureWorkloads`) under runtime `compile()`, which
+ *                        emits the whole grammar as code; a workload with an
+ *                        all-trivia parse also counts it as `<workload>/allTrivia`
  *   closure/<workload>   the same, with `Function` refusing (a CSP), so the closure
  *                        assembler runs it
  *   macro/<dialect>/<variant>/<fixture>
@@ -87,7 +89,7 @@ const BASELINE_PATH = path.join(HERE, 'call-count-baseline.json')
 const REASONS_PATH = path.join(HERE, 'call-count-reasons.json')
 const WORKER = path.join(HERE, 'engine-guards', 'count-worker.ts')
 /** The grammars and inputs both sides run: this tree's, so only the compiler differs. */
-const COPY = ['bench/grammar-density', 'bench/workloads', 'examples', 'fixtures/jess-grammars', 'bench/jess/real-grammars.ts'] as const
+const COPY = ['bench/grammar-density', 'bench/workloads', 'bench/all-trivia.ts', 'examples', 'fixtures/jess-grammars', 'bench/jess/real-grammars.ts'] as const
 const METRICS = ['calls', 'branches'] as const
 const FAMILIES = ['emitted/', 'closure/', 'macro/'] as const
 
@@ -128,7 +130,11 @@ export async function measureSide(dir: string, out: string, only?: (row: string)
 
   if (want('emitted/') || want('closure/')) {
     const bundle = await build({
-      stdin: { contents: "export { buildWorkloads } from './bench/workloads/index.ts'", resolveDir: dir, loader: 'ts' },
+      stdin: {
+        contents: "import { buildWorkloads as corpus } from './bench/workloads/index.ts'\nimport { buildCaptureWorkloads } from './bench/workloads/capture.ts'\nexport const buildWorkloads = () => [...corpus(), ...buildCaptureWorkloads()]",
+        resolveDir: dir,
+        loader: 'ts',
+      },
       bundle: true,
       format: 'esm',
       platform: 'node',

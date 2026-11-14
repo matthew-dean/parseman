@@ -40,6 +40,11 @@ async function closureOf(entry: string): Promise<string[]> {
 describe('parseman/run — the minimal execution entry', () => {
   it('pulls in exactly the driver, and nothing that builds grammars', async () => {
     expect(await closureOf('src/run/index.ts')).toEqual([
+      // A DELIBERATE addition. `rootTrivia: { select: 'all' }` names rows by every trivia
+      // scope's labels, and an interpreted entry has no compile step to record them, so
+      // the driver walks the grammar once per entry with the analysis passes' own
+      // `childrenOf`. It is import-free, so the closure grows by one leaf.
+      'src/analysis/children.ts',
       'src/cst/capture-buffer.ts',
       // A DELIBERATE addition, which is what this test exists to force. The driver has
       // to refuse an artifact/host mismatch once per parse — `run()` was the one entry

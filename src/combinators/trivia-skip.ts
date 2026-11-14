@@ -8,13 +8,13 @@ import {
   visitLabeledTrivia,
 } from '../cst/trivia-kinds.ts'
 import {
-  pushCstTriviaEntry,
-  pushTriviaLogEntry,
+  pushOpenCstTriviaEntry,
   rollbackCstCapture,
   rollbackCstCaptureAt,
   saveCstMark,
 } from '../cst/capture-buffer.ts'
 import { recordLineRangeFromContext } from '../line-index.ts'
+import { growRootTriviaLog } from '../cst/trivia-entries.ts'
 import { createDetachedParseContext } from '../parse-context.ts'
 import { commonCssTriviaScanner } from '../cst/trivia-css-scanner.ts'
 
@@ -29,7 +29,7 @@ export type TriviaScan = { end: number; commit: () => void }
 export type CompactTriviaScan = number | TriviaScan
 
 /** Saved lengths for rolling back speculative trivia commits. */
-export type TriviaRollbackMark = { raw: number; tlog: number; leaves: number; fields: number; errors: number; log: number; rootLog: number }
+export type TriviaRollbackMark = { raw: number; tlog: number; leaves: number; fields: number; errors: number; rootLog: number }
 
 const NOOP_COMMIT = () => {}
 
@@ -63,18 +63,15 @@ let fastScanner3: FastTriviaScanner | null | undefined
 
 /** True when trivia recording must be deferred until the following term commits. */
 export function needsDeferredTriviaCommit(ctx: ParseContext): boolean {
-  return ctx._triviaLog !== undefined || ctx._rootTriviaLog !== undefined || ctx._cstBuf !== undefined || ctx._cstTriviaLog !== undefined
+  return ctx._rootTriviaLog !== undefined || ctx._cstBuf !== undefined
 }
 
 /** True when speculative parsing can write anything `rollbackTrivia` restores. */
 export function needsTriviaRollback(ctx: ParseContext): boolean {
   return ctx._cstBuf !== undefined
     || ctx._cstLeaves !== undefined
-    || ctx._cstRawChildren !== undefined
-    || ctx._cstTriviaLog !== undefined
     || ctx._fields !== undefined
     || ctx._errors !== undefined
-    || ctx._triviaLog !== undefined
     || ctx._rootTriviaLog !== undefined
 }
 
@@ -86,7 +83,6 @@ export function saveTriviaMark(ctx: ParseContext): TriviaRollbackMark {
     leaves: m.leaves,
     fields: m.fields,
     errors: m.errors,
-    log: ctx._triviaLog ? ctx._triviaLog.length : 0,
     rootLog: ctx._rootTriviaLog ? ctx._rootTriviaLog.length : 0,
   }
 }
@@ -104,18 +100,15 @@ export function rollbackTriviaAt(
   leaves: number,
   fields: number | undefined,
   errors: number | undefined,
-  log: number,
   rootLog: number,
 ): void {
   rollbackCstCaptureAt(ctx, raw, tlog, leaves, fields, errors)
-  if (ctx._triviaLog && ctx._triviaLog.length !== log) ctx._triviaLog.length = log
   if (ctx._rootTriviaLog && ctx._rootTriviaLog.length !== rootLog) ctx._rootTriviaLog.length = rootLog
 }
 
 export function rollbackTrivia(ctx: ParseContext, mark: TriviaRollbackMark): void {
   rollbackCstCapture(ctx, { raw: mark.raw, tlog: mark.tlog, leaves: mark.leaves, fields: mark.fields, errors: mark.errors })
   // Guarded like every other truncation — see rollbackCstCapture.
-  if (ctx._triviaLog && ctx._triviaLog.length !== mark.log) ctx._triviaLog.length = mark.log
   if (ctx._rootTriviaLog && ctx._rootTriviaLog.length !== mark.rootLog) ctx._rootTriviaLog.length = mark.rootLog
 }
 
@@ -139,8 +132,6 @@ export function rollbackScannedTriviaAt(
   ctx: ParseContext,
   tlogStart: number,
   tlogEnd: number,
-  logStart: number,
-  logEnd: number,
   rootLogStart: number,
   rootLogEnd: number,
 ): void {
@@ -149,11 +140,12 @@ export function rollbackScannedTriviaAt(
     const tlog = b.tl
     removeNumberRange(tlog, tlogStart, tlogEnd)
     if (tlog !== undefined && tlog.length === 0) b.tl = undefined
-  } else {
-    removeNumberRange(ctx._cstTriviaLog, tlogStart, tlogEnd)
   }
-  removeNumberRange(ctx._triviaLog, logStart, logEnd)
-  removeNumberRange(ctx._rootTriviaLog, rootLogStart, rootLogEnd)
+  const root = ctx._rootTriviaLog
+  if (root !== undefined && rootLogEnd > rootLogStart) {
+    root.buf.copyWithin(rootLogStart, rootLogEnd, root.length)
+    root.length -= rootLogEnd - rootLogStart
+  }
 }
 
 function parseTriviaNoCapture(
@@ -206,16 +198,13 @@ function scanWithLabels(input: string, cur: number, ctx: ParseContext): CompactT
   const spec = analyzeLabeledTrivia(triviaP)
   if (!spec) return cur
 
-  const log = ctx._triviaLog
   const rootLog = ctx._rootTriviaLog
   const rootKinds = ctx._rootTriviaKindIndex
-  const captureTl = ctx.captureTrivia && (ctx._cstBuf !== undefined || ctx._cstTriviaLog !== undefined)
+  const captureTl = ctx.captureTrivia && ctx._cstBuf !== undefined
   const mask = ctx._triviaCaptureMask
-  let fullRows: number[] | undefined
   let rootRows: number[] | undefined
   let cstRows: number[] | undefined
   const visitedEnd = visitLabeledTrivia(input, cur, spec, ctx.state, (start, matchEnd, kindIndex) => {
-    if (log !== undefined) (fullRows ??= []).push(start, matchEnd, kindIndex)
     const selectedKind = rootLog === undefined || rootKinds === undefined || ctx._rootTriviaCapture === false
       ? undefined
       : rootKinds[spec.labels[kindIndex] ?? '']
@@ -226,19 +215,28 @@ function scanWithLabels(input: string, cur: number, ctx: ParseContext): CompactT
   })
   if (visitedEnd !== undefined) {
     if (visitedEnd === cur) return cur
-    if (fullRows === undefined && rootRows === undefined && cstRows === undefined) return visitedEnd
+    if (rootRows === undefined && cstRows === undefined) return visitedEnd
     return {
       end: visitedEnd,
       commit: () => {
-        if (fullRows !== undefined && log !== undefined) log.push(...fullRows)
         if (rootRows !== undefined && rootLog !== undefined) {
           for (let i = 0; i < rootRows.length; i += 3) {
-            rootLog.push(cur, visitedEnd, rootRows[i]!, rootRows[i + 1]!, rootRows[i + 2]!)
+            const n = rootLog.length
+            if (n + 5 > rootLog.buf.length) growRootTriviaLog(rootLog, 5)
+            const b = rootLog.buf
+            b[n] = cur
+            b[n + 1] = visitedEnd
+            b[n + 2] = rootRows[i]!
+            b[n + 3] = rootRows[i + 1]!
+            b[n + 4] = rootRows[i + 2]!
+            rootLog.length = n + 5
           }
         }
         if (cstRows !== undefined) {
-          for (let i = 0; i < cstRows.length; i += 3) {
-            pushCstTriviaEntry(ctx, cstRows[i]!, cstRows[i + 1]!, cstRows[i + 2]!)
+          if (ctx._cstBuf !== undefined) {
+            for (let i = 0; i < cstRows.length; i += 3) {
+              pushOpenCstTriviaEntry(ctx, cstRows[i]!, cstRows[i + 1]!, cstRows[i + 2]!)
+            }
           }
         }
       },
@@ -315,16 +313,15 @@ export function scanTriviaCompact(input: string, cur: number, ctx: ParseContext)
   const triviaP = ctx.trivia
   if (!triviaP) return { end: cur, commit: NOOP_COMMIT }
 
-  const log = ctx._triviaLog
   const rootLog = ctx._rootTriviaLog
-  const captureTl = ctx.captureTrivia && (ctx._cstBuf !== undefined || ctx._cstTriviaLog !== undefined)
+  const captureTl = ctx.captureTrivia && ctx._cstBuf !== undefined
   if (!ctx.trackLines) {
     const fast = !ctx.triviaKindLabels ? fastTriviaScanner(triviaP) : null
-    if (fast && log === undefined && !captureTl) {
-      return { end: fast(input, cur), commit: NOOP_COMMIT }
+    if (fast && !captureTl) {
+      if (rootLog === undefined) return { end: fast(input, cur), commit: NOOP_COMMIT }
     }
 
-    if (ctx.triviaKindLabels && (log !== undefined || rootLog !== undefined || captureTl)) {
+    if (ctx.triviaKindLabels && (rootLog !== undefined || captureTl)) {
       return scanWithLabels(input, cur, ctx)
     }
 
@@ -339,7 +336,7 @@ export function scanTriviaCompact(input: string, cur: number, ctx: ParseContext)
       return { end: labelledFast ? labelledFast(input, cur) : skipWithLabels(input, cur, ctx), commit: NOOP_COMMIT }
     }
 
-    if (log !== undefined || rootLog !== undefined || captureTl) {
+    if (rootLog !== undefined || captureTl) {
       // CAPTURE DOES NOT NEED THE INTERPRETER. What lands in either sink is the
       // one `(cur, end)` row below — the trivia's internal structure is never
       // read — so a scanner that agrees with `triviaP` on `end` produces byte-
@@ -348,14 +345,14 @@ export function scanTriviaCompact(input: string, cur: number, ctx: ParseContext)
       // SEQUENCE TERM, and bought nothing that survived the call.
       const end = fast
         ? fast(input, cur)
-        : triviaEndByParse(triviaP, input, cur, ctx, log !== undefined ? false : ctx.trackLines)
+        : triviaEndByParse(triviaP, input, cur, ctx, ctx.trackLines)
       if (end === cur) return { end: cur, commit: NOOP_COMMIT }
       return {
         end,
-        commit: () => {
-          pushTriviaLogEntry(ctx, cur, end)
-          if (captureTl) pushCstTriviaEntry(ctx, cur, end)
-        },
+        // A capture-only commit pushes the entry itself, as one call.
+        commit: rootLog === undefined
+          ? () => { if (ctx._cstBuf !== undefined) pushOpenCstTriviaEntry(ctx, cur, end) }
+          : () => recordUnlabelledGap(ctx, cur, end),
       }
     }
 
@@ -365,13 +362,15 @@ export function scanTriviaCompact(input: string, cur: number, ctx: ParseContext)
   const trackTriviaLines = ctx.trackLines && triviaP._meta.canMatchNewline
 
   const fast = !ctx.triviaKindLabels ? fastTriviaScanner(triviaP) : null
-  if (fast && log === undefined && !captureTl) {
-    const end = fast(input, cur)
-    if (trackTriviaLines) recordLineRangeFromContext(ctx, input, cur, end)
-    return { end, commit: NOOP_COMMIT }
+  if (fast && !captureTl) {
+    if (rootLog === undefined) {
+      const end = fast(input, cur)
+      if (trackTriviaLines) recordLineRangeFromContext(ctx, input, cur, end)
+      return { end, commit: NOOP_COMMIT }
+    }
   }
 
-  if (ctx.triviaKindLabels && (log !== undefined || rootLog !== undefined || captureTl)) {
+  if (ctx.triviaKindLabels && (rootLog !== undefined || captureTl)) {
     const scan = scanWithLabels(input, cur, ctx)
     if (trackTriviaLines) recordLineRangeFromContext(ctx, input, cur, triviaScanEnd(scan))
     return scan
@@ -388,7 +387,7 @@ export function scanTriviaCompact(input: string, cur: number, ctx: ParseContext)
     return { end, commit: NOOP_COMMIT }
   }
 
-  if (log !== undefined || rootLog !== undefined || captureTl) {
+  if (rootLog !== undefined || captureTl) {
     // Same equivalence as the `trackLines`-off twin above; line ranges are
     // recorded from the SPAN either way, so the scanner loses nothing.
     let end: number
@@ -402,10 +401,10 @@ export function scanTriviaCompact(input: string, cur: number, ctx: ParseContext)
     if (end === cur) return { end: cur, commit: NOOP_COMMIT }
     return {
       end,
-      commit: () => {
-        pushTriviaLogEntry(ctx, cur, end)
-        if (captureTl) pushCstTriviaEntry(ctx, cur, end)
-      },
+      // A capture-only commit pushes the entry itself, as one call.
+      commit: rootLog === undefined
+        ? () => { if (ctx._cstBuf !== undefined) pushOpenCstTriviaEntry(ctx, cur, end) }
+        : () => recordUnlabelledGap(ctx, cur, end),
     }
   }
 
@@ -413,37 +412,39 @@ export function scanTriviaCompact(input: string, cur: number, ctx: ParseContext)
   return { end: tr.ok ? tr.span.end : cur, commit: NOOP_COMMIT }
 }
 
+/**
+ * Record one gap of UNLABELLED trivia, `(start, end)`, in every sink that is open: a root
+ * log takes it as one row under `''`, the kind only `rootTrivia: { select: 'all' }`
+ * defines (a label list has no `''`, so it records nothing here), and a capture buffer
+ * takes it as one entry.
+ *
+ * The one place this recording is written. A deferred `{ end, commit }` commits through
+ * it, and the table engines call it straight after their installed scanner (unlabelled
+ * trivia, `trackLines` off), where the gap is a single row and there is nothing to defer.
+ */
+export function recordUnlabelledGap(ctx: ParseContext, start: number, end: number): void {
+  // `_rootTriviaCapture` needs no test: an opaque region sets it to `true` under `'all'`.
+  // A token clears `_rootTriviaLog`, so a gap inside one never reaches the document log,
+  // whatever capture buffer is open there.
+  const rootLog = ctx._rootTriviaLog
+  if (rootLog !== undefined && rootLog.gapKind >= 0) {
+    const n = rootLog.length
+    if (n + 5 > rootLog.buf.length) growRootTriviaLog(rootLog, 5)
+    const b = rootLog.buf
+    b[n] = start
+    b[n + 1] = end
+    b[n + 2] = start
+    b[n + 3] = end
+    b[n + 4] = rootLog.gapKind
+    rootLog.length = n + 5
+  }
+  if (ctx.captureTrivia === true && ctx._cstBuf !== undefined) pushOpenCstTriviaEntry(ctx, start, end)
+}
+
 /** The object-shaped form of `scanTriviaCompact`. No engine calls it; the trivia-skip tests compare the two. */
 export function scanTrivia(input: string, cur: number, ctx: ParseContext): TriviaScan {
   const scan = scanTriviaCompact(input, cur, ctx)
   return typeof scan === 'number' ? { end: scan, commit: NOOP_COMMIT } : scan
-}
-
-/**
- * Skip trivia at `cur` through an INSTALLED scanner, recording it immediately.
- *
- * The table drivers install a scanner only for UNLABELLED trivia with
- * `trackLines` off, and that is exactly the case where the deferred path's whole
- * commit is the single row `(cur, end)` — so there is nothing to defer, and the
- * `{ end, commit }` pair plus its closure that `scanTrivia(…).commit()` allocated
- * on EVERY sequence term of EVERY capturing grammar buy nothing. This is that
- * branch with the allocations removed, kept here so recording has one home.
- */
-export function skipTriviaScanned(
-  s: FastTriviaScanner,
-  input: string,
-  cur: number,
-  ctx: ParseContext,
-): number {
-  const end = s(input, cur)
-  if (end !== cur) {
-    // `pushTriviaLogEntry`'s kind-index branch is unreachable without labels.
-    if (ctx._triviaLog !== undefined) ctx._triviaLog.push(cur, end)
-    if (ctx.captureTrivia === true && (ctx._cstBuf !== undefined || ctx._cstTriviaLog !== undefined)) {
-      pushCstTriviaEntry(ctx, cur, end)
-    }
-  }
-  return end
 }
 
 /**

@@ -10,7 +10,7 @@ import {
 } from '../../src/index.ts'
 import { buildGrammarPlan } from '../../src/compiler/grammar-coverage-ids.ts'
 import { assemble, tableRules } from '../../src/table/assemble.ts'
-import { EMITTED_PARAMS, emitAssemblySource } from '../../src/table/emit-assembly.ts'
+import { EMITTED_ABI, EMITTED_PARAMS, emitAssemblySource } from '../../src/table/emit-assembly.ts'
 import { defaultAssemblyCfgs, emitFoldedModule, emitTableModule } from '../../src/table/emit.ts'
 import { encodeTable, type TableSettings } from '../../src/table/encode.ts'
 import { execRules } from '../../src/table/exec.ts'
@@ -64,7 +64,7 @@ function precompiled(prog: TableProgram, mutate: (source: string) => string = so
   const factory = new Function(...EMITTED_PARAMS, mutate(emitted.source)) as PrecompiledAssembly['factory']
   return ownTableProgram({
     ...prog,
-    asm: [{ key: 0, arity: EMITTED_PARAMS.length, factory, plan: emitted.plan, reached: [...emitted.reached] }],
+    asm: [{ key: 0, abi: EMITTED_ABI, factory, plan: emitted.plan, reached: [...emitted.reached] }],
   })
 }
 
@@ -163,8 +163,8 @@ describe('direct-bound dispatch topology', () => {
     const armBlock = source.slice(
       source.indexOf('function dispatchArmBlock('), source.indexOf('function trackLinesInto('),
     )
-    expect(armBlock).toMatch(/a0\(input, pos, selEnd, key, ctx, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot\)/)
-    expect(armBlock).toMatch(/a3\(input, pos, selEnd, key, ctx, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot\)/)
+    expect(armBlock).toMatch(/a0\(input, pos, selEnd, key, ctx, need, mRaw, mTl, mLv, mFl, mEr, mRoot\)/)
+    expect(armBlock).toMatch(/a3\(input, pos, selEnd, key, ctx, need, mRaw, mTl, mLv, mFl, mEr, mRoot\)/)
     expect(armBlock).not.toMatch(/arms\[|routed\[|target\(/)
 
     const allRouted = dispatch(regex(/[a-z]+/), when('a', routed()), otherwise(routed()))

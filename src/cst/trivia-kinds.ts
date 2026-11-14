@@ -1,5 +1,6 @@
 import type { CharRange, Combinator, ParseContext } from '../types.ts'
-import { pushCstTriviaEntry, pushTriviaLogEntry } from './capture-buffer.ts'
+import { pushOpenCstTriviaEntry } from './capture-buffer.ts'
+import { growRootTriviaLog } from './trivia-entries.ts'
 import { startsFirstSet } from '../combinators/first-set.ts'
 import { createDetachedParseContext } from '../parse-context.ts'
 import {
@@ -265,8 +266,6 @@ export function recordTriviaChunks(ctx: ParseContext, chunks: readonly TriviaChu
   const rootKinds = ctx._rootTriviaKindIndex
   const rootMark = rootLog?.length ?? 0
   for (const ch of chunks) {
-    // Global trivia log: always complete (never kind-filtered).
-    pushTriviaLogEntry(ctx, ch.start, ch.end, kinds ? ch.kindIndex : undefined)
     const rootKindIndex = ctx._rootTriviaCapture === false || rootLog === undefined || rootKinds === undefined || kinds === undefined
       ? -1
       : (rootKinds[kinds[ch.kindIndex] ?? ''] ?? -1)
@@ -274,23 +273,32 @@ export function recordTriviaChunks(ctx: ParseContext, chunks: readonly TriviaChu
       // Fill the enclosing committed gap after the scanner has consumed every
       // chunk. A selected marker therefore carries its exact authored context
       // without recording any whitespace-only chunk.
-      rootLog!.push(0, 0, ch.start, ch.end, rootKindIndex)
+      const n = rootLog!.length
+      if (n + 5 > rootLog!.buf.length) growRootTriviaLog(rootLog!, 5)
+      const b = rootLog!.buf
+      b[n] = 0
+      b[n + 1] = 0
+      b[n + 2] = ch.start
+      b[n + 3] = ch.end
+      b[n + 4] = rootKindIndex
+      rootLog!.length = n + 5
     }
     // Per-node CST log: honour the kind mask when both a mask and labels are
     // present, so a host can capture (e.g.) comments only without logging every
     // whitespace run. No mask / no labels → capture everything, as before.
-    if (ctx.captureTrivia && (ctx._cstBuf !== undefined || ctx._cstTriviaLog !== undefined)) {
+    if (ctx.captureTrivia && ctx._cstBuf !== undefined) {
       if (mask === undefined || kinds === undefined || (mask & (1 << ch.kindIndex)) !== 0) {
-        pushCstTriviaEntry(ctx, ch.start, ch.end, kinds ? ch.kindIndex : undefined)
+        pushOpenCstTriviaEntry(ctx, ch.start, ch.end, kinds ? ch.kindIndex : undefined)
       }
     }
   }
   if (rootLog !== undefined && rootLog.length !== rootMark && chunks.length > 0) {
     const start = chunks[0]!.start
     const end = chunks[chunks.length - 1]!.end
+    const b = rootLog.buf
     for (let offset = rootMark; offset < rootLog.length; offset += 5) {
-      rootLog[offset] = start
-      rootLog[offset + 1] = end
+      b[offset] = start
+      b[offset + 1] = end
     }
   }
 }
@@ -306,7 +314,7 @@ export function recordTriviaChunks(ctx: ParseContext, chunks: readonly TriviaChu
  * so an unknown name is a normal cross-dialect no-op, not necessarily a typo, and
  * is not worth a warning that would cry wolf on legitimate superset lists. An empty
  * `keep` (or one where nothing matches) yields `0`, which means "capture NO trivia
- * into per-node logs" — an intentional, valid state (the global `_triviaLog` is
+ * into per-node logs" — an intentional, valid state (the root trivia table is
  * unaffected either way). If you expect comments and get an empty per-node log,
  * check the name against the grammar's `triviaKindLabels`.
  */

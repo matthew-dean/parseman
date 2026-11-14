@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { choice, label, literal, oneOrMore, regex, sequence, trivia } from '../../src/index.ts'
 import { createParseContext } from '../../src/parse-context.ts'
+import type { CstCaptureBuf } from '../../src/cst/capture-buffer.ts'
 import {
   advanceTrivia,
   commitTriviaScan,
@@ -11,8 +12,9 @@ import {
   scanTrivia,
   scanTriviaCompact,
   triviaScanEnd,
-  skipTriviaScanned,
+  recordUnlabelledGap,
 } from '../../src/combinators/trivia-skip.ts'
+import { makeRootLog, pushRows, rowsOf } from '../helpers/root-log.ts'
 
 const labeled = trivia(oneOrMore(choice(
   label('space', regex(/[ \t]+/)),
@@ -24,7 +26,7 @@ describe('trivia skip branch matrix', () => {
     const ctx = createParseContext()
     ctx.trivia = labeled
     ctx.triviaKindLabels = ['space', 'comment']
-    ctx._rootTriviaLog = []
+    ctx._rootTriviaLog = makeRootLog()
     ctx._rootTriviaKindIndex = { comment: 0 }
 
     const first = scanTriviaCompact('   x', 0, ctx)
@@ -33,7 +35,7 @@ describe('trivia skip branch matrix', () => {
     expect(second).toBe(3)
     expect(triviaScanEnd(first)).toBe(3)
     expect(commitTriviaScan(first)).toBe(3)
-    expect(ctx._rootTriviaLog).toEqual([])
+    expect(rowsOf(ctx._rootTriviaLog)).toEqual([])
 
     // The legacy API is the positional contract embedded in precompiled
     // factories from earlier runtimes. It must remain object-shaped even when
@@ -45,7 +47,7 @@ describe('trivia skip branch matrix', () => {
     const retained = scanTriviaCompact(' /*x*/z', 0, ctx)
     expect(retained).not.toBeTypeOf('number')
     expect(commitTriviaScan(retained)).toBe(6)
-    expect(ctx._rootTriviaLog).toEqual([0, 6, 1, 6, 0])
+    expect(rowsOf(ctx._rootTriviaLog)).toEqual([0, 6, 1, 6, 0])
   })
 
   it('tracks newline ranges on both fast and labelled advance paths', () => {
@@ -66,38 +68,40 @@ describe('trivia skip branch matrix', () => {
     expect(advanceTrivia('  /*x*/z', 0, classified)).toBe(7)
   })
 
-  it('defers and commits labelled global, root, and CST trivia records', () => {
+  it('defers and commits labelled root and CST trivia records', () => {
     const ctx = createParseContext()
+    const buf: CstCaptureBuf = {}
     ctx.trivia = labeled
     ctx.triviaKindLabels = ['space', 'comment']
-    ctx._triviaLog = []
-    ctx._rootTriviaLog = []
+    ctx._rootTriviaLog = makeRootLog()
     ctx._rootTriviaKindIndex = { comment: 0 }
     ctx.captureTrivia = true
     ctx._triviaCaptureMask = 1 << 1
-    ctx._cstTriviaLog = []
+    ctx._cstBuf = buf
 
     const scan = scanTrivia('  /*x*/ z', 0, ctx)
     expect(triviaScanEnd(scan)).toBe(8)
-    expect(ctx._triviaLog).toEqual([])
+    expect(rowsOf(ctx._rootTriviaLog)).toEqual([])
+    expect(buf.tl).toBeUndefined()
     commitTriviaScan(scan)
-    expect(ctx._triviaLog).toEqual([0, 2, 0, 2, 7, 1, 7, 8, 0])
-    expect(ctx._rootTriviaLog).toEqual([0, 8, 2, 7, 0])
-    expect(ctx._cstTriviaLog).toEqual([2, 7, 0, 1])
+    expect(rowsOf(ctx._rootTriviaLog)).toEqual([0, 8, 2, 7, 0])
+    expect(buf.tl).toEqual([2, 7, 0, 1])
   })
 
   it('uses the buffered labelled fallback when the repeat minimum exceeds one', () => {
     const twice = trivia(oneOrMore(label('space', regex(/ /)), { min: 2 }))
     const ctx = createParseContext()
+    const buf: CstCaptureBuf = {}
     ctx.trivia = twice
     ctx.triviaKindLabels = ['space']
-    ctx._triviaLog = []
+    ctx.captureTrivia = true
+    ctx._cstBuf = buf
 
     expect(triviaScanEnd(scanTrivia(' x', 0, ctx))).toBe(0)
     const scan = scanTrivia('  x', 0, ctx)
     expect(triviaScanEnd(scan)).toBe(2)
     commitTriviaScan(scan)
-    expect(ctx._triviaLog).toEqual([0, 1, 0, 1, 2, 0])
+    expect(buf.tl).toEqual([0, 1, 0, 0, 1, 2, 0, 0])
   })
 
   it('covers fast and interpreter recording with and without line tracking', () => {
@@ -109,9 +113,11 @@ describe('trivia skip branch matrix', () => {
     ]
     for (const entry of cases) {
       const ctx = createParseContext()
+      const buf: CstCaptureBuf = {}
       ctx.trackLines = entry.track
       ctx.trivia = entry.parser
-      ctx._triviaLog = []
+      ctx.captureTrivia = true
+      ctx._cstBuf = buf
       if (entry.track) {
         ctx._lineIndex = { lineStarts: [0] }
         ctx._lineScannedTo = 0
@@ -119,7 +125,7 @@ describe('trivia skip branch matrix', () => {
       const scan = scanTrivia(entry.input, 0, ctx)
       expect(triviaScanEnd(scan)).toBe(entry.end)
       commitTriviaScan(scan)
-      expect(ctx._triviaLog).toEqual([0, entry.end])
+      expect(buf.tl).toEqual([0, entry.end, 0])
     }
   })
 
@@ -216,27 +222,29 @@ describe('trivia skip branch matrix', () => {
 
   it('records through an installed scanner and restores scalar/lookahead marks', () => {
     const ctx = createParseContext()
-    ctx._triviaLog = []
+    const buf: CstCaptureBuf = {}
+    const rootLog = makeRootLog([0, 1, 0, 1, 0])
+    ctx._rootTriviaLog = rootLog
     ctx.captureTrivia = true
-    ctx._cstTriviaLog = []
+    ctx._cstBuf = buf
     const scanner = fastTriviaScanner(regex(/[ ]+/))!
-    expect(skipTriviaScanned(scanner, '  x', 0, ctx)).toBe(2)
-    expect(ctx._triviaLog).toEqual([0, 2])
-    expect(ctx._cstTriviaLog).toEqual([0, 2, 0])
+    expect(scanner('  x', 0)).toBe(2)
+    recordUnlabelledGap(ctx, 0, 2)
+    expect(buf.tl).toEqual([0, 2, 0])
 
     const mark = saveLookaheadMark(ctx)
-    ctx._triviaLog.push(2, 3)
-    ctx._cstTriviaLog.push(2, 3, 0)
+    pushRows(rootLog, 2, 3, 2, 3, 0)
+    buf.tl!.push(2, 3, 0)
     ctx._probe = { offset: 0, best: { ok: false, expected: ['new'], span: { start: 2, end: 2 } } }
     rollbackLookahead(ctx, mark)
-    expect(ctx._triviaLog).toEqual([0, 2])
-    expect(ctx._cstTriviaLog).toEqual([0, 2, 0])
+    expect(rowsOf(rootLog)).toEqual([0, 1, 0, 1, 0])
+    expect(buf.tl).toEqual([0, 2, 0])
     expect(ctx._probe!.best).toBeNull()
 
-    ctx._triviaLog.push(2, 3)
-    ctx._cstTriviaLog.push(2, 3, 0)
-    rollbackTriviaAt(ctx, 0, 3, 0, 0, 0, 2, 0)
-    expect(ctx._triviaLog).toEqual([0, 2])
-    expect(ctx._cstTriviaLog).toEqual([0, 2, 0])
+    pushRows(rootLog, 2, 3, 2, 3, 0)
+    buf.tl!.push(2, 3, 0)
+    rollbackTriviaAt(ctx, 0, 3, 0, 0, 0, 5)
+    expect(rowsOf(rootLog)).toEqual([0, 1, 0, 1, 0])
+    expect(buf.tl).toEqual([0, 2, 0])
   })
 })

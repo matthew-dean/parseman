@@ -1,4 +1,4 @@
-/** View over a flat trivia log (`_triviaLog` or per-node `triviaLog`). */
+/** View over a flat trivia log (a per-node `triviaLog`, or a `(start, end)` log). */
 export type TriviaEntriesView = {
   readonly length: number
   readonly labels: readonly string[] | undefined
@@ -63,6 +63,37 @@ const EMPTY_GAPS: readonly RootTriviaGap[] = Object.freeze([])
 /** Number of packed fields in one selected-root trivia row. */
 const SELECTED_ROOT_STRIDE = 5
 
+/**
+ * The root trivia log of one `run()`: five-number rows (`buildRootTriviaIndex`) in an
+ * `Int32Array`, with `length` as the cursor. A row is written in place and `length`
+ * moved past it, a rollback sets `length`, and `RunResult.rootTrivia.rows` is the
+ * `subarray` up to `length`, so no row is copied out.
+ *
+ * Not a `number[]`: a document's rows outgrow V8's largest regular object (128 KB, about
+ * 3.2k five-number rows), and past that every growth of an array's backing store is a
+ * large-object allocation and copy, about 45 ns a row on the grammar-density cases.
+ * Doubling here pays that a handful of times per parse.
+ */
+export class RootTriviaLog {
+  length = 0
+  buf: Int32Array
+  /** The row kind of a gap of unlabelled trivia: `select`'s `''` under `'all'`, set once at
+   * run start, or -1 under a label list, which records no gap. */
+  gapKind = -1
+  constructor(capacity = 320) {
+    this.buf = new Int32Array(capacity)
+  }
+}
+
+/** Make room for `n` more numbers in `log`. The one growth path; the pushes are inline. */
+export function growRootTriviaLog(log: RootTriviaLog, n: number): void {
+  let size = log.buf.length * 2
+  while (size < log.length + n) size *= 2
+  const buf = new Int32Array(size)
+  buf.set(log.buf.subarray(0, log.length))
+  log.buf = buf
+}
+
 type RootTriviaMaps = {
   before: Map<number, number[]>
   after: Map<number, number[]>
@@ -77,7 +108,7 @@ function entryOffset(i: number, stride: number): number {
 
 /**
  * Wrap a flat trivia log. Stride is inferred from `labels`:
- * - root `_triviaLog`: 2 (start, end) or 3 (+ kindIndex)
+ * - `(start, end)` log: 2 (start, end) or 3 (+ kindIndex)
  * - node `triviaLog`: 3 (start, end, insertIdx) or 4 (+ kindIndex)
  */
 export function triviaEntries(
@@ -130,7 +161,7 @@ export function triviaEntries(
  * rows without constructing document-wide maps.
  */
 export function buildRootTriviaIndex(
-  log: readonly number[],
+  log: ArrayLike<number>,
   labels: readonly string[],
 ): RootTriviaIndex {
   const length = Math.floor(log.length / SELECTED_ROOT_STRIDE)
@@ -282,4 +313,18 @@ export function buildRootTriviaIndex(
       return matches.length === 0 ? EMPTY_GAPS : matches
     },
   }
+}
+
+/**
+ * The label table `rootTrivia: { select: 'all' }` names rows by: the root scope's labels in
+ * their order, then the labels only nested scopes use, sorted, so every engine derives the
+ * same table. A root chunk's index into its own labels stays valid in this table.
+ */
+export function allTriviaLabels(
+  root: readonly string[] | undefined,
+  scopes: Iterable<readonly string[] | undefined>,
+): readonly string[] | undefined {
+  const nested = new Set<string>()
+  for (const labels of scopes) for (const l of labels ?? []) if (root?.includes(l) !== true) nested.add(l)
+  return nested.size === 0 ? root : [...(root ?? []), ...[...nested].sort()]
 }

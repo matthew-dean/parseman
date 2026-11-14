@@ -42,13 +42,13 @@ export function peek(combinator: Combinator<unknown>): Combinator<null> {
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<null> {
       // Zero-width on BOTH outcomes, so the probe must leave NO observable trace:
       // whatever the inner attempt captured (CST leaves/rawChildren/per-node
-      // trivia/fields), recovered (`_errors`), or committed to the GLOBAL
-      // `_triviaLog` is rolled back either way.
+      // trivia/fields), recovered (`_errors`), or committed to the root
+      // `_rootTriviaLog` is rolled back either way.
       //
       // `rollbackTrivia`, not `rollbackCstCapture`: the latter's mark omits
-      // `_triviaLog`, which is a SEPARATE sink `scanTrivia().commit()` writes when
+      // `_rootTriviaLog`, which is a SEPARATE sink `scanTrivia().commit()` writes when
       // the body skips ambient trivia between terms. Missing it duplicates every
-      // probed trivia span once the region is parsed for real — `_triviaLog` has no
+      // probed trivia span once the region is parsed for real — `_rootTriviaLog` has no
       // dedup anywhere (`triviaEntries()` is a positional view over the flat array),
       // so the duplicate reaches output. Same failure mode as the one recorded in
       // `test/parity/trivia-log-regression.test.ts`. The compiled `peek` emits its

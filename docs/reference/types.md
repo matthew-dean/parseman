@@ -203,13 +203,15 @@ type Runnable =
   | ((input: string, pos: number, ctx: ParseContext) => ParseResult<unknown>)  // a compiled rule fn
   | Combinator<unknown>                                                          // or an interpreter combinator
 
+// run() also takes a compile() result (`CompiledParser`) and runs its entry rule.
+
 type RunOptions = {
   build?: ParseContext['build']   // ctx.build host (structural node() → CST/AST)
   state?: unknown                 // initial ctx.state
   trivia?: Runnable       // skip trailing trivia before computing unconsumedFrom
   triviaCaptureMask?: number      // per-node CST trivia-kind bitmask
   rootTrivia?: {
-    select: readonly string[]
+    select: readonly string[] | 'all'  // labels to keep, or every trivia gap
   }
   tolerant?: boolean              // enable list recovery diagnostics
 }
@@ -225,7 +227,7 @@ type RunResult = {
 }
 
 type RootTriviaCapture = {
-  rows: readonly number[]              // packed selected-root rows
+  rows: Int32Array                     // packed rows, five numbers each; a view of exactly the rows kept
   select: readonly string[]            // label table for the row kind column
   index: RootTriviaIndex               // lazy sparse gap index over rows
 }

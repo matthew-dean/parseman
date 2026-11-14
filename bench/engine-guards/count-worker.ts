@@ -74,8 +74,15 @@ const out: Record<string, Counts> = {}
 const mod = await import(args.module) as Record<string, unknown>
 
 if (args.kind === 'workloads') {
-  const buildWorkloads = mod['buildWorkloads'] as () => Array<{ id: string; input: string; make: () => { parse: () => unknown } }>
-  for (const w of buildWorkloads()) {
+  type Built = () => { parse: () => unknown }
+  const buildWorkloads = mod['buildWorkloads'] as () => Array<{ id: string; input: string; make: Built; capture?: Built }>
+  // The plain parse every workload has, and the recording parse (`<id>/allTrivia`) where it
+  // has one: a row for each, so neither path goes uncounted.
+  const variants = buildWorkloads().flatMap(w => [
+    { id: w.id, input: w.input, make: w.make },
+    ...(w.capture === undefined ? [] : [{ id: `${w.id}/allTrivia`, input: w.input, make: w.capture }]),
+  ])
+  for (const w of variants) {
     k.c = 0
     k.b = 0
     const built = w.make()

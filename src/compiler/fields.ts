@@ -55,7 +55,7 @@ export function parserHasOwnFields(p: Combinator<unknown>, seen: Set<Combinator<
  * Does the node's OWN parse frame ever have a trivia run logged into it?
  * Trivia is logged only by the trivia-skip fn, which runs at `sequence`/`many`/
  * repeat boundaries. A bare terminal (regex/literal/keywords/…) has NO trivia
- * site, so its `_cstTriviaLog` stays empty and its `captureTrivia`/`_cstTriviaLog`/
+ * site, so its trivia log stays empty and its `captureTrivia`/
  * `_triviaCaptureMask` save+install+restore is dead work — the per-node scope
  * trivia frame can be elided for it (see emitNode `needsTriviaFrame`).
  *

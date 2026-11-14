@@ -1,7 +1,7 @@
 import { assemblyExtraIps } from './program.ts'
 import type { FoldedProgram, TableProgram } from './program.ts'
 import { resolveTable } from './program.ts'
-import { EMITTED_PARAMS, Unemittable, emitAssemblySource } from './emit-assembly.ts'
+import { EMITTED_ABI, EMITTED_PARAMS, Unemittable, emitAssemblySource } from './emit-assembly.ts'
 import { cfgKey, type RunCfg } from './assemble.ts'
 import { PARSEMAN_VERSION } from '../version.ts'
 
@@ -230,7 +230,7 @@ function emitAssemblies(prog: TableProgram, cfgs: readonly AssemblyCfg[]): strin
     const plan = em.plan
     out.push('{'
       + `key:${key},`
-      + `arity:${EMITTED_PARAMS.length},`
+      + `abi:${JSON.stringify(EMITTED_ABI)},`
       + `factory:function(${EMITTED_PARAMS.join(',')}){${FACTORY_ARITY_GUARD}${em.source}\n},`
       + 'plan:{'
       + `classes:[${plan.classes.map(r => `[${r.join(',')}]`).join(',')}],`

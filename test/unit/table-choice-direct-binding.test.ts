@@ -9,7 +9,7 @@ import {
 } from '../../src/index.ts'
 import { buildGrammarPlan } from '../../src/compiler/grammar-coverage-ids.ts'
 import { assemble, tableRules } from '../../src/table/assemble.ts'
-import { EMITTED_PARAMS, emitAssemblySource } from '../../src/table/emit-assembly.ts'
+import { EMITTED_ABI, EMITTED_PARAMS, emitAssemblySource } from '../../src/table/emit-assembly.ts'
 import { defaultAssemblyCfgs, emitFoldedModule, emitTableModule } from '../../src/table/emit.ts'
 import { encodeTable, type TableSettings } from '../../src/table/encode.ts'
 import { execRules } from '../../src/table/exec.ts'
@@ -90,7 +90,7 @@ function precompiled(prog: TableProgram, mutate: (source: string) => string = so
   const emitted = emitAssemblySource(resolveTable(prog), prog, STRICT)
   const source = mutate(emitted.source)
   const factory = new Function(...EMITTED_PARAMS, source) as PrecompiledAssembly['factory']
-  return { ...prog, asm: [{ key: 0, arity: EMITTED_PARAMS.length, factory, plan: emitted.plan, reached: [...emitted.reached] }] }
+  return { ...prog, asm: [{ key: 0, abi: EMITTED_ABI, factory, plan: emitted.plan, reached: [...emitted.reached] }] }
 }
 
 function engines(grammar: Combinator<unknown>, prog = program(grammar)): Record<string, Entry> {
@@ -429,7 +429,7 @@ describe('direct-bound choice topology', () => {
     }
     const invalid = ownTableProgram({
       ...prog,
-      asm: [{ key: 0, arity: EMITTED_PARAMS.length, factory: invalidFactory, plan: invalidPlan, reached: [...invalidEmitted.reached] }],
+      asm: [{ key: 0, abi: EMITTED_ABI, factory: invalidFactory, plan: invalidPlan, reached: [...invalidEmitted.reached] }],
     })
     expect(() => projection(tableRules(invalid).Entry! as Entry, 'ax'))
       .toThrow(/invalid MASK plan source/)

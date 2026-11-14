@@ -7,7 +7,7 @@ import { execRules } from '../../src/table/exec.ts'
 import { assemblyExtraIps, resolveTable, type PrecompiledAssembly, type TableProgram } from '../../src/table/program.ts'
 import { selectHotSites } from '../../src/table/select-hot.ts'
 import { defaultAssemblyCfgs } from '../../src/table/emit.ts'
-import { emitAssemblySource, EMITTED_PARAMS } from '../../src/table/emit-assembly.ts'
+import { emitAssemblySource, EMITTED_ABI, EMITTED_PARAMS } from '../../src/table/emit-assembly.ts'
 import type { Runnable } from '../../src/functional/run.ts'
 
 /** The reference driver, the closure engine and the precompiled emitted engine. */
@@ -20,7 +20,7 @@ export function readers(prog: TableProgram): ReadonlyArray<readonly [string, Rec
     const out = emitAssemblySource(resolved, prog, cfg, extra)
     return {
       key: cfgKey(cfg),
-      arity: EMITTED_PARAMS.length,
+      abi: EMITTED_ABI,
       // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
       factory: new Function(...EMITTED_PARAMS, out.source) as PrecompiledAssembly['factory'],
       plan: out.plan, reached: [...out.reached],
@@ -47,7 +47,7 @@ export function hybridReaders(prog: TableProgram): ReadonlyArray<readonly [strin
     const factory = new Function(...EMITTED_PARAMS, out.source) as PrecompiledAssembly['factory']
     return [`hybrid ${share}`, tableRules({
       ...prog,
-      asm: [{ key: cfgKey(cfg), arity: EMITTED_PARAMS.length, factory, plan: out.plan, reached: [...out.reached] }],
+      asm: [{ key: cfgKey(cfg), abi: EMITTED_ABI, factory, plan: out.plan, reached: [...out.reached] }],
     })] as const
   })
 }

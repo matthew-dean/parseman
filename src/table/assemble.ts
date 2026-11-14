@@ -77,11 +77,11 @@ import { PARSEMAN_VERSION } from '../version.ts'
 import { consumeTrivia } from '../combinators/trivia-skip.ts'
 import {
   advanceTrivia, needsDeferredTriviaCommit, rollbackScannedTriviaAt, rollbackTriviaAt,
-  skipTriviaScanned, type FastTriviaScanner,
+  recordUnlabelledGap, type FastTriviaScanner,
 } from '../combinators/trivia-skip.ts'
 import {
   cstCaptureActive, cstLeavesLen, cstTlLen,
-  demoteCapturedToRaw, pushCstChild, pushCstLeaf,
+  demoteCapturedToRaw, pushCstChild, pushCstLeaf, pushOpenCstTriviaEntry,
   type CstCaptureBuf,
   popCstChild,
 } from '../cst/capture-buffer.ts'
@@ -107,7 +107,7 @@ import { failAt } from '../combinators/probe.ts'
  * gated against each other.
  */
 import {
-  EMITTED_PARAMS, Unemittable, emitAssemblySource, rebuildPools,
+  EMITTED_ABI, EMITTED_PARAMS, Unemittable, emitAssemblySource, rebuildPools,
   type EmittedAssembly, type EmittedFactory,
 } from './emit-assembly.ts'
 import { collapseEmpty, lead, rawEntry, spanLines } from './run-support.ts'
@@ -234,13 +234,13 @@ type ChoiceExpectedPrefix = (
 type MaskedChoiceBlock = (
   input: string, pos: number, ctx: ParseContext, bits: number,
   need: boolean, mRaw: number, mTl: number, mLv: number, mFl: number,
-  mEr: number, mLog: number, mRoot: number,
+  mEr: number, mRoot: number,
   acc: string[] | undefined, prev: number, best: number,
 ) => unknown
 type GeneralChoiceBlock = (
   input: string, pos: number, ctx: ParseContext, c: number,
   need: boolean, mRaw: number, mTl: number, mLv: number, mFl: number,
-  mEr: number, mLog: number, mRoot: number,
+  mEr: number, mRoot: number,
   acc: string[] | undefined, prev: number, best: number,
 ) => unknown
 type ExclusiveChoiceBlock = (arm: number, input: string, pos: number, ctx: ParseContext) => unknown
@@ -249,11 +249,11 @@ type DispatchMatcherBlock = (key: string) => number | undefined
 /** The selector's rollback mark rides as the eight scalars a choice block takes. */
 type DispatchBranch = (
   input: string, pos: number, selEnd: number, key: string, ctx: ParseContext,
-  need: boolean, mRaw: number, mTl: number, mLv: number, mFl: number, mEr: number, mLog: number, mRoot: number,
+  need: boolean, mRaw: number, mTl: number, mLv: number, mFl: number, mEr: number, mRoot: number,
 ) => unknown
 type DispatchArmBlock = (
   arm: number, input: string, pos: number, selEnd: number, key: string, ctx: ParseContext,
-  need: boolean, mRaw: number, mTl: number, mLv: number, mFl: number, mEr: number, mLog: number, mRoot: number,
+  need: boolean, mRaw: number, mTl: number, mLv: number, mFl: number, mEr: number, mRoot: number,
 ) => unknown
 
 /**
@@ -430,20 +430,20 @@ export type Assembly = {
  */
 /**
  * A printed factory takes its helpers BY POSITION (`EMITTED_PARAMS`), so one printed
- * against a different helper list would bind the wrong function to a name and run
- * wrong rather than fail. A factory printed by 0.59.x guards only against FEWER
- * helpers, and one printed before 0.59.0 has no guard at all. So the runtime checks
- * too, before calling it: the assembly's printed `arity` must be exactly the list it
- * passes. It reads that printed number, never `factory.length`, which a minifier that
- * drops unused trailing parameters lowers on a valid artifact. An assembly printed
- * before 0.60.0 carries no `arity` and is refused. A factory this version prints also
- * checks the count it is called with (`FACTORY_ARITY_GUARD`, `emit.ts`).
+ * against another helper list, or against a helper whose parameters have since changed,
+ * would bind the wrong value to a name and run wrong rather than fail. So the runtime
+ * checks before calling it: the record's printed `abi` (`EMITTED_ABI`: the printing
+ * minor and its helper count) must be exactly this runtime's. It reads that printed
+ * string, never `factory.length`, which a minifier that drops unused trailing parameters
+ * lowers on a valid artifact. A record printed before 0.62.0 carries no `abi` and is
+ * refused: 0.62.0 changed helper parameters without changing the count. A factory this
+ * version prints also checks the count it is called with (`FACTORY_ARITY_GUARD`, `emit.ts`).
  */
-export function assertFactoryArity(pre: { readonly arity?: number }): void {
-  if (pre.arity === EMITTED_PARAMS.length) return
-  const printed = pre.arity === undefined
-    ? 'carries no helper count, so it was printed before parseman 0.60.0'
-    : `takes ${pre.arity} helpers, but parseman ${PARSEMAN_VERSION} passes ${EMITTED_PARAMS.length}: it was printed by an older or newer parseman`
+export function assertFactoryAbi(pre: { readonly abi?: string }): void {
+  if (pre.abi === EMITTED_ABI) return
+  const printed = pre.abi === undefined
+    ? 'carries no helper ABI, so it was printed before parseman 0.62.0, whose helpers take other arguments'
+    : `was printed for helper ABI ${pre.abi} (parseman minor / helper count), but parseman ${PARSEMAN_VERSION} binds ${EMITTED_ABI}`
   throw new Error(
     `parseman: this parser's printed assembly ${printed}. Reprint the parser with `
     + `parseman ${PARSEMAN_VERSION}, or run it on the parseman version that printed it.`,
@@ -608,8 +608,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     return (input, pos, ctx) => {
       const sCh = ctx._cstChildren
       const sLv = ctx._cstLeaves
-      const sRaw = ctx._cstRawChildren
-      const sTl = ctx._cstTriviaLog
       const sCap = ctx.captureTrivia
       const sBuf = ctx._cstBuf
       const savedFields = ctx._fields
@@ -617,8 +615,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       ctx._cstBuf = buf
       ctx._cstChildren = undefined
       ctx._cstLeaves = undefined
-      ctx._cstRawChildren = undefined
-      ctx._cstTriviaLog = undefined
       ctx.captureTrivia = false
       ctx._fields = undefined
       const value = child(input, pos, ctx)
@@ -629,15 +625,13 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       ctx._cstBuf = sBuf
       ctx._cstChildren = sCh
       ctx._cstLeaves = sLv
-      ctx._cstRawChildren = sRaw
-      ctx._cstTriviaLog = sTl
       ctx.captureTrivia = sCap
       if (value === FAIL) return FAIL
       const end = EC.e
       const span = new PlainSpan(pos, end)
       const node = build(kids, undefined, span, rawKids, EMPTY_TL, undefined)
       if (sBuf !== undefined || sCh !== undefined) {
-        pushCstChild(ctx, node, rawEntry(node, input, pos, end))
+        pushCstChild(ctx, node, sBuf !== undefined ? rawEntry(node, input, pos, end) : undefined)
       }
       EC.e = end
       return node
@@ -663,8 +657,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     return (input, pos, ctx) => {
       const sCh = ctx._cstChildren
       const sLv = ctx._cstLeaves
-      const sRaw = ctx._cstRawChildren
-      const sTl = ctx._cstTriviaLog
       const sCap = ctx.captureTrivia
       const sBuf = ctx._cstBuf
       const savedFields = ctx._fields
@@ -672,8 +664,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       ctx._cstBuf = undefined
       ctx._cstChildren = kids
       ctx._cstLeaves = kids
-      ctx._cstRawChildren = undefined
-      ctx._cstTriviaLog = undefined
       ctx.captureTrivia = false
       ctx._fields = undefined
       const value = child(input, pos, ctx)
@@ -683,14 +673,12 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       ctx._cstBuf = sBuf
       ctx._cstChildren = sCh
       ctx._cstLeaves = sLv
-      ctx._cstRawChildren = sRaw
-      ctx._cstTriviaLog = sTl
       ctx.captureTrivia = sCap
       if (value === FAIL) return FAIL
       const end = EC.e
       const node = build(captured, undefined, new PlainSpan(pos, end), EMPTY_CH, EMPTY_TL, undefined)
       if (sBuf !== undefined || sCh !== undefined) {
-        pushCstChild(ctx, node, sBuf !== undefined || sRaw !== undefined ? rawEntry(node, input, pos, end) : undefined)
+        pushCstChild(ctx, node, sBuf !== undefined ? rawEntry(node, input, pos, end) : undefined)
       }
       EC.e = end
       return node
@@ -701,8 +689,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     return (input, pos, ctx) => {
       const sCh = ctx._cstChildren
       const sLv = ctx._cstLeaves
-      const sRaw = ctx._cstRawChildren
-      const sTl = ctx._cstTriviaLog
       const sCap = ctx.captureTrivia
       const sBuf = ctx._cstBuf
       const savedFields = ctx._fields
@@ -710,8 +696,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       ctx._cstBuf = undefined
       ctx._cstChildren = kids
       ctx._cstLeaves = kids
-      ctx._cstRawChildren = undefined
-      ctx._cstTriviaLog = undefined
       ctx.captureTrivia = false
       ctx._fields = []
       const value = child(input, pos, ctx)
@@ -721,14 +705,12 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       ctx._cstBuf = sBuf
       ctx._cstChildren = sCh
       ctx._cstLeaves = sLv
-      ctx._cstRawChildren = sRaw
-      ctx._cstTriviaLog = sTl
       ctx.captureTrivia = sCap
       if (value === FAIL) return FAIL
       const end = EC.e
       const node = build(captured, fieldMap, new PlainSpan(pos, end), EMPTY_CH, EMPTY_TL, undefined)
       if (sBuf !== undefined || sCh !== undefined) {
-        pushCstChild(ctx, node, sBuf !== undefined || sRaw !== undefined ? rawEntry(node, input, pos, end) : undefined)
+        pushCstChild(ctx, node, sBuf !== undefined ? rawEntry(node, input, pos, end) : undefined)
       }
       EC.e = end
       return node
@@ -739,8 +721,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     return (input, pos, ctx) => {
       const sCh = ctx._cstChildren
       const sLv = ctx._cstLeaves
-      const sRaw = ctx._cstRawChildren
-      const sTl = ctx._cstTriviaLog
       const sCap = ctx.captureTrivia
       const sBuf = ctx._cstBuf
       const savedFields = ctx._fields
@@ -748,8 +728,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       ctx._cstBuf = buf
       ctx._cstChildren = undefined
       ctx._cstLeaves = undefined
-      ctx._cstRawChildren = undefined
-      ctx._cstTriviaLog = undefined
       ctx.captureTrivia = false
       ctx._fields = undefined
       const value = child(input, pos, ctx)
@@ -759,8 +737,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       ctx._cstBuf = sBuf
       ctx._cstChildren = sCh
       ctx._cstLeaves = sLv
-      ctx._cstRawChildren = sRaw
-      ctx._cstTriviaLog = sTl
       ctx.captureTrivia = sCap
       if (value === FAIL) return FAIL
       const end = EC.e
@@ -769,7 +745,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         ? kids[0]
         : build(kids, undefined, span, rawKids, EMPTY_TL, undefined)
       if (sBuf !== undefined || sCh !== undefined) {
-        pushCstChild(ctx, node, rawEntry(node, input, pos, end))
+        pushCstChild(ctx, node, sBuf !== undefined ? rawEntry(node, input, pos, end) : undefined)
       }
       EC.e = end
       return node
@@ -780,8 +756,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     return (input, pos, ctx) => {
       const sCh = ctx._cstChildren
       const sLv = ctx._cstLeaves
-      const sRaw = ctx._cstRawChildren
-      const sTl = ctx._cstTriviaLog
       const sCap = ctx.captureTrivia
       const sBuf = ctx._cstBuf
       const savedFields = ctx._fields
@@ -789,8 +763,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       ctx._cstBuf = undefined
       ctx._cstChildren = kids
       ctx._cstLeaves = kids
-      ctx._cstRawChildren = undefined
-      ctx._cstTriviaLog = undefined
       ctx.captureTrivia = false
       ctx._fields = undefined
       const value = child(input, pos, ctx)
@@ -799,8 +771,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       ctx._cstBuf = sBuf
       ctx._cstChildren = sCh
       ctx._cstLeaves = sLv
-      ctx._cstRawChildren = sRaw
-      ctx._cstTriviaLog = sTl
       ctx.captureTrivia = sCap
       if (value === FAIL) return FAIL
       const end = EC.e
@@ -808,7 +778,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         ? captured[0]
         : build(captured, undefined, new PlainSpan(pos, end), EMPTY_CH, EMPTY_TL, undefined)
       if (sBuf !== undefined || sCh !== undefined) {
-        pushCstChild(ctx, node, sBuf !== undefined || sRaw !== undefined ? rawEntry(node, input, pos, end) : undefined)
+        pushCstChild(ctx, node, sBuf !== undefined ? rawEntry(node, input, pos, end) : undefined)
       }
       EC.e = end
       return node
@@ -875,8 +845,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     return (input, pos, ctx) => {
       const sCh = ctx._cstChildren
       const sLv = ctx._cstLeaves
-      const sRaw = ctx._cstRawChildren
-      const sTl = ctx._cstTriviaLog
       const sCap = ctx.captureTrivia
       const sBuf = ctx._cstBuf
       const savedFields = ctx._fields
@@ -884,8 +852,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       ctx._cstBuf = buf
       ctx._cstChildren = undefined
       ctx._cstLeaves = undefined
-      ctx._cstRawChildren = undefined
-      ctx._cstTriviaLog = undefined
       ctx.captureTrivia = false
       ctx._fields = undefined
       const value = child(input, pos, ctx)
@@ -894,14 +860,12 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       ctx._cstBuf = sBuf
       ctx._cstChildren = sCh
       ctx._cstLeaves = sLv
-      ctx._cstRawChildren = sRaw
-      ctx._cstTriviaLog = sTl
       ctx.captureTrivia = sCap
       if (value === FAIL) return FAIL
       const end = EC.e
       const node = projectChild(kids, projection, type)
       if (sBuf !== undefined || sCh !== undefined) {
-        pushCstChild(ctx, node, rawEntry(node, input, pos, end))
+        pushCstChild(ctx, node, sBuf !== undefined ? rawEntry(node, input, pos, end) : undefined)
       }
       EC.e = end
       return node
@@ -912,11 +876,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   function rollbackNeeded(ctx: ParseContext): boolean {
     return ctx._cstBuf !== undefined
       || ctx._cstLeaves !== undefined
-      || ctx._cstRawChildren !== undefined
-      || ctx._cstTriviaLog !== undefined
       || ctx._fields !== undefined
       || ctx._errors !== undefined
-      || ctx._triviaLog !== undefined
       || ctx._rootTriviaLog !== undefined
   }
 
@@ -979,14 +940,11 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       return true
     }
     if (ctx._cstLeaves !== undefined
-      || ctx._cstRawChildren !== undefined
-      || ctx._cstTriviaLog !== undefined
       || ctx._fields !== undefined
       || ctx._errors !== undefined
-      || ctx._triviaLog !== undefined
       || ctx._rootTriviaLog !== undefined) {
-      MRAW = ctx._cstRawChildren?.length ?? 0
-      MTL = ctx._cstTriviaLog?.length ?? 0
+      MRAW = 0
+      MTL = 0
       MLV = ctx._cstLeaves?.length ?? 0
       return true
     }
@@ -1011,7 +969,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       const inner = out
       out = (input, pos, ctx) => {
         const saved = ctx._rootTriviaCapture
-        ctx._rootTriviaCapture = false
+        // `select: 'all'` (strict scopes off) records an opaque region too.
+        ctx._rootTriviaCapture = ctx._rootTriviaStrictScopes === false
         const v = inner(input, pos, ctx)
         ctx._rootTriviaCapture = saved
         return v
@@ -1049,21 +1008,54 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     return c < 128 && table[c] === 0
   }
 
-  function skipTrivia(input: string, cur: number, ctx: ParseContext): number {
+  function skipTriviaPlain(input: string, cur: number, ctx: ParseContext): number {
     const t = ctx.trivia
     if (t !== undefined && cannotStartTrivia(input, cur, t)) return cur
     const s = SCAN
-    if (s !== null
-      && ctx._triviaLog === undefined
-      && !(ctx.captureTrivia === true && (ctx._cstBuf !== undefined || ctx._cstTriviaLog !== undefined))) {
-      return s(input, cur)
+    // CAPTURE IS NOT A REASON TO LEAVE THE SCANNER: a gap is one capture entry, written
+    // here. Nested under the one `s !== null` test, so a labelled trivia (no scanner)
+    // pays that test alone.
+    if (s !== null) {
+      if (!(ctx.captureTrivia === true && ctx._cstBuf !== undefined)) return s(input, cur)
+      const end = s(input, cur)
+      if (end !== cur) pushOpenCstTriviaEntry(ctx, cur, end)
+      return end
     }
-    // CAPTURE IS NOT A REASON TO LEAVE THE SCANNER — see `skipTriviaScanned`.
-    // Appended rather than folded into the test above so the non-capturing path
-    // keeps the exact branch it had.
-    if (s !== null) return skipTriviaScanned(s, input, cur, ctx)
     if (needsDeferredTriviaCommit(ctx)) return skipDeferredTrivia(input, cur, ctx)
     return advanceTrivia(input, cur, ctx)
+  }
+
+  /**
+   * The skip for a run whose root log takes UNLABELLED gaps (`rootTrivia: { select:
+   * 'all' }`, `gapKind >= 0`). Whether a run is one is known when it begins, so `begin`
+   * installs this or {@link skipTriviaPlain} as `skipTrivia` and no gap asks. It differs
+   * from the plain skip only in its scanner arm, which still reads `_rootTriviaLog`
+   * because a token clears the log for its own span. The rest is restated rather than
+   * reached through the plain skip: a call there is paid on every labelled gap of a
+   * recording parse.
+   */
+  function skipTriviaRecording(input: string, cur: number, ctx: ParseContext): number {
+    const t = ctx.trivia
+    if (t !== undefined && cannotStartTrivia(input, cur, t)) return cur
+    const s = SCAN
+    if (s !== null) {
+      if (ctx._rootTriviaLog === undefined && !(ctx.captureTrivia === true && ctx._cstBuf !== undefined)) {
+        return s(input, cur)
+      }
+      const end = s(input, cur)
+      if (end !== cur) recordUnlabelledGap(ctx, cur, end)
+      return end
+    }
+    if (needsDeferredTriviaCommit(ctx)) return skipDeferredTrivia(input, cur, ctx)
+    return advanceTrivia(input, cur, ctx)
+  }
+
+  /** The skip every trivia site calls: {@link skipTriviaPlain} or {@link skipTriviaRecording}, chosen per run. */
+  let skipTrivia = skipTriviaPlain
+  let RECORDING = false
+  function installSkip(recording: boolean): void {
+    RECORDING = recording
+    skipTrivia = recording ? skipTriviaRecording : skipTriviaPlain
   }
 
   /**
@@ -1114,6 +1106,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     scan: FastTriviaScanner | null
     host: ParseContext['build']
     coverage: (id: string) => void
+    recording: boolean
     end: number
   }> = []
   let depth = 0
@@ -1148,11 +1141,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     // success path has neither its scalar writes nor its failure-only locals.
     if (ctx._cstBuf === undefined
       && ctx._cstLeaves === undefined
-      && ctx._cstRawChildren === undefined
-      && ctx._cstTriviaLog === undefined
       && ctx._fields === undefined
       && ctx._errors === undefined
-      && ctx._triviaLog === undefined
       && ctx._rootTriviaLog === undefined) {
       const scanEnd = skipTrivia(input, cur, ctx)
       const v = child(input, scanEnd, ctx)
@@ -1164,11 +1154,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     // Child-owned nodes, fields and errors are deliberately outside this range.
     const need = rollbackNeeded(ctx)
     const mTl = need ? cstTlLen(ctx) : 0
-    const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
     const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
     const scanEnd = skipTrivia(input, cur, ctx)
     const scanTl = need ? cstTlLen(ctx) : 0
-    const scanLog = need ? ctx._triviaLog?.length ?? 0 : 0
     const scanRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
     const v = child(input, scanEnd, ctx)
     if (v === FAIL) return -1
@@ -1176,7 +1164,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     if (EC.e > scanEnd) return EC.e
     // The term matched nothing, so the trivia in front of it was never consumed
     // by anything — unrecord it and leave the cursor where it was.
-    if (need) rollbackScannedTriviaAt(ctx, mTl, scanTl, mLog, scanLog, mRoot, scanRoot)
+    if (need) rollbackScannedTriviaAt(ctx, mTl, scanTl, mRoot, scanRoot)
     return cur
   }
 
@@ -1192,24 +1180,22 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
    */
   function lateTail(tail: Piece, input: string, end: number, at: number, ctx: ParseContext, frame: SiteLabel): unknown {
     if (at === end) return tail(input, end, ctx)
-    if (ctx._triviaLog === undefined && ctx._rootTriviaLog === undefined
+    if (ctx._rootTriviaLog === undefined
       && (frame.cap === CAP_OFF || !((frame.cap === CAP_ON || ctx.captureTrivia === true)
-        && (frame.buf || ctx._cstBuf !== undefined || ctx._cstTriviaLog !== undefined)))) {
+        && (frame.buf || ctx._cstBuf !== undefined)))) {
       const v = tail(input, at, ctx)
       if (v !== FAIL && EC.e <= at) EC.e = end
       return v
     }
     const need = rollbackNeeded(ctx)
     const mTl = need ? cstTlLen(ctx) : 0
-    const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
     const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
     const scanEnd = skipTrivia(input, end, ctx)
     const scanTl = need ? cstTlLen(ctx) : 0
-    const scanLog = need ? ctx._triviaLog?.length ?? 0 : 0
     const scanRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
     const v = tail(input, scanEnd, ctx)
     if (v !== FAIL && EC.e <= scanEnd) {
-      if (need) rollbackScannedTriviaAt(ctx, mTl, scanTl, mLog, scanLog, mRoot, scanRoot)
+      if (need) rollbackScannedTriviaAt(ctx, mTl, scanTl, mRoot, scanRoot)
       EC.e = end
     }
     return v
@@ -1227,19 +1213,17 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     const before = ctx._cstBuf!
     const beforeTl = before.tl
     const mTl = beforeTl === undefined ? 0 : beforeTl.length
-    const mLog = ctx._triviaLog?.length ?? 0
     const mRoot = ctx._rootTriviaLog?.length ?? 0
     const scanEnd = skipTrivia(input, cur, ctx)
     const scanned = ctx._cstBuf!
     const scannedTl = scanned.tl
     const scanTl = scannedTl === undefined ? 0 : scannedTl.length
-    const scanLog = ctx._triviaLog?.length ?? 0
     const scanRoot = ctx._rootTriviaLog?.length ?? 0
     const v = child(input, scanEnd, ctx)
     if (v === FAIL) return -1
     TERMV = v
     if (EC.e > scanEnd) return EC.e
-    rollbackScannedTriviaAt(ctx, mTl, scanTl, mLog, scanLog, mRoot, scanRoot)
+    rollbackScannedTriviaAt(ctx, mTl, scanTl, mRoot, scanRoot)
     return cur
   }
 
@@ -1298,7 +1282,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     total: number,
     choiceFx: string[],
   ): MaskedChoiceBlock {
-    return (input, pos, ctx, bits, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot, acc, prev, best) => {
+    return (input, pos, ctx, bits, need, mRaw, mTl, mLv, mFl, mEr, mRoot, acc, prev, best) => {
       if ((bits & (1 << start)) !== 0) {
         ctx._fc = false
         const v = a0(input, pos, ctx)
@@ -1309,7 +1293,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         if (at > best) { best = at; acc = undefined }
         if (at === best) acc = accSet(ctx._fx, acc)
         if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
-        if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+        if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mRoot)
       }
       if ((bits & (1 << (start + 1))) !== 0) {
         ctx._fc = false
@@ -1321,7 +1305,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         if (at > best) { best = at; acc = undefined }
         if (at === best) acc = accSet(ctx._fx, acc)
         if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
-        if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+        if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mRoot)
       }
       if ((bits & (1 << (start + 2))) !== 0) {
         ctx._fc = false
@@ -1333,7 +1317,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         if (at > best) { best = at; acc = undefined }
         if (at === best) acc = accSet(ctx._fx, acc)
         if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
-        if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+        if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mRoot)
       }
       if ((bits & (1 << (start + 3))) !== 0) {
         ctx._fc = false
@@ -1345,10 +1329,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         if (at > best) { best = at; acc = undefined }
         if (at === best) acc = accSet(ctx._fx, acc)
         if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
-        if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+        if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mRoot)
       }
       if (next !== undefined) {
-        return next(input, pos, ctx, bits, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot, acc, prev, best)
+        return next(input, pos, ctx, bits, need, mRaw, mTl, mLv, mFl, mEr, mRoot, acc, prev, best)
       }
       // No arm entered (`prev` 0, `acc` unset): the catch-up would rebuild
       // `choiceFx`, the arms' flatMap, set by set. It IS the answer.
@@ -1369,7 +1353,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     total: number,
     choiceFx: string[],
   ): GeneralChoiceBlock {
-    return (input, pos, ctx, c, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot, acc, prev, best) => {
+    return (input, pos, ctx, c, need, mRaw, mTl, mLv, mFl, mEr, mRoot, acc, prev, best) => {
       if (g0 === null || classHas(g0, c)) {
         ctx._fc = false
         const v = a0(input, pos, ctx)
@@ -1380,7 +1364,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         if (at > best) { best = at; acc = undefined }
         if (at === best) acc = accSet(ctx._fx, acc)
         if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
-        if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+        if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mRoot)
       }
       if (g1 === null || classHas(g1, c)) {
         ctx._fc = false
@@ -1392,7 +1376,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         if (at > best) { best = at; acc = undefined }
         if (at === best) acc = accSet(ctx._fx, acc)
         if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
-        if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+        if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mRoot)
       }
       if (g2 === null || classHas(g2, c)) {
         ctx._fc = false
@@ -1404,7 +1388,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         if (at > best) { best = at; acc = undefined }
         if (at === best) acc = accSet(ctx._fx, acc)
         if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
-        if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+        if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mRoot)
       }
       if (g3 === null || classHas(g3, c)) {
         ctx._fc = false
@@ -1416,10 +1400,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         if (at > best) { best = at; acc = undefined }
         if (at === best) acc = accSet(ctx._fx, acc)
         if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
-        if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+        if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mRoot)
       }
       if (next !== undefined) {
-        return next(input, pos, ctx, c, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot, acc, prev, best)
+        return next(input, pos, ctx, c, need, mRaw, mTl, mLv, mFl, mEr, mRoot, acc, prev, best)
       }
       // No arm entered (`prev` 0, `acc` unset): the catch-up would rebuild
       // `choiceFx`, the arms' flatMap, set by set. It IS the answer.
@@ -1467,11 +1451,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const mLv = MLV
         const mFl = need ? ctx._fields?.length ?? 0 : 0
         const mEr = need ? ctx._errors?.length ?? 0 : 0
-        const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
         const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
         const v = child(input, selEnd, ctx)
         if (v === FAIL) {
-          if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+          if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mRoot)
           if (commits) ctx._fc = true
           return FAIL
         }
@@ -1480,9 +1463,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     }
     // A routed arm re-reads the selector's match from `pos`: undo the selector,
     // which leaves every sink at the selector's mark, so that mark is the arm's too.
-    return (input, pos, selEnd, key, ctx, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot) => {
+    return (input, pos, selEnd, key, ctx, need, mRaw, mTl, mLv, mFl, mEr, mRoot) => {
       const savedRouted = ctx._routed
-      if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+      if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mRoot)
       ctx._routed = { value: key, span: new PlainSpan(pos, selEnd) }
       let v: unknown
       try {
@@ -1491,7 +1474,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         ctx._routed = savedRouted
       }
       if (v === FAIL) {
-        if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+        if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mRoot)
         if (commits) ctx._fc = true
         return FAIL
       }
@@ -1504,14 +1487,14 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     a0: DispatchBranch, a1: DispatchBranch, a2: DispatchBranch, a3: DispatchBranch,
     next: DispatchArmBlock | undefined,
   ): DispatchArmBlock {
-    return (arm, input, pos, selEnd, key, ctx, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot) => {
-      if (arm === start) return a0(input, pos, selEnd, key, ctx, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
-      if (arm === start + 1) return a1(input, pos, selEnd, key, ctx, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
-      if (arm === start + 2) return a2(input, pos, selEnd, key, ctx, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
-      if (arm === start + 3) return a3(input, pos, selEnd, key, ctx, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+    return (arm, input, pos, selEnd, key, ctx, need, mRaw, mTl, mLv, mFl, mEr, mRoot) => {
+      if (arm === start) return a0(input, pos, selEnd, key, ctx, need, mRaw, mTl, mLv, mFl, mEr, mRoot)
+      if (arm === start + 1) return a1(input, pos, selEnd, key, ctx, need, mRaw, mTl, mLv, mFl, mEr, mRoot)
+      if (arm === start + 2) return a2(input, pos, selEnd, key, ctx, need, mRaw, mTl, mLv, mFl, mEr, mRoot)
+      if (arm === start + 3) return a3(input, pos, selEnd, key, ctx, need, mRaw, mTl, mLv, mFl, mEr, mRoot)
       return next === undefined
         ? FAIL
-        : next(arm, input, pos, selEnd, key, ctx, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+        : next(arm, input, pos, selEnd, key, ctx, need, mRaw, mTl, mLv, mFl, mEr, mRoot)
     }
   }
 
@@ -1957,7 +1940,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             if (leads === null || !(c < 128) || leads[c] !== 0) at = scan(input, end)
           }
           if (v !== undefined && !(gapRe === undefined ? startsTail(cls, input, at) : mayStartPastGap(input, at))) return v
-          if (ctx._cstBuf === undefined && ctx._cstRawChildren === undefined && ctx._cstChildren !== undefined) ctx._cstChildren.pop()
+          if (ctx._cstBuf === undefined && ctx._cstChildren !== undefined) ctx._cstChildren.pop()
           else if (ctx._cstBuf !== undefined || ctx._cstChildren !== undefined) heldRaw = popCstChild(ctx)
           held = v
           heldEnd = end
@@ -2330,11 +2313,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const mLv = MLV
           const mFl = need ? ctx._fields?.length ?? 0 : 0
           const mEr = need ? ctx._errors?.length ?? 0 : 0
-          const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
           const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
           const v = child(input, pos, ctx)
           if (v !== FAIL) return v
-          if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+          if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mRoot)
           // A committed failure propagates VERBATIM — rolled back, not re-anchored —
           // unless the row contains commitment, where it is reported like any other.
           if (committed(ctx)) {
@@ -2375,13 +2357,12 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const mLv = MLV
           const mFl = need ? ctx._fields?.length ?? 0 : 0
           const mEr = need ? ctx._errors?.length ?? 0 : 0
-          const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
           const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
           // A completions probe sees nothing raised inside a lookahead
           // (`not.ts`, `rollbackLookahead`): those tokens are not reachable here.
           const probeBest = PROBE ? ctx._probe?.best : undefined
           const v = child(input, pos, ctx)
-          if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+          if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mRoot)
           // A lookahead contains its child's commitment: `not.ts` and `peek.ts`
           // return a fresh result, so a committed failure inside the probe never
           // reaches the grammar around it.
@@ -2423,11 +2404,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const mLv = MLV
           const mFl = need ? ctx._fields?.length ?? 0 : 0
           const mEr = need ? ctx._errors?.length ?? 0 : 0
-          const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
           const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
           const probeBest = PROBE ? ctx._probe?.best : undefined
           const v = child(input, pos, ctx)
-          if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+          if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mRoot)
           // A lookahead contains its child's commitment: `not.ts` and `peek.ts`
           // return a fresh result, so a committed failure inside the probe never
           // reaches the grammar around it.
@@ -2452,13 +2432,12 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const mLv = MLV
           const mFl = need ? ctx._fields?.length ?? 0 : 0
           const mEr = need ? ctx._errors?.length ?? 0 : 0
-          const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
           const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
           ctx._fc = false
           const v = child(input, pos, ctx)
           if (v === FAIL) {
             if (committed(ctx)) return FAIL
-            if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+            if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mRoot)
             EC.e = pos
             // NULL, not undefined — `repeat.ts:269,277`, and grammars TEST for it.
             return null
@@ -2474,8 +2453,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         return (input, pos, ctx) => {
           const sTrivia = ctx.trivia, sKinds = ctx.triviaKindLabels
           const sBuf = ctx._cstBuf, sChildren = ctx._cstChildren, sLeaves = ctx._cstLeaves
-          const sRaw = ctx._cstRawChildren, sTl = ctx._cstTriviaLog
-          const sOuterTl = ctx._triviaLog, sRootTl = ctx._rootTriviaLog
+          const sRootTl = ctx._rootTriviaLog
           const wasCapturing = cstCaptureActive(ctx)
 
           const sScan = SCAN
@@ -2485,9 +2463,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           ctx._cstBuf = undefined
           ctx._cstChildren = undefined
           ctx._cstLeaves = undefined
-          ctx._cstRawChildren = undefined
-          ctx._cstTriviaLog = undefined
-          ctx._triviaLog = undefined
           ctx._rootTriviaLog = undefined
 
           let v: unknown
@@ -2500,9 +2475,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             ctx._cstBuf = sBuf
             ctx._cstChildren = sChildren
             ctx._cstLeaves = sLeaves
-            ctx._cstRawChildren = sRaw
-            ctx._cstTriviaLog = sTl
-            ctx._triviaLog = sOuterTl
             ctx._rootTriviaLog = sRootTl
           }
           if (v === FAIL) return FAIL
@@ -2556,8 +2528,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           return (input, pos, ctx) => {
             const sTrivia = ctx.trivia, sKinds = ctx.triviaKindLabels
             const sBuf = ctx._cstBuf, sChildren = ctx._cstChildren, sLeaves = ctx._cstLeaves
-            const sRaw = ctx._cstRawChildren, sTl = ctx._cstTriviaLog
-            const sOuterTl = ctx._triviaLog, sRootTl = ctx._rootTriviaLog
+            const sRootTl = ctx._rootTriviaLog
             const wasCapturing = cstCaptureActive(ctx)
             const sScan = SCAN
             SCAN = null
@@ -2566,9 +2537,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             ctx._cstBuf = undefined
             ctx._cstChildren = undefined
             ctx._cstLeaves = undefined
-            ctx._cstRawChildren = undefined
-            ctx._cstTriviaLog = undefined
-            ctx._triviaLog = undefined
             ctx._rootTriviaLog = undefined
             let end: number
             try { end = run(input, pos, ctx, scans[scanId]) }
@@ -2579,9 +2547,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               ctx._cstBuf = sBuf
               ctx._cstChildren = sChildren
               ctx._cstLeaves = sLeaves
-              ctx._cstRawChildren = sRaw
-              ctx._cstTriviaLog = sTl
-              ctx._triviaLog = sOuterTl
               ctx._rootTriviaLog = sRootTl
             }
             if (end < 0) return FAIL
@@ -2607,16 +2572,11 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const child = link(code[ip + 2]!)
         return (input, pos, ctx) => {
           const sBuf = ctx._cstBuf, sChildren = ctx._cstChildren, sLeaves = ctx._cstLeaves
-          const sRaw = ctx._cstRawChildren, sTl = ctx._cstTriviaLog
-          const sOuterTl = ctx._triviaLog
           const wasCapturing = cstCaptureActive(ctx)
 
           ctx._cstBuf = undefined
           ctx._cstChildren = undefined
           ctx._cstLeaves = undefined
-          ctx._cstRawChildren = undefined
-          ctx._cstTriviaLog = undefined
-          ctx._triviaLog = undefined
 
           let v: unknown
           try {
@@ -2625,9 +2585,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             ctx._cstBuf = sBuf
             ctx._cstChildren = sChildren
             ctx._cstLeaves = sLeaves
-            ctx._cstRawChildren = sRaw
-            ctx._cstTriviaLog = sTl
-            ctx._triviaLog = sOuterTl
           }
           if (v === FAIL) return FAIL
           const end = EC.e
@@ -2847,17 +2804,16 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           // What a held gap needs undone if the next term recovers at zero width.
           // Written after the lookahead returns and read before the next term runs,
           // so nothing can re-enter this sequence in between.
-          let heldFrom = 0, heldTl = 0, heldScanTl = 0, heldLog = 0, heldScanLog = 0, heldRoot = 0, heldScanRoot = 0
+          let heldFrom = 0, heldTl = 0, heldScanTl = 0, heldRoot = 0, heldScanRoot = 0
           const runnerAt = (i: number): TermRunner => {
             const kidIp = code[base + i]!
             if (i > 1 && holdsGap(code, k, base, n, i - 1, NULLABLE) && rowNullable(code, k, kidIp, NULLABLE)) {
               const kid = link(kidIp)
               return (input, cur, ctx) => {
-                const from = heldFrom, tl = heldTl, scanTl = heldScanTl, log = heldLog
-                const scanLog = heldScanLog, root = heldRoot, scanRoot = heldScanRoot
+                const from = heldFrom, tl = heldTl, scanTl = heldScanTl, root = heldRoot, scanRoot = heldScanRoot
                 const next = step(kid, input, cur, ctx)
                 if (next !== cur || from === cur) return next
-                rollbackScannedTriviaAt(ctx, tl, scanTl, log, scanLog, root, scanRoot)
+                rollbackScannedTriviaAt(ctx, tl, scanTl, root, scanRoot)
                 return from
               }
             }
@@ -2871,15 +2827,14 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
                   heldFrom = cur
                   return EC.e
                 }
-                const tl = cstTlLen(ctx), log = ctx._triviaLog?.length ?? 0, root = ctx._rootTriviaLog?.length ?? 0
+                const tl = cstTlLen(ctx), root = ctx._rootTriviaLog?.length ?? 0
                 const scanEnd = skipTrivia(input, cur, ctx)
-                const scanTl = cstTlLen(ctx), scanLog = ctx._triviaLog?.length ?? 0, scanRoot = ctx._rootTriviaLog?.length ?? 0
+                const scanTl = cstTlLen(ctx), scanRoot = ctx._rootTriviaLog?.length ?? 0
                 const v = kid(input, scanEnd, ctx)
                 if (v === FAIL) return -1
                 TERMV = v
                 heldFrom = cur
                 heldTl = tl; heldScanTl = scanTl
-                heldLog = log; heldScanLog = scanLog
                 heldRoot = root; heldScanRoot = scanRoot
                 return scanEnd
               }
@@ -3338,7 +3293,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             const mLv = MLV
             const mFl = need ? ctx._fields?.length ?? 0 : 0
             const mEr = need ? ctx._errors?.length ?? 0 : 0
-            const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
             const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
             let acc: string[] | undefined
             let best = pos
@@ -3357,7 +3311,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
                 if (at > best) { best = at; acc = undefined }
                 if (at === best) acc = accSet(ctx._fx, acc)
                 if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
-                if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+                if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mRoot)
               }
               if ((bits & 2) !== 0) {
                 ctx._fc = false
@@ -3369,7 +3323,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
                 if (at > best) { best = at; acc = undefined }
                 if (at === best) acc = accSet(ctx._fx, acc)
                 if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
-                if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+                if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mRoot)
               }
               if (n === 3 && (bits & 4) !== 0) {
                 ctx._fc = false
@@ -3382,7 +3336,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
                 if (at > best) { best = at; acc = undefined }
                 if (at === best) acc = accSet(ctx._fx, acc)
                 if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
-                if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+                if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mRoot)
               }
               if (prev === 0) { ctx._fe = pos; ctx._fx = choiceFx; return FAIL }
               if (best === pos && prev < 1) acc = accSet(e0, acc)
@@ -3400,7 +3354,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               if (at > best) { best = at; acc = undefined }
               if (at === best) acc = accSet(ctx._fx, acc)
               if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
-              if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+              if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mRoot)
             } else if (best === pos) acc = accSet(e0, acc)
             if ((g1 === null || classHas(g1, c)) && (p1 === undefined || p1(input, pos) >= 0)) {
               ctx._fc = false
@@ -3410,7 +3364,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               if (at > best) { best = at; acc = undefined }
               if (at === best) acc = accSet(ctx._fx, acc)
               if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
-              if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+              if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mRoot)
             } else if (best === pos) acc = accSet(e1, acc)
             if (n === 3) {
               if ((g2 === null || classHas(g2, c)) && (p2 === undefined || p2(input, pos) >= 0)) {
@@ -3421,7 +3375,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
                 if (at > best) { best = at; acc = undefined }
                 if (at === best) acc = accSet(ctx._fx, acc)
                 if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
-                if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+                if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mRoot)
               } else if (best === pos) acc = accSet(e2, acc)
             }
             ctx._fe = pos; ctx._fx = acc ?? choiceFx
@@ -3503,7 +3457,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               const mLv = MLV
               const mFl = need ? ctx._fields?.length ?? 0 : 0
               const mEr = need ? ctx._errors?.length ?? 0 : 0
-              const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
               const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
               if (c < 128) {
                 const bits = mask[c < 0 ? 128 : c]!
@@ -3517,11 +3470,11 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
                 }
                 return masked(
                   input, pos, ctx, bits & (~tested | hit),
-                  need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot, undefined, 0, pos,
+                  need, mRaw, mTl, mLv, mFl, mEr, mRoot, undefined, 0, pos,
                 )
               }
               return general(
-                input, pos, ctx, c, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot, undefined, 0, pos,
+                input, pos, ctx, c, need, mRaw, mTl, mLv, mFl, mEr, mRoot, undefined, 0, pos,
               )
             }
           }
@@ -3533,16 +3486,15 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             const mLv = MLV
             const mFl = need ? ctx._fields?.length ?? 0 : 0
             const mEr = need ? ctx._errors?.length ?? 0 : 0
-            const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
             const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
             if (c < 128) {
               return masked(
                 input, pos, ctx, mask[c < 0 ? 128 : c]!,
-                need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot, undefined, 0, pos,
+                need, mRaw, mTl, mLv, mFl, mEr, mRoot, undefined, 0, pos,
               )
             }
             return general(
-              input, pos, ctx, c, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot, undefined, 0, pos,
+              input, pos, ctx, c, need, mRaw, mTl, mLv, mFl, mEr, mRoot, undefined, 0, pos,
             )
           }
         }
@@ -3555,10 +3507,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const mLv = MLV
           const mFl = need ? ctx._fields?.length ?? 0 : 0
           const mEr = need ? ctx._errors?.length ?? 0 : 0
-          const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
           const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
           return general(
-            input, pos, ctx, c, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot, undefined, 0, pos,
+            input, pos, ctx, c, need, mRaw, mTl, mLv, mFl, mEr, mRoot, undefined, 0, pos,
           )
         }
       }
@@ -3579,7 +3530,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const mLv = MLV
           const mFl = need ? ctx._fields?.length ?? 0 : 0
           const mEr = need ? ctx._errors?.length ?? 0 : 0
-          const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
           const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
           const v = sup(input, pos, ctx)
           // The super arm's failure propagates verbatim — its `_fe`/`_fx`, not
@@ -3590,7 +3540,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           if (lit === undefined) { EC.e = end; return v }
           // Unwind the regex's leaf so the credited arm's own leaf is the only
           // one. Re-running the arm cannot fail: the word IS its literal.
-          if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+          if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mRoot)
           return lit(input, pos, ctx)
         }
       }
@@ -3812,7 +3762,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               const mLv = needMark ? MLV : 0
               const mFl = needMark ? ctx._fields?.length ?? 0 : 0
               const mEr = needMark ? ctx._errors?.length ?? 0 : 0
-              const mLog = needMark ? ctx._triviaLog?.length ?? 0 : 0
               const mRoot = needMark ? ctx._rootTriviaLog?.length ?? 0 : 0
               let itemStart = cur
               let sepEnd = -1
@@ -3825,7 +3774,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
                 if (sepLeads) LEAD.at = cur
                 const sv = sep(input, sp, ctx)
                 if (sv === FAIL) {
-                  if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+                  if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mRoot)
                   if (committed(ctx)) return FAIL
                   break
                 }
@@ -3836,7 +3785,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
                 itemStart = skipTrivia(input, itemStart, ctx)
               }
               if (itemStart >= input.length && viaRepItem) {
-                if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+                if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mRoot)
                 if (trailingAllowed && sepEnd >= 0) cur = sepEnd
                 break
               }
@@ -3844,14 +3793,14 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               const v = child(input, itemStart, ctx)
               if (v === FAIL) {
                 if (committed(ctx)) {
-                  if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+                  if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mRoot)
                   return FAIL
                 }
                 if (ctx._tolerant === true
                   && mySync !== undefined
                   && (sep !== undefined || count >= min)
                   && !matchesAt(mySync, input, itemStart, ctx)) {
-                  if (sep === undefined && needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+                  if (sep === undefined && needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mRoot)
                   const rr = recoverScan(
                     input, itemStart, ctx,
                     sep === undefined ? mySync : orSentinel(sepSent ?? mySync, sepSent === undefined ? undefined : mySync),
@@ -3863,12 +3812,12 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
                   cur = rr.end
                   continue
                 }
-                if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+                if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mRoot)
                 if (trailingAllowed && sepEnd >= 0) cur = sepEnd
                 break
               }
               if (EC.e === itemStart && viaRepItem) {
-                if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+                if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mRoot)
                 break
               }
               if (out !== undefined) out.push(v)
@@ -3918,7 +3867,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             const mLv = markIt ? MLV : 0
             const mFl = markIt ? ctx._fields?.length ?? 0 : 0
             const mEr = markIt ? ctx._errors?.length ?? 0 : 0
-            const mLog = markIt ? ctx._triviaLog?.length ?? 0 : 0
             const mRoot = markIt ? ctx._rootTriviaLog?.length ?? 0 : 0
             let itemStart = cur
             let sepEnd = -1
@@ -3928,14 +3876,14 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               let sp = cur
               if (hasTrivia) sp = skipTrivia(input, sp, ctx)
               if (count >= min && gateSep && !classHas(sepClass!, lead(input, sp))) {
-                if (markIt) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+                if (markIt) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mRoot)
                 break
               }
               ctx._fc = false
               if (sepLeads) LEAD.at = cur
               const sv = sep(input, sp, ctx)
               if (sv === FAIL) {
-                if (markIt) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+                if (markIt) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mRoot)
                 if (committed(ctx)) return FAIL
                 break
               }
@@ -3946,14 +3894,14 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               itemStart = skipTrivia(input, itemStart, ctx)
             }
             if (itemStart >= input.length && viaRepItem) {
-              if (markIt) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+              if (markIt) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mRoot)
               if (trailingAllowed && sepEnd >= 0) cur = sepEnd
               break
             }
             // Without a separator or trivia in front, the loop head already
             // tested this same position.
             if (count >= min && gateItems && (sep !== undefined || hasTrivia) && !itemMayStart!(input, itemStart)) {
-              if (markIt) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+              if (markIt) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mRoot)
               if (trailingAllowed && sepEnd >= 0) cur = sepEnd
               break
             }
@@ -3966,7 +3914,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               // own lead at the item's start.
               if ((q < 0 || !classHas(gapFollow!, lead(input, q)))
                 && (gapOther === undefined || !classHas(gapOther, lead(input, itemStart)))) {
-                if (markIt) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+                if (markIt) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mRoot)
                 break
               }
               if (q >= 0) {
@@ -3978,7 +3926,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             const v = child(input, itemStart, ctx)
             if (gapped) GAP.at = -1
             if (v === FAIL) {
-              if (markIt) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+              if (markIt) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mRoot)
               if (committed(ctx)) return FAIL
               if (trailingAllowed && sepEnd >= 0) cur = sepEnd
               break
@@ -3986,7 +3934,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             if (EC.e === itemStart && viaRepItem) {
               // Zero-width item: `repItem`'s TERMINATION device, not a semantic
               // filter — and it applies only where `repItem` runs.
-              if (markIt) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+              if (markIt) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mRoot)
               break
             }
             if (out !== undefined) out.push(v)
@@ -4066,7 +4014,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const mLv = MLV
           const mFl = need ? ctx._fields?.length ?? 0 : 0
           const mEr = need ? ctx._errors?.length ?? 0 : 0
-          const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
           const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
           const selVal = selector(input, pos, ctx)
           if (selVal === FAIL) return FAIL
@@ -4080,9 +4027,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               ctx._fx = expected
               return FAIL
             }
-            return runOther(input, pos, selEnd, key, ctx, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+            return runOther(input, pos, selEnd, key, ctx, need, mRaw, mTl, mLv, mFl, mEr, mRoot)
           }
-          return runArm!(arm, input, pos, selEnd, key, ctx, need, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+          return runArm!(arm, input, pos, selEnd, key, ctx, need, mRaw, mTl, mLv, mFl, mEr, mRoot)
         }
       }
 
@@ -4118,7 +4065,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             EC.e = end
             const nd = build(kids, undefined, span, rawKids, EMPTY_TL, undefined)
             if (ctx._cstBuf !== undefined || ctx._cstChildren !== undefined) {
-              pushCstChild(ctx, nd, ctx._cstRawChildren !== undefined || ctx._cstBuf !== undefined
+              pushCstChild(ctx, nd, ctx._cstBuf !== undefined
                 ? rawEntry(nd, input, pos, end)
                 : undefined)
             }
@@ -4300,7 +4247,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           // own sink, not a parent node, and pushing into it published the root
           // node as a leaf of itself.
           if (sBuf !== undefined || sCh !== undefined) {
-            pushCstChild(ctx, nd, rawEntry(nd, input, pos, end))
+            pushCstChild(ctx, nd, sBuf !== undefined ? rawEntry(nd, input, pos, end) : undefined)
           }
           EC.e = end
           return nd
@@ -4434,14 +4381,14 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       ? prog.asm?.find(a => a.key === cfgKey(cfg))
       : undefined
     if (pre !== undefined) {
-      assertFactoryArity(pre)
+      assertFactoryAbi(pre)
       const pools = rebuildPools(t.cc, t.fx, t.disp, pre.plan)
       emitted = pre.factory(
         EC, FAIL, k, fx, fns, pools.masks, pools.classes, pools.armExpected, trivia, triviaScan,
         scansArr, disp, dsp, EMPTY_FX, EMPTY_CH, EMPTY_TLOG, EMPTY_TL,
         cstCaptureActive, pushCstLeaf, pushCstChild, rollbackTriviaAt, rollbackScannedTriviaAt, failAt,
         classHas, consumeTrivia, buildFieldMap, projectChild, unwrapChild,
-        demoteCapturedToRaw, cstLeavesLen, skipTriviaScanned, needsDeferredTriviaCommit,
+        demoteCapturedToRaw, cstLeavesLen, undefined, needsDeferredTriviaCommit,
         advanceTrivia, refuseUnclassifiedRootScope, spanLines, rawEntry, lead,
         asciiFoldKey, ROUTED_FX,
         REC ? prog.cc.map((_, i) => sentinelFor(i)) : EMPTY_SENTS,
@@ -4449,7 +4396,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         scalarRecognizers, t.lex, adjacencyHolds, t.lexPrograms,
         LEAD, triviaFieldCapture, skipDeferredTrivia,
         collapseEmpty, popCstChild,
-        PlainSpan, PlainLeaf, PlainNode, PlainField, PlainBuf, GAP,
+        PlainSpan, PlainLeaf, PlainNode, PlainField, PlainBuf, GAP, recordUnlabelledGap, undefined, pushOpenCstTriviaEntry,
       )
       emitReached = new Set(pre.reached)
       if (emitted.ext !== undefined) HYBRID = emitted
@@ -4521,7 +4468,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         scansArr, disp, dsp, EMPTY_FX, EMPTY_CH, EMPTY_TLOG, EMPTY_TL,
         cstCaptureActive, pushCstLeaf, pushCstChild, rollbackTriviaAt, rollbackScannedTriviaAt, failAt,
         classHas, consumeTrivia, buildFieldMap, projectChild, unwrapChild,
-        demoteCapturedToRaw, cstLeavesLen, skipTriviaScanned, needsDeferredTriviaCommit,
+        demoteCapturedToRaw, cstLeavesLen, undefined, needsDeferredTriviaCommit,
         advanceTrivia, refuseUnclassifiedRootScope, spanLines, rawEntry, lead,
         asciiFoldKey, ROUTED_FX,
         // THE SENTINEL POOL, dense over char-class indices so the emitted text can
@@ -4534,7 +4481,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         scalarRecognizers, t.lex, adjacencyHolds, t.lexPrograms,
         LEAD, triviaFieldCapture, skipDeferredTrivia,
         collapseEmpty, popCstChild,
-        PlainSpan, PlainLeaf, PlainNode, PlainField, PlainBuf, GAP,
+        PlainSpan, PlainLeaf, PlainNode, PlainField, PlainBuf, GAP, recordUnlabelledGap, undefined, pushOpenCstTriviaEntry,
       )
       emitReached = em.reached
     } catch (e) {
@@ -4635,8 +4582,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     // throws must not leave an outer parse suspended.
     const nextHost = ctx.build
     const nextCoverage = ctx._grammarCoverage ?? NO_COVERAGE
-    if (depth > 0) frames.push({ scan: SCAN, host: HOST, coverage: COV, end: EC.e })
+    const nextRecording = ctx._rootTriviaLog !== undefined && ctx._rootTriviaLog.gapKind >= 0
+    if (depth > 0) frames.push({ scan: SCAN, host: HOST, coverage: COV, recording: RECORDING, end: EC.e })
     depth++
+    if (nextRecording !== RECORDING) installSkip(nextRecording)
     SCAN = null
     HOST = nextHost
     COV = nextCoverage
@@ -4650,6 +4599,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     SCAN = prior.scan
     HOST = prior.host
     COV = prior.coverage
+    if (prior.recording !== RECORDING) installSkip(prior.recording)
     EC.e = prior.end
   }
 

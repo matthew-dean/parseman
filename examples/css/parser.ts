@@ -10,7 +10,7 @@ import {
   scanTo, balanced, parser, trivia, rules, compile,
   type Combinator,
 } from '../../src/index.ts'
-import type { ParseResult } from '../../src/types.ts'
+import { run, type RunResult } from '../../src/run/index.ts'
 import { mk, buildLazyTriviaMap, nilNode, type CssNode } from './stub-build.ts'
 
 const ws = regex(/[ \t\n\r\f]+/)
@@ -170,11 +170,7 @@ export type CssParseResult = {
   trivia: { entries: number }
 }
 
-function finishCssParse(
-  input: string,
-  r: ParseResult<unknown>,
-  triviaLog: number[],
-): CssParseResult {
+function finishCssParse(input: string, r: RunResult): CssParseResult {
   const tree: CssNode = r.ok && typeof r.value === 'object' && r.value !== null && (r.value as CssNode)._tag === 'node'
     ? r.value as CssNode
     : nilNode()
@@ -182,21 +178,20 @@ function finishCssParse(
   if (!r.ok) {
     errors.push({ message: (r.expected ?? []).join(', ') || 'Parse error', offset: r.span?.start })
   }
-  return { tree, errors, trivia: buildLazyTriviaMap(triviaLog, input) }
+  return { tree, errors, trivia: buildLazyTriviaMap(r.rootTrivia?.rows ?? [], input) }
 }
+
+/** Every trivia gap in the document, as root rows. */
+const ALL_TRIVIA = { rootTrivia: { select: 'all' } } as const
 
 /** Interpreted — full CST + trivia capture (jess parseCssFn shape). */
 export function parseCss(input: string): CssParseResult {
-  const triviaLog: number[] = []
-  const ctx = { trackLines: false, _triviaLog: triviaLog }
-  return finishCssParse(input, Stylesheet.parse(input, 0, ctx), triviaLog)
+  return finishCssParse(input, run(Stylesheet, input, ALL_TRIVIA))
 }
 
 export const compiledCss = compile(Stylesheet)
 
 /** Compiled — full CST + trivia capture (jess parseCssFn shape). */
 export function parseCssCompiled(input: string): CssParseResult {
-  const triviaLog: number[] = []
-  const ctx = { trackLines: false, _triviaLog: triviaLog }
-  return finishCssParse(input, compiledCss.parseWithContext(input, ctx, 0), triviaLog)
+  return finishCssParse(input, run(compiledCss, input, ALL_TRIVIA))
 }

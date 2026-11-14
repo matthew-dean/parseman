@@ -23,6 +23,7 @@ import { compile } from '../../src/table/compile.ts'
 import { cstBuildHost } from '../../src/compiler/linker.ts'
 import { REC } from '../../src/recovery/scan.ts'
 import type { Combinator, ParseContext } from '../../src/index.ts'
+import { makeRootLog, rowsOf } from '../helpers/root-log.ts'
 
 const ident = regex(/[a-z]+/)
 const num = regex(/[0-9]+/)
@@ -183,7 +184,7 @@ describe('table drivers — local trivia scope root-capture policy', () => {
       parser({ trivia: outer, rootCapture: 'opaque' }, sequence(literal('b'), literal('c'))),
     )) as unknown as Combinator<unknown>
     for (const which of ['exec', 'assembled'] as const) {
-      const rows: number[] = []
+      const rows = makeRootLog()
       const d = drive(entry, 'a b/* hidden */c', {
         _rootTriviaLog: rows,
         _rootTriviaKindIndex: { blockComment: 0 },
@@ -191,7 +192,7 @@ describe('table drivers — local trivia scope root-capture policy', () => {
       })
       const r = d[which]() as { ok: boolean }
       expect(r.ok, which).toBe(true)
-      expect(rows, which).toEqual([])
+      expect(rowsOf(rows), which).toEqual([])
     }
   })
 })

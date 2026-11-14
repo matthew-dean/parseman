@@ -13,13 +13,14 @@ import { describe, expect, it } from 'vitest'
 import { encodeTable } from '../../src/table/encode.ts'
 import { cfgKey, tableRules } from '../../src/table/assemble.ts'
 import { defaultAssemblyCfgs } from '../../src/table/emit.ts'
-import { EMITTED_PARAMS, emitAssemblySource, type EmittedFactory } from '../../src/table/emit-assembly.ts'
+import { EMITTED_ABI, EMITTED_PARAMS, emitAssemblySource, type EmittedFactory } from '../../src/table/emit-assembly.ts'
 import { assemblyExtraIps, resolveTable, type TableProgram } from '../../src/table/program.ts'
 import { run } from '../../src/functional/run.ts'
 import type { Combinator } from '../../src/types.ts'
 import { choice, classifiedTrivia, gate, leaf, literal, node, optional, regex, rules, sequence, withCtx } from '../../src/index.ts'
 import { createParseContext } from '../../src/parse-context.ts'
 import { skipDeferredTrivia } from '../../src/table/trivia-gap.ts'
+import { makeRootLog } from '../helpers/root-log.ts'
 
 type RuleMap = Record<string, Combinator<unknown>>
 
@@ -29,7 +30,7 @@ function emitted(prog: TableProgram): TableProgram {
     const em = emitAssemblySource(resolveTable(prog), prog, cfg, assemblyExtraIps(prog), true)
     // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
     const factory = new Function(...EMITTED_PARAMS, em.source) as EmittedFactory
-    return { key: cfgKey(cfg), arity: EMITTED_PARAMS.length, factory, plan: em.plan, reached: [...em.reached] }
+    return { key: cfgKey(cfg), abi: EMITTED_ABI, factory, plan: em.plan, reached: [...em.reached] }
   }) }
 }
 
@@ -47,7 +48,10 @@ const g = rules<RuleMap>({ trivia: t }, () => ({
 const prog = encodeTable(g, { hostMode: 'ast' })
 const engines = { closure: tableRules({ ...prog, asm: [] }).Doc!, fast: tableRules(emitted(prog)).Doc! }
 
-const rows = (r: ReturnType<typeof run>) => (r as { rootTrivia?: { rows: unknown } }).rootTrivia?.rows
+const rows = (r: ReturnType<typeof run>): number[] | undefined => {
+  const kept = r.rootTrivia?.rows
+  return kept === undefined ? undefined : [...kept]
+}
 const opts = { rootTrivia: { select: ['blockComment'] } }
 
 describe('a labelled trivia gap under a root trivia selection', () => {
@@ -126,7 +130,7 @@ describe('a remembered trivia gap', () => {
     const rooted = (): ReturnType<typeof createParseContext> => {
       const ctx = createParseContext()
       ctx.trivia = t as Combinator<unknown>
-      ctx._rootTriviaLog = []
+      ctx._rootTriviaLog = makeRootLog()
       ctx._rootTriviaKindIndex = { blockComment: 0 }
       return ctx
     }

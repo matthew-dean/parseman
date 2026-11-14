@@ -33,7 +33,7 @@ describe('labeled trivia kinds — interpreter vs compiled', () => {
     // so its generated hot path must not pay for root-log saves or rollbacks.
   })
 
-  it('records per-chunk kind indices in _triviaLog', () => {
+  it('records per-chunk kind indices in the node trivia log', () => {
     const rw = labeledRw()
     const g = rules(r => {
       const a = regex(/a/)
@@ -41,21 +41,21 @@ describe('labeled trivia kinds — interpreter vs compiled', () => {
       const root = node(
         'Root',
         parser({ trivia: rw }, sequence(a, many(b))),
-        (c, raw, s, tl) => ({ span: s, children: [...c], tl: [...tl] }),
+        (c, _f, s, _raw, tl) => ({ span: s, children: [...c], tl: [...tl] }),
       )
       return { a, b, root }
     })
 
     const input = 'a /*x*/ b '
-    const log: number[] = []
-    g.root.parse(input, 0, {
+    const r = g.root.parse(input, 0, {
       trackLines: false,
       trivia: rw,
       triviaKindLabels: KIND_LABELS,
-      _triviaLog: log,
+      captureTrivia: true,
     })
+    if (!r.ok) throw new Error('parse failed')
 
-    const entries = triviaEntries(log, KIND_LABELS)
+    const entries = triviaEntries(r.value.tl, KIND_LABELS, { nodeLog: true })
     expect(entries.length).toBe(3)
     expect(entries.kind(0)).toBe('whitespace')
     expect(entries.text(0, input)).toBe(' ')
@@ -72,12 +72,12 @@ describe('labeled trivia kinds — interpreter vs compiled', () => {
       const compound = node(
         'Compound',
         parser({ trivia: rw }, oneOrMore(r.basicSel)),
-        (c, raw, s, tl) => ({ span: s, tl: [...tl], children: [...c] }),
+        (c, _f, s, _raw, tl) => ({ span: s, tl: [...tl], children: [...c] }),
       )
       const cx = node(
         'Cx',
         parser({ trivia: rw }, sequence(r.compound, many(sequence(literal('>'), r.compound)))),
-        (c, raw, s, tl) => ({ span: s, tl: [...tl], children: [...c] }),
+        (c, _f, s, _raw, tl) => ({ span: s, tl: [...tl], children: [...c] }),
       )
       return { basicSel, compound, cx }
     })
@@ -99,7 +99,7 @@ describe('labeled trivia kinds — interpreter vs compiled', () => {
 
   it('labeled regex arms (no fast path) still parity', () => {
     const rw = trivia(oneOrMore(choice(
-      label('ws', regex(/[ \t]+/)),
+      label('ws', regex(/[ \t\n]+/)),
       label('line', regex(/\/\/.*/)),
     )))
     const labels = ['ws', 'line'] as const
@@ -108,18 +108,20 @@ describe('labeled trivia kinds — interpreter vs compiled', () => {
       const root = node(
         'Root',
         parser({ trivia: rw }, sequence(tok, tok)),
-        (c, raw, s, tl) => ({ span: s, tl: [...tl], children: [...c] }),
+        (c, _f, s, _raw, tl) => ({ span: s, tl: [...tl], children: [...c] }),
       )
       return { tok, root }
     })
 
     const compiled = compile(g.root)
-    const { iLog, cLog } = runTriviaLogParity(g.root, compiled, 'aa //c\n bb', {
+    const { iLog, cLog, interpreted } = runTriviaLogParity(g.root, compiled, 'aa //c\n bb', {
       trackLines: false,
       trivia: rw,
       triviaKindLabels: labels,
     })
+    expect(interpreted.ok).toBe(true)
     expectTriviaLogParity(iLog, cLog, labels)
+    expect(triviaEntriesFromLog(iLog, labels).map(e => labels[e.kindIndex!])).toEqual(['ws', 'line', 'ws'])
   })
 })
 
@@ -174,7 +176,7 @@ describe('selected root trivia scopes', () => {
     const result = run(parser({ trivia: overlapping }, sequence(literal('a'), literal('b'))), 'a / b', {
       rootTrivia: { select: ['broad'] },
     })
-    expect(result.rootTrivia).toMatchObject({ rows: [1, 4, 2, 4, 0], select: ['broad'] })
+    expect(result.rootTrivia).toMatchObject({ rows: Int32Array.of(1, 4, 2, 4, 0), select: ['broad'] })
     expect(() => classifiedTrivia({
       optionalWhitespace: regex(/[ \t]*/),
     })).toThrow(/non-nullable/)
@@ -220,7 +222,7 @@ describe('selected root trivia scopes', () => {
       const result = run(root, 'a #*x*# b', options)
       expect(result.ok, engine).toBe(true)
       expect(result.rootTrivia, engine).toMatchObject({
-        rows: [1, 8, 2, 7, 0],
+        rows: Int32Array.of(1, 8, 2, 7, 0),
         select: ['whitespace'],
       })
     }
@@ -316,7 +318,7 @@ describe('label() vs node() — no conflict', () => {
       const root = node(
         'Expr',
         parser({ trivia: rw }, r.item),
-        (c, raw, s, tl) => ({ type: 'Expr', span: s, tl: [...tl], children: [...c] }),
+        (c, _f, s, _raw, tl) => ({ type: 'Expr', span: s, tl: [...tl], children: [...c] }),
       )
       return { item, root }
     })
@@ -325,7 +327,6 @@ describe('label() vs node() — no conflict', () => {
       trackLines: false,
       trivia: rw,
       triviaKindLabels: KIND_LABELS,
-      _triviaLog: [],
     })
     expect(built.ok && built.value).toMatchObject({ type: 'Expr' })
     expect(rw._meta.triviaKindLabels).toEqual([...KIND_LABELS])
@@ -348,7 +349,7 @@ describe('labeled trivia kinds — macro metadata', () => {
     })
 
     expect(result.rootTrivia).toMatchObject({
-      rows: [1, 8, 2, 7, 0],
+      rows: Int32Array.of(1, 8, 2, 7, 0),
       select: ['blockComment', 'blockComment'],
     })
   })
@@ -371,7 +372,7 @@ describe('labeled trivia kinds — macro metadata', () => {
     const cst = compose([base, delta], { hostMode: 'cst' }) as { Doc?: Runnable }
     const input = 'x a /*x*/ b y'
     const opts = { rootTrivia: { select: ['blockComment'] as const } }
-    const expected = { rows: [3, 10, 4, 9, 0], select: ['blockComment'] }
+    const expected = { rows: Int32Array.of(3, 10, 4, 9, 0), select: ['blockComment'] }
 
     expect(run(ast.Doc!, input, opts).rootTrivia).toMatchObject(expected)
     expect(run(cst.Doc!, input, { ...opts, build: cstBuildHost() }).rootTrivia).toMatchObject(expected)
@@ -387,7 +388,7 @@ describe('labeled trivia kinds — macro metadata', () => {
 
     expect(result.ok).toBe(true)
     expect(result.rootTrivia).toMatchObject({
-      rows: [1, 8, 2, 7, 0],
+      rows: Int32Array.of(1, 8, 2, 7, 0),
       select: ['blockComment'],
     })
     expect(result.rootTrivia?.index.entries.length).toBe(1)
@@ -427,7 +428,7 @@ describe('labeled trivia kinds — macro metadata', () => {
 
     const interpreted = run(grammar.Root, input, selected)
     const macro = run(compiledGrammar.Root, input, selected)
-    const expected = { rows: [1, 8, 2, 7, 0], select: ['blockComment'] }
+    const expected = { rows: Int32Array.of(1, 8, 2, 7, 0), select: ['blockComment'] }
     expect(interpreted.rootTrivia).toMatchObject(expected)
     expect(macro.rootTrivia).toMatchObject(expected)
   })
@@ -440,31 +441,31 @@ describe('labeled trivia kinds — macro metadata', () => {
         name: 'ordered choice arm',
         root: choice(sequence(literal('a'), literal('b')), sequence(literal('a'), literal('c'))),
         input: 'a /*x*/ c',
-        rows: [1, 8, 2, 7, 0],
+        rows: Int32Array.of(1, 8, 2, 7, 0),
       },
       {
         name: 'attempt arm',
         root: choice(attempt(sequence(literal('a'), literal('b'))), sequence(literal('a'), literal('c'))),
         input: 'a /*x*/ c',
-        rows: [1, 8, 2, 7, 0],
+        rows: Int32Array.of(1, 8, 2, 7, 0),
       },
       {
         name: 'optional tail',
         root: sequence(literal('a'), optional(literal('b'))),
         input: 'a /*x*/ c',
-        rows: [],
+        rows: Int32Array.of(),
       },
       {
         name: 'repeat tail',
         root: sequence(literal('a'), many(literal('b'))),
         input: 'a /*x*/ c',
-        rows: [],
+        rows: Int32Array.of(),
       },
       {
         name: 'separator plus missing item',
         root: sepBy(literal('a'), literal(',')),
         input: 'a /*x*/, /*y*/',
-        rows: [],
+        rows: Int32Array.of(),
       },
     ] as const
 
@@ -475,7 +476,7 @@ describe('labeled trivia kinds — macro metadata', () => {
       for (const [engine, root] of [['interpreter', grammar.Root], ['compiled', compiledGrammar.Root]] as const) {
         const result = run(root, testCase.input, selected)
         if (testCase.rows.length === 0) expect(result.rootTrivia, `${testCase.name}: ${engine}`).toBeUndefined()
-        else expect(result.rootTrivia?.rows, `${testCase.name}: ${engine}`).toEqual(testCase.rows)
+        else expect(result.rootTrivia?.rows, `${testCase.name}: ${engine}`).toEqual(Int32Array.from(testCase.rows))
       }
     }
   })

@@ -3,8 +3,73 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
-## Unreleased
+## 0.62.0 — 2026-11-11
 
+- **Breaking: printed parsers must be printed again with 0.62.0.** The emitted helpers
+  `rollbackTriviaAt` and `rollbackScannedTriviaAt` take fewer arguments. A printed factory
+  takes its helpers by position, and a helper count cannot see a changed parameter list, so
+  one printed by 0.61.x with a matching count would bind the arguments after the change to
+  the wrong names and run: a
+  `sequence(literal('x'), optional(node('E', optional(literal('z')))), literal('y'))` on
+  `x/*c*/y` recorded its root trivia row twice and reported success. Each printed record now
+  carries `abi`, the printing minor and helper count (`"0.62/62"`), in place of `arity`. The
+  runtime refuses a record whose `abi` is not its own, naming both, and refuses a record
+  printed before 0.62.0, which has no `abi`. A helper's parameters or order change only in a
+  minor, and helper slots only append: `skipTriviaScanned` is retired and keeps its slot,
+  and `recordUnlabelledGap` and `pushOpenCstTriviaEntry` are new slots at the end, with one
+  retired slot between them bound to `undefined` (`docs/design/artifact-format.md`). A 0.61.x runtime refuses a 0.62.0 record because
+  it carries no `arity`.
+- **Breaking: the document's trivia log moves from `ParseContext._triviaLog` to
+  `run(parser, input, { rootTrivia: { select: 'all' } })`.** `RunResult.rootTrivia.rows` holds
+  five numbers per row, `gapStart, gapEnd, start, end, kind`, where `kind` indexes
+  `RunResult.rootTrivia.select`: the grammar's trivia labels, then `''`. A labelled chunk is a
+  row under its label, named by label in a nested scope that orders its labels differently
+  (an old entry gave that scope's own index). A gap of unlabelled trivia is one row under `''`
+  whose `start, end` are the gap, the `[start, end]` entry `_triviaLog` held. The label table
+  holds the labels reachable from the entry, the root's first, built once per entry on its
+  first `'all'` run, so a parse that never asks for `'all'` pays nothing for it. While a
+  rule reachable from the entry is still undefined, each `'all'` run walks the labels again,
+  so a rule defined after an earlier run brings its labels. A region declared `parser({ rootCapture: 'opaque' })` is recorded, as
+  `_triviaLog` recorded it; a label list still records nothing there. `run()` now accepts a
+  `compile()` result and runs its entry rule. A context that still carries `_triviaLog` is
+  refused when a `compile()` result's `parse` or `parseWithContext` starts, with an error that
+  names the replacement. Everywhere else `ParseContext` refuses it by its type alone: a rule of
+  a `tableRules()` map, a printed module or a macro build is the same function the grammar's
+  own pieces call per rule, and an interpreted parser takes a context only on its recursive
+  `parse(input, pos, ctx)`, so a runtime check there would run on every call.
+  On the CSS example, the five bench workloads and the Jess corpora in all four dialects,
+  the rows give the same spans as 0.61.9's `_triviaLog`, and in Jess the same labels except
+  two block comments in a nested CSS scope, which the old log named `whitespace`.
+- **Breaking: `RunResult.rootTrivia.rows` is an `Int32Array`, not a `number[]`.** The layout
+  and indexing don't change: five numbers per row, read as `rows[5 * i + k]`, and `length`
+  covers exactly the rows the parse kept. The array is a view of the log the parse wrote, so
+  no row is copied out, and a result keeps that log's buffer alive: room for a row per 8
+  input characters up to 65,536 rows, 164 KB for a 65 KB stylesheet. `Array.isArray(rows)` is now `false`;
+  use `Array.from(rows)` for a plain array. A document's rows outgrow V8's largest regular
+  object, about 3.2k rows, and past that every growth of a `number[]` copied the whole log.
+  On 4,399 gaps, recording the rows for `select: 'all'` took 340 to 390 µs and now takes 28
+  to 139 µs (x64, Node 24). A whole `'all'` parse is level with 0.61.9's `_triviaLog` or
+  faster, except on three expected-set bench cases, which are 1.5% to 2.7% slower.
+  `buildRootTriviaIndex(rows, select)` takes any array-like of numbers, so rows kept as a
+  plain array still build an index.
+- **A plain parse of a small grammar can be up to 5% slower than 0.61.11 on CI.** The
+  cross-process A/B on GitHub's runners (Node 26) measured `rollback/none` +4.4%,
+  `expected/none` +3.4%, `expected/narrow` +2.9%, `expected/wide` +2.3% and
+  `json/document` +1.5%, while `rollback/medium` and `rollback/dense` are 4% faster and the
+  Less, CSS and GraphQL workloads are level. On a quiet x64 machine (Node 26) the same cases
+  are 0.5% to 1.6% slower, below the gate's significance bar. The generated code for these
+  grammars does strictly less work than 0.61.11's, and calls and branches are at or below
+  it on every workload; profiles show V8 inlining the leaner skip functions differently,
+  which moves `cstRawLen` out of line. Accepted for this release.
+- **Breaking: `ParseContext` no longer has `_cstTriviaLog` or `_cstRawChildren`.** No engine
+  read them back. A node's trivia reaches its builder as the fifth argument (`triviaLog`), and
+  raw children come from the node's own capture. Every engine stops saving, clearing and
+  testing the trivia log fields around each attempt, token and node, and a node no longer
+  builds the raw entry for a child when no capture buffer is open to take it. A grammar whose
+  trivia has no labels still tests once per gap whether a root log is open, as 0.61.9 did.
+  Against 0.61.9, branch tests per parse fall 1.8% to 10.8% on every call-count row (Less
+  `app.less` AST −8.46%, CSS `site.css` AST −10.81%) and calls by up to 3.7% (Less AST −3.74%);
+  no row rises, on the first parse or after warmup.
 - **A contained `attempt` over a separated list with a minimum takes back what came before
   it when the list fails.** A `sepBy` with `min: 1` also fails on a separator that commits a
   failure, and one with `min: 2` or more fails short of its minimum whatever its item, but the

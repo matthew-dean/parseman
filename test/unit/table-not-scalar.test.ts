@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { cstBuildHost, gate, label, literal, not, regex, run, sequence } from '../../src/index.ts'
+import { cstBuildHost, gate, label, literal, not, regex, run, sequence, type Runnable } from '../../src/index.ts'
 import { buildGrammarPlan } from '../../src/compiler/grammar-coverage-ids.ts'
 import { createParseContext } from '../../src/parse-context.ts'
 import { digestValue } from '../../src/oracle/index.ts'
 import { AssemblyCache, tableRules, type RunCfg } from '../../src/table/assemble.ts'
-import { EMITTED_PARAMS, emitAssemblySource } from '../../src/table/emit-assembly.ts'
+import { EMITTED_ABI, EMITTED_PARAMS, emitAssemblySource } from '../../src/table/emit-assembly.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { execRules } from '../../src/table/exec.ts'
 import { reachableIps } from '../../src/table/inspect.ts'
@@ -12,8 +12,9 @@ import { OP_NOT } from '../../src/table/ops.ts'
 import { resolveTable, type PrecompiledAssembly, type TableProgram } from '../../src/table/program.ts'
 import { scalarTerminalNotChild } from '../../src/table/scalar-terminal.ts'
 import type { Combinator, ParseContext, ParseFail } from '../../src/types.ts'
+import { makeRootLog, rowsOf } from '../helpers/root-log.ts'
 
-type Entry = Parameters<typeof run>[0]
+type Entry = Runnable
 const STRICT = { hostCst: false, trackLines: false, tolerant: false, coverage: false, probe: false }
 const CLOSURE_CFG: RunCfg = { ...STRICT, hostReadsChildren: true }
 
@@ -52,7 +53,7 @@ function expectAgreement(prog: TableProgram, interpreter: Combinator<unknown>, i
 function precompiled(prog: TableProgram, mutate: (source: string) => string = source => source): TableProgram {
   const em = emitAssemblySource(resolveTable(prog), prog, STRICT)
   const compiled = new Function(...EMITTED_PARAMS, mutate(em.source)) as PrecompiledAssembly['factory']
-  return { ...prog, asm: [{ key: 0, arity: EMITTED_PARAMS.length, factory: compiled, plan: em.plan, reached: [...em.reached] }] }
+  return { ...prog, asm: [{ key: 0, abi: EMITTED_ABI, factory: compiled, plan: em.plan, reached: [...em.reached] }] }
 }
 
 describe('direct-terminal not() scalar consumer', () => {
@@ -111,9 +112,7 @@ describe('direct-terminal not() scalar consumer', () => {
       ctx._fx = ['prior']
       ctx._probe = { offset: 7, best: probe }
       ctx._cstLeaves = [{ seed: true }]
-      ctx._cstRawChildren = [{ raw: true }]
-      ctx._cstTriviaLog = [1, 2, 0]
-      ctx._triviaLog = [1, 2]
+      ctx._rootTriviaLog = makeRootLog([1, 2, 1, 2, 0])
       ctx._fields = [{ name: 'seed', value: 1, span: { start: 0, end: 0 } }]
       ctx._errors = []
       return true
@@ -134,9 +133,7 @@ describe('direct-terminal not() scalar consumer', () => {
         expect(ctx._fc, name).toBe(true)
         expect(ctx._probe!.best, name).toBe(seed)
         expect(ctx._cstLeaves, name).toEqual([{ seed: true }])
-        expect(ctx._cstRawChildren, name).toEqual([{ raw: true }])
-        expect(ctx._cstTriviaLog, name).toEqual([1, 2, 0])
-        expect(ctx._triviaLog, name).toEqual([1, 2])
+        expect(rowsOf(ctx._rootTriviaLog), name).toEqual([1, 2, 1, 2, 0])
         expect(ctx._fields, name).toHaveLength(1)
         expect(ctx._errors, name).toEqual([])
         if (input === 'y') {

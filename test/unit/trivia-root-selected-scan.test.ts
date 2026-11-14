@@ -3,6 +3,8 @@ import { trivia, label, regex, oneOrMore, choice } from '../../src/index.ts'
 import { analyzeLabeledTrivia, type LabeledTriviaSpec } from '../../src/cst/trivia-kinds.ts'
 import { skipDeferredTrivia } from '../../src/table/trivia-gap.ts'
 import type { Combinator, ParseContext } from '../../src/types.ts'
+import { makeRootLog, rowsOf } from '../helpers/root-log.ts'
+import type { RootTriviaLog } from '../../src/cst/trivia-entries.ts'
 
 /*
  * The table engines' deferred-commit trivia skip (`table/trivia-gap.ts`).
@@ -36,7 +38,7 @@ function counted(): { triviaP: Combinator<unknown>; visits: () => number } {
   return { triviaP, visits: () => n }
 }
 
-function rootCtx(triviaP: Combinator<unknown>, rootLog: number[]): ParseContext {
+function rootCtx(triviaP: Combinator<unknown>, rootLog: RootTriviaLog): ParseContext {
   return {
     trackLines: false,
     trivia: triviaP,
@@ -49,30 +51,30 @@ function rootCtx(triviaP: Combinator<unknown>, rootLog: number[]): ParseContext 
 describe('a labelled scan with only root-selected kinds to record', () => {
   it('answers a run with no selected leader by its end, without visiting it', () => {
     const { triviaP, visits } = counted()
-    const rootLog: number[] = []
+    const rootLog = makeRootLog()
     const ctx = rootCtx(triviaP, rootLog)
     expect(skipDeferredTrivia(' \n\t x', 0, ctx)).toBe(4)
     expect(skipDeferredTrivia('x', 0, ctx)).toBe(0)
     expect(visits()).toBe(0)
-    expect(rootLog).toEqual([])
+    expect(rowsOf(rootLog)).toEqual([])
   })
 
   it('still visits and records a run that holds a selected chunk', () => {
     const { triviaP, visits } = counted()
-    const rootLog: number[] = []
+    const rootLog = makeRootLog()
     const ctx = rootCtx(triviaP, rootLog)
     expect(skipDeferredTrivia('  /* c */ x', 0, ctx)).toBe(10)
     expect(visits()).toBe(1)
-    expect(rootLog).toEqual([0, 10, 2, 9, 0])
+    expect(rowsOf(rootLog)).toEqual([0, 10, 2, 9, 0])
   })
 
   it('visits a run whose leader starts an unselected chunk, and records nothing', () => {
     const { triviaP, visits } = counted()
-    const rootLog: number[] = []
+    const rootLog = makeRootLog()
     const ctx = rootCtx(triviaP, rootLog)
     expect(skipDeferredTrivia(' // line\nx', 0, ctx)).toBe(9)
     expect(visits()).toBe(1)
-    expect(rootLog).toEqual([])
+    expect(rowsOf(rootLog)).toEqual([])
   })
 })
 
@@ -84,7 +86,7 @@ describe('a labelled scan with only root-selected kinds to record', () => {
 describe('a repeated labelled scan', () => {
   it('scans a gap once when the same parse asks for it again', () => {
     const { triviaP, visits } = counted()
-    const ctx = rootCtx(triviaP, [])
+    const ctx = rootCtx(triviaP, makeRootLog())
     expect(skipDeferredTrivia(' // line\nx', 0, ctx)).toBe(9)
     expect(skipDeferredTrivia(' // line\nx', 0, ctx)).toBe(9)
     expect(visits()).toBe(1)
@@ -92,15 +94,15 @@ describe('a repeated labelled scan', () => {
 
   it('scans again for another parse, another position or a scan that recorded', () => {
     const { triviaP, visits } = counted()
-    const rootLog: number[] = []
+    const rootLog = makeRootLog()
     const ctx = rootCtx(triviaP, rootLog)
     skipDeferredTrivia(' // line\nx', 0, ctx)
-    skipDeferredTrivia(' // line\nx', 0, rootCtx(triviaP, []))
+    skipDeferredTrivia(' // line\nx', 0, rootCtx(triviaP, makeRootLog()))
     skipDeferredTrivia(' // line\nx', 1, ctx)
     expect(visits()).toBe(3)
     expect(skipDeferredTrivia(' /* c */x', 0, ctx)).toBe(8)
     expect(skipDeferredTrivia(' /* c */x', 0, ctx)).toBe(8)
     expect(visits()).toBe(5)
-    expect(rootLog).toEqual([0, 8, 1, 8, 0, 0, 8, 1, 8, 0])
+    expect(rowsOf(rootLog)).toEqual([0, 8, 1, 8, 0, 0, 8, 1, 8, 0])
   })
 })

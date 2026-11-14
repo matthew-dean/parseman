@@ -97,7 +97,7 @@ describe('the gates as commands', () => {
   describe('callcount:guard', () => {
     it('passes a clean tree', () => {
       const r = callCount()
-      expect(r.out).toContain('call-count: ok — 5 rows')
+      expect(r.out).toContain('call-count: ok — 11 rows')
       expect(r.code).toBe(0)
     }, 180_000)
 

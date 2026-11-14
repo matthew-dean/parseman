@@ -6,7 +6,7 @@ import {
 } from '../../src/index.ts'
 import { supercompileEmittedAssembly, supercompileEntryAssembly } from '../../src/plugin/entry-supercompiler.ts'
 import { cfgKey, tableRules } from '../../src/table/assemble.ts'
-import { EMITTED_PARAMS, emitAssemblySource } from '../../src/table/emit-assembly.ts'
+import { EMITTED_ABI, EMITTED_PARAMS, emitAssemblySource } from '../../src/table/emit-assembly.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { reachableIps } from '../../src/table/inspect.ts'
 import { resolveTable, type PrecompiledAssembly, type TableProgram } from '../../src/table/program.ts'
@@ -41,7 +41,7 @@ function installed(
   const factory = new Function(...EMITTED_PARAMS, source) as PrecompiledAssembly['factory']
   return tableRules({
     ...prog,
-    asm: [{ key, arity: EMITTED_PARAMS.length, factory, plan, reached }],
+    asm: [{ key, abi: EMITTED_ABI, factory, plan, reached }],
   }).Entry! as Entry
 }
 

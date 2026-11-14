@@ -13,7 +13,7 @@ import { isDeepStrictEqual } from 'node:util'
 import { cfgKey, countSiteVisits, tableRules } from '../../src/table/assemble.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { defaultAssemblyCfgs } from '../../src/table/emit.ts'
-import { EMITTED_PARAMS, emitAssemblySource, type EmittedFactory } from '../../src/table/emit-assembly.ts'
+import { EMITTED_ABI, EMITTED_PARAMS, emitAssemblySource, type EmittedFactory } from '../../src/table/emit-assembly.ts'
 import { assemblyExtraIps, resolveTable, type TableProgram } from '../../src/table/program.ts'
 import { selectHotSites } from '../../src/table/select-hot.ts'
 import { mergeSameBodies, supercompileEmittedAssembly } from '../../src/plugin/entry-supercompiler.ts'
@@ -78,7 +78,7 @@ const TWIN_PIECES = ['c', 'd', 'e', 'f', 'q', '1ab', '2ab', '3ab', '4ab', '1a', 
 const assembled = (prog: TableProgram, source: string, joined: ReturnType<typeof supercompileEmittedAssembly>) => {
   // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
   const factory = new Function(...EMITTED_PARAMS, source) as EmittedFactory
-  return tableRules({ ...prog, asm: [{ key: cfgKey(defaultAssemblyCfgs(prog)[0]!), arity: EMITTED_PARAMS.length, factory, plan: joined.plan, reached: [...joined.reached] }] })
+  return tableRules({ ...prog, asm: [{ key: cfgKey(defaultAssemblyCfgs(prog)[0]!), abi: EMITTED_ABI, factory, plan: joined.plan, reached: [...joined.reached] }] })
 }
 
 const outcome = (rule: unknown, input: string): unknown => {

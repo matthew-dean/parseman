@@ -23,7 +23,7 @@ import { supercompileRuleMapReplacement } from '../../src/plugin/entry-supercomp
 import { compileRuleMap } from '../../src/table/compile-rule-map.ts'
 import { evalMacroModule } from '../helpers/eval-macro-module.ts'
 import { defaultAssemblyCfgs } from '../../src/table/emit.ts'
-import { EMITTED_PARAMS, emitAssemblySource, type EmittedFactory } from '../../src/table/emit-assembly.ts'
+import { EMITTED_ABI, EMITTED_PARAMS, emitAssemblySource, type EmittedFactory } from '../../src/table/emit-assembly.ts'
 import { assemblyExtraIps, resolveTable, type TableProgram } from '../../src/table/program.ts'
 import { edgesAsLowered, fitHotSites, selectHotSites } from '../../src/table/select-hot.ts'
 import { childSlots } from '../../src/table/child-slots.ts'
@@ -69,7 +69,7 @@ function selective(prog: TableProgram, select: ReadonlySet<number>): TableProgra
   const em = emitAssemblySource(resolveTable(prog), prog, cfg, assemblyExtraIps(prog), true, select)
   // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
   const factory = new Function(...EMITTED_PARAMS, em.source) as EmittedFactory
-  return { ...prog, asm: [{ key: cfgKey(cfg), arity: EMITTED_PARAMS.length, factory, plan: em.plan, reached: [...em.reached] }] }
+  return { ...prog, asm: [{ key: cfgKey(cfg), abi: EMITTED_ABI, factory, plan: em.plan, reached: [...em.reached] }] }
 }
 
 /**

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   pushCstChild,
   pushCstLeaf,
-  pushCstTriviaEntry,
+  pushOpenCstTriviaEntry,
   cstDeferredTriviaActive,
   beginCstNodeCapture,
   endCstNodeCapture,
@@ -13,13 +13,11 @@ import type { ParseContext } from '../../src/types.ts'
 import type { CstCaptureBuf } from '../../src/cst/capture-buffer.ts'
 
 describe('pushCstChild() — legacy collectors', () => {
-  it('appends to _cstChildren / _cstRawChildren when no _cstBuf is active', () => {
+  it('appends to _cstChildren when no _cstBuf is active', () => {
     const children: unknown[] = []
-    const raw: unknown[] = []
-    const ctx: ParseContext = { trackLines: false, _cstChildren: children, _cstRawChildren: raw }
+    const ctx: ParseContext = { trackLines: false, _cstChildren: children }
     pushCstChild(ctx, 'built', 'raw-entry')
     expect(children).toEqual(['built'])
-    expect(raw).toEqual(['raw-entry'])
   })
 
   it('falls back to _cstLeaves when _cstChildren is absent', () => {
@@ -46,7 +44,7 @@ describe('beginCstNodeCapture() / endCstNodeCapture()', () => {
     const buf: CstCaptureBuf = { noRaw: true, rawLen: 0 }
     const ctx: ParseContext = { trackLines: false, captureTrivia: true, _cstBuf: buf }
     pushCstChild(ctx, 'a', { expensive: 'raw-a' })
-    pushCstTriviaEntry(ctx, 1, 2)
+    pushOpenCstTriviaEntry(ctx, 1, 2)
     pushCstChild(ctx, 'b', { expensive: 'raw-b' })
 
     expect(buf).toMatchObject({ rawLen: 2, tl: [1, 2, 1] })
@@ -62,21 +60,19 @@ describe('beginCstNodeCapture() / endCstNodeCapture()', () => {
   })
 })
 
-describe('pushCstTriviaEntry() / cstDeferredTriviaActive()', () => {
-  it('records labeled trivia into _cstTriviaLog when no buffer is active', () => {
-    const log: number[] = []
-    const ctx: ParseContext = {
-      trackLines: false,
-      triviaKindLabels: ['ws'],
-      _cstTriviaLog: log,
-      _cstRawChildren: [],
-    }
-    pushCstTriviaEntry(ctx, 0, 2, 0)
-    expect(log).toEqual([0, 2, 0, 0])
+describe('pushOpenCstTriviaEntry() / cstDeferredTriviaActive()', () => {
+  it('records labeled trivia into the open buffer', () => {
+    const buf: CstCaptureBuf = {}
+    const ctx: ParseContext = { trackLines: false, triviaKindLabels: ['ws'], _cstBuf: buf }
+    pushOpenCstTriviaEntry(ctx, 0, 2, 0)
+    expect(buf.tl).toEqual([0, 2, 0, 0])
+    pushOpenCstTriviaEntry(ctx, 3, 4)
+    expect(buf.tl).toEqual([0, 2, 0, 0, 3, 4, 0])
   })
 
-  it('cstDeferredTriviaActive is true when any trivia collector is present', () => {
-    expect(cstDeferredTriviaActive({ trackLines: false, _triviaLog: [] })).toBe(true)
+  it('cstDeferredTriviaActive is true exactly when a capture buffer is open', () => {
+    expect(cstDeferredTriviaActive({ trackLines: false, _cstBuf: {} })).toBe(true)
+    expect(cstDeferredTriviaActive({ trackLines: false, _cstLeaves: [] })).toBe(false)
     expect(cstDeferredTriviaActive({ trackLines: false })).toBe(false)
   })
 })

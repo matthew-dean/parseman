@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import { literal, node, sequence } from '../../src/index.ts'
-import { EMITTED_PARAMS } from '../../src/table/emit-assembly.ts'
+import { EMITTED_ABI, EMITTED_PARAMS } from '../../src/table/emit-assembly.ts'
 import { defaultAssemblyCfgs, emitTableModule } from '../../src/table/emit.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { expandCompact, type CompactProgram } from '../../src/table/program.ts'
@@ -22,8 +22,8 @@ describe('printed assembly factory', () => {
     assemblies: defaultAssemblyCfgs(prog),
   })
 
-  it('records its helper count, and opens with a check against the count it is called with', () => {
-    expect(source).toContain(`arity:${EMITTED_PARAMS.length},factory:function(${EMITTED_PARAMS.join(',')}){if(arguments.length!==${EMITTED_PARAMS.length})throw new Error(`)
+  it('records its helper ABI, and opens with a check against the count it is called with', () => {
+    expect(source).toContain(`abi:${JSON.stringify(EMITTED_ABI)},factory:function(${EMITTED_PARAMS.join(',')}){if(arguments.length!==${EMITTED_PARAMS.length})throw new Error(`)
   })
 
   const start = source.indexOf('factory:function(') + 'factory:'.length

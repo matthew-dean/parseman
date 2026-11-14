@@ -26,10 +26,13 @@ import { expect } from 'vitest'
 import { compile, parse as runtimeParse, run } from '../../../src/index.ts'
 import { REC } from '../../../src/recovery/scan.ts'
 import type { Combinator, ParseContext } from '../../../src/index.ts'
+import type { RootTriviaLog } from '../../../src/cst/trivia-entries.ts'
+import { makeRootLog, rowsOf } from '../../helpers/root-log.ts'
 
 /** Sinks a parse can write besides its return value. All must match too. */
 type Sinks = {
-  triviaLog: number[]
+  /** Every trivia chunk in the document: the root log `rootTrivia: { select: 'all' }` fills. */
+  triviaLog: RootTriviaLog
   cstLeaves: unknown[]
   errors: unknown[]
 }
@@ -44,9 +47,9 @@ type Sinks = {
  * interpreter's dynamic capture against compiled silence and report a
  * divergence on every input — a design difference, not a defect.
  *
- * `_triviaLog` is gated the same way (the emitted trivia fn is only called with
- * `_cap = 1` under `capturing`), so it travels with the CST sinks. `_errors` is
- * driven by `recovery`, not `capturing`, so it is always compared.
+ * The document-wide trivia log (the root log of `rootTrivia: { select: 'all' }`)
+ * travels with the CST sinks, as the removed `_triviaLog` it replaces did. `_errors`
+ * is driven by `recovery`, not `capturing`, so it is always compared.
  *
  * Detected from the emitted source itself rather than by re-deriving "does this
  * tree contain a node()" — the compiled output is the ground truth for what the
@@ -56,14 +59,26 @@ function freshSinks(
   captures: boolean,
   ambient: Record<string, unknown>,
 ): { sinks: Sinks; ctx: ParseContext } {
-  const sinks: Sinks = { triviaLog: [], cstLeaves: [], errors: [] }
+  const sinks: Sinks = { triviaLog: makeRootLog(), cstLeaves: [], errors: [] }
+  sinks.triviaLog.gapKind = allTriviaKinds(ambient)['']!
   const ctx = {
     trackLines: false,
     ...ambient,
-    ...(captures ? { _triviaLog: sinks.triviaLog, _cstLeaves: sinks.cstLeaves } : {}),
+    ...(captures
+      ? { _rootTriviaLog: sinks.triviaLog, _rootTriviaKindIndex: allTriviaKinds(ambient), _cstLeaves: sinks.cstLeaves }
+      : {}),
     _errors: sinks.errors,
   } as unknown as ParseContext
   return { sinks, ctx }
+}
+
+/** The root selection `run()` builds for `select: 'all'`: each label, then `''`. */
+function allTriviaKinds(ambient: Record<string, unknown>): Record<string, number> {
+  const labels = (ambient['triviaKindLabels'] as readonly string[] | undefined) ?? []
+  const kinds: Record<string, number> = {}
+  labels.forEach((label, i) => { kinds[label] ??= i })
+  kinds[''] = labels.length
+  return kinds
 }
 
 /** Tolerant ctx, identical for both engines (see the tolerant block below). */
@@ -144,8 +159,9 @@ export function assertEnginesAgree<T>(
   // WHOLE object — not a field checklist. See the header.
   expect(compiledResult, `compiled result must equal interpreted for ${JSON.stringify(input)}`)
     .toEqual(interpreted)
-  expect(k.sinks, `compiled context sinks must equal interpreted for ${JSON.stringify(input)}`)
-    .toEqual(i.sinks)
+  const rowsIn = (s: Sinks) => ({ ...s, triviaLog: rowsOf(s.triviaLog) })
+  expect(rowsIn(k.sinks), `compiled context sinks must equal interpreted for ${JSON.stringify(input)}`)
+    .toEqual(rowsIn(i.sinks))
 
   if (opts.tolerant) {
     // Both engines get the SAME tolerant ctx and are compared as WHOLE results.
