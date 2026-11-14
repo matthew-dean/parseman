@@ -3,6 +3,14 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## Unreleased
+
+- **The cross-process floor in `bench/xproc-gate.json` is 6%, not 1%, for 0.62.0 only.**
+  `floorPct: 1 → 6` lets the accepted slowdown above release; `rollback/sparse` was also
+  +1.6% to +1.7% in two of three CI runs. A/A false-fail rate and power are not re-derived
+  for 6%, which only loosens the gate. The floor returns to 1% in the first change after
+  0.62.0 is published, when the gate measures against 0.62.0.
+
 ## 0.62.0 — 2026-11-11
 
 - **Breaking: printed parsers must be printed again with 0.62.0.** The emitted helpers
