@@ -5,6 +5,8 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## Unreleased
 
+- **The cross-process floor in `bench/xproc-gate.json` is back to 1%.** `floorPct: 7 → 1`.
+  0.62.0 is published, so the gate now measures against it.
 - **The cross-process floor in `bench/xproc-gate.json` is 7%, not 1%, for 0.62.0 only.**
   `floorPct: 1 → 7` releases the small-grammar slowdown accepted in this release (see
   "A plain parse of a small grammar can be up to 5% slower"); `rollback/sparse` was also
