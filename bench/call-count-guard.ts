@@ -131,7 +131,7 @@ export async function measureSide(dir: string, out: string, only?: (row: string)
   if (want('emitted/') || want('closure/')) {
     const bundle = await build({
       stdin: {
-        contents: "import { buildCaptureWorkloads, buildWorkloads as corpus } from './bench/workloads/index.ts'\nexport const buildWorkloads = () => [...corpus(), ...buildCaptureWorkloads()]",
+        contents: "import { buildWorkloads as corpus } from './bench/workloads/index.ts'\nimport { buildCaptureWorkloads } from './bench/workloads/capture.ts'\nexport const buildWorkloads = () => [...corpus(), ...buildCaptureWorkloads()]",
         resolveDir: dir,
         loader: 'ts',
       },
