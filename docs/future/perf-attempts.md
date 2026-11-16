@@ -753,6 +753,18 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
 
 ## Queued and in progress
 
+- **Jess core: move the relative-colour hook off the known-operand path (open).** Colour maths
+  with one side only the browser knows (Jess ledger V39) is written by a hook at the top of
+  `operatedIn` (`packages/core/src/ast/math-operand.ts`), which every operation passes. On
+  Jess `colours.less` (300 rules of known colour, `var()` and number maths, all output
+  byte-identical) it costs +0.3% JIT: 170.43 / 170.44M base, 170.96M with the hook (median of 21);
+  `values.less` is flat (299.46 / 300.00M, 299.82M). It is code shape, not work: with the hook
+  removed the fixture is level with base; a variant that gates on a call first matches base under
+  `--jitless` yet is +0.65% JIT; six other shapes measured +0.24% to +0.75%; `--trace-deopt`
+  shows no deopt loop. Accepted for jesscss/jess#697. Next: try moving the hook entirely into
+  the former error branch (`operandRule`'s throw, which a pair only the browser knows already
+  reaches), so the known path carries none of it.
+
 - **A `collapse` level opens its frame only where its tail starts (`experiment/no-collapse-wrappers`).**
   Today a ladder level opens a frame and a children array, runs its corner, counts one child
   and throws the frame away. The encoder now lowers `node(type, sequence(corner, tail), build,
