@@ -447,6 +447,38 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
   - Breaking for printed factories (two helper signatures), so it declares 0.62.0 with an
     `abi` lock on the record. Breaking for `rows` readers (`Int32Array`).
 
+### Jess core (not a parseman release)
+
+- **Jess core: keep the relative-colour check off maths with no colour.** Colour maths
+  with one side only the browser knows (Jess ledger V39) added a check to `operatedIn` that
+  every operation ran: `isColourOnDeferred` (+0.3% to +0.4% on Jess `colours.less`). Fix:
+  - Known operands take the fast path first again.
+  - The one V39 case that used to take it (a written `calc()` beside a colour) leaves it by an
+    inline type test.
+  - On the slow path, `isColourSide` checks first that one side can be a colour.
+
+  Numbers: instruction count, interleaved, base = Jess dev with jesscss/jess#697 reverted, A/A pair.
+  - `colours.less`, median of 31: 170.82 / 170.80M base, 171.49M with jesscss/jess#697, 170.71M fixed.
+  - `values.less` and `benchmark.less`: flat (300.48 / 300.41M base, 300.29M fixed; 769.68 /
+    760.55M base, 760.41M fixed, same GC bucket).
+  - `--jitless`: 1196.56M base, 1195.08M fixed.
+  - Output byte-identical.
+
+  Measured and dropped:
+  - The check after the fast path with no colour-side test first: 171.26 against 170.53 / 170.62.
+  - The slow path in its own function: 171.95 against 170.32 / 170.60.
+  - The gate as a helper call: 170.68 to 171.32 over three runs.
+
+  What helped was not calling `isColourOnDeferred` on maths with no colour. Where the call sat
+  made no difference. That is consistent with V8 inlining the helper chain once the call gathers
+  feedback, but no trace confirms it: the lib is minified.
+
+  `operandRule`'s former error branch can't carry the hook alone:
+  - `#111 + calc(…)` never reaches it.
+  - A `/` under `math: always` skips it.
+
+  Lands with [jesscss/jess#699](https://github.com/jesscss/jess/pull/699).
+
 ## Rejected (measured)
 
 - **Merging same-text functions before the entry join.** Two earlier places for the merge
@@ -752,18 +784,6 @@ Branch `perf/rgate-depth2` @ `ea11cca6`, which contains `perf/precedence-loop`,
   read under Rejected), and #251 stays unmerged.
 
 ## Queued and in progress
-
-- **Jess core: move the relative-colour hook off the known-operand path (open).** Colour maths
-  with one side only the browser knows (Jess ledger V39) is written by a hook at the top of
-  `operatedIn` (`packages/core/src/ast/math-operand.ts`), which every operation passes. On
-  Jess `colours.less` (300 rules of known colour, `var()` and number maths, all output
-  byte-identical) it costs +0.3% JIT: 170.43 / 170.44M base, 170.96M with the hook (median of 21);
-  `values.less` is flat (299.46 / 300.00M, 299.82M). It is code shape, not work: with the hook
-  removed the fixture is level with base; a variant that gates on a call first matches base under
-  `--jitless` yet is +0.65% JIT; six other shapes measured +0.24% to +0.75%; `--trace-deopt`
-  shows no deopt loop. Accepted for jesscss/jess#697. Next: try moving the hook entirely into
-  the former error branch (`operandRule`'s throw, which a pair only the browser knows already
-  reaches), so the known path carries none of it.
 
 - **A `collapse` level opens its frame only where its tail starts (`experiment/no-collapse-wrappers`).**
   Today a ladder level opens a frame and a children array, runs its corner, counts one child
